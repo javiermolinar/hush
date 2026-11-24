@@ -45,6 +45,18 @@ type promptEditor struct {
 	revision     uint64
 	historyIndex int
 	scratch      string
+	memo         *promptLayout
+}
+
+type promptLayoutKey struct {
+	width, height, limit int
+	focused              bool
+}
+
+type promptLayout struct {
+	key    promptLayoutKey
+	rows   []string
+	cursor *tea.Cursor
 }
 
 func newPrompt() promptEditor {
@@ -56,7 +68,7 @@ func newPrompt() promptEditor {
 	t.SetStyles(textarea.Styles{})
 	t.SetWidth(68)
 	t.SetHeight(6)
-	return promptEditor{area: t, historyIndex: -1}
+	return promptEditor{area: t, historyIndex: -1, memo: &promptLayout{}}
 }
 
 func cleanPrompt(value string) string {
@@ -123,6 +135,7 @@ func (p *promptEditor) replace(start, end int, value string) {
 
 func (p *promptEditor) resetHistory() { p.historyIndex = -1; p.scratch = "" }
 func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
+	p.memo.rows = nil
 	if paste, ok := msg.(tea.PasteMsg); ok {
 		text := cleanPrompt(paste.Content)
 		if !multiline {
@@ -158,6 +171,7 @@ func (p *promptEditor) newline() {
 	if len(p.text) >= maxPromptBytes {
 		return
 	}
+	p.memo.rows = nil
 	p.area, _ = p.area.Update(tea.PasteMsg{Content: "\n"})
 	p.text = p.area.Value()
 	p.revision++
@@ -165,7 +179,39 @@ func (p *promptEditor) newline() {
 
 // SetValue and SetHeight reposition using Bubble Tea's previous viewport
 // content. Refresh it on the loop, after programmatic changes.
-func (p *promptEditor) syncViewport() { p.area, _ = p.area.Update(nil) }
+func (p *promptEditor) syncViewport() {
+	p.memo.rows = nil
+	p.area, _ = p.area.Update(nil)
+}
+
+// The main prompt uses a real terminal cursor. Unrelated events need not
+// ask Bubbles to rewrap and repaint its viewport, including unused rows.
+func (p *promptEditor) layout(limit int) ([]string, *tea.Cursor) {
+	key := promptLayoutKey{p.area.Width(), p.area.Height(), limit, p.area.Focused()}
+	if p.memo.rows == nil || p.memo.key != key {
+		rows := p.plainRow(key.width)
+		if rows == nil {
+			rows = p.rows(key.width, limit)
+		}
+		*p.memo = promptLayout{key, rows, p.area.Cursor()}
+	}
+	return p.memo.rows, p.memo.cursor
+}
+
+// A short printable ASCII draft has no wrapping, styling or viewport scroll.
+// Avoid painting the unused viewport padding again after every such keypress.
+// Editing and the caret still belong to the textarea.
+func (p *promptEditor) plainRow(width int) []string {
+	if len(p.text) >= width || p.area.HasSelection() || p.area.Placeholder != "" {
+		return nil
+	}
+	for i := range len(p.text) {
+		if c := p.text[i]; c < ' ' || c > '~' {
+			return nil
+		}
+	}
+	return []string{p.text + strings.Repeat(" ", width-len(p.text))}
+}
 
 func (p *promptEditor) rows(width, maxRows int) []string {
 	// The actual textarea viewport is never taller than the editor budget.
