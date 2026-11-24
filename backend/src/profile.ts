@@ -66,7 +66,7 @@ const sameFile = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino ==
 // Inspect under the writer lock, before touching a stale socket or letting SQLite
 // open history (even read-only SQLite may touch WAL sidecars). Only a fresh
 // directory is eligible for initialization; incomplete bootstrap fails closed.
-export async function checkStoreProfile(dir: string, hush: boolean, expected: 1 | 2 = storeFormat): Promise<StoreManifest | undefined> {
+export async function checkStoreProfile(dir: string, hush: boolean, expected: 1 | 2 | "either" = storeFormat): Promise<StoreManifest | undefined> {
   const marker = join(dir, markerName), history = join(dir, historyName);
   const manifest = await stat(marker);
   if (!hush) {
@@ -79,11 +79,12 @@ export async function checkStoreProfile(dir: string, hush: boolean, expected: 1 
   }
   try {
     const value = await readStoreJSON(marker);
-    if (!object(value) || Object.keys(value).length !== (expected === 1 ? 6 : 8)) throw incompatible();
+    if (!object(value)) throw incompatible();
     const { profile, format, storeId, generation, device, inode, registry, cutover } = value;
     const id = { storeId, generation };
-    if (profile !== "hush" || format !== expected || !validStoreIdentity(id) ||
-        expected === 2 && (registry !== storeRegistry || cutover !== null && !uuid(cutover))) throw incompatible();
+    if (profile !== "hush" || (format !== 1 && format !== 2) || (expected !== "either" && format !== expected) ||
+        Object.keys(value).length !== (format === 1 ? 6 : 8) || !validStoreIdentity(id) ||
+        format === 2 && (registry !== storeRegistry || cutover !== null && !uuid(cutover))) throw incompatible();
     const file = await stat(history), binding = await stat(join(dir, bindingName));
     if (!owned(file, 2n) || !owned(binding, 2n) || !sameFile(file, binding) ||
         device !== String(file.dev) || inode !== String(file.ino)) throw incompatible();

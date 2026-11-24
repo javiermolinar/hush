@@ -34,7 +34,7 @@ import { fauxModel, fauxTools, makeFaux } from "./faux.js";
 import { checkStoreProfile, hushDefaultModel, initializeStore, privateDirectory, privateFile } from "./profile.js";
 import { activeCutover, allowManagedOpen, managedRuntime, managedWriter, runStoreCommand } from "./cutover.js";
 import { dataLock } from "./store-lock.js";
-import { StoreValidationError } from "./store-snapshot.js";
+import { StoreValidationError, verifyLegacyStore } from "./store-snapshot.js";
 import { checkSocket } from "./store-socket.js";
 import { findInitialModel, InMemoryCodingAgentModelsStore, InMemoryCredentialStore, resolveModelScopeFromModels } from "./pi-source.js";
 import { LocalEnvironment, ProjectResources, type Warn } from "./resources.js";
@@ -157,20 +157,21 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const gate = managed && await activeCutover(managed);
     await privateDirectory(directory, !config.ephemeral && !gate);
     if (config.dataDir) unlockRuntime = await dataLock(config.dataDir);
-    const manifest = config.dataDir ? await checkStoreProfile(config.dataDir, standalone) : undefined;
+    const localSettings = standalone && (config.dataDir || !config.faux && !config.model)
+      ? await readStandaloneSettings(config.agentDir) : {};
+    const allowLegacy = managed && !gate && localSettings.allowLegacyStore === true;
+    const manifest = config.dataDir ? await checkStoreProfile(config.dataDir, standalone, allowLegacy ? "either" : undefined) : undefined;
     await allowManagedOpen(managed, gate, manifest, fileURLToPath(import.meta.url));
-    await checkSocket(config.socket, config.ephemeral ? "refuse" : "clean");
+    if (manifest?.format !== 1) await checkSocket(config.socket, config.ephemeral ? "refuse" : "clean");
     const storeIdentity = manifest ? { storeId: manifest.storeId, generation: manifest.generation } : standalone ?
       config.dataDir ? await initializeStore(config.dataDir) : { storeId: randomUUID(), generation: randomUUID() } : undefined;
-    compatibleStore = true;
+    compatibleStore = manifest?.format !== 1;
     const { models: modelRegistry, runtime } = models = await loadModels(config);
     const sources = config.piEvents ? new PiSources(runtime) : undefined;
     const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral, sources?.tapTool, standalone);
     const prompt = dirs.extension(() => h);
     const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;
     const builtin = tap(standalone ? standaloneCoding : coding), fauxExtension = tap(fauxTools);
-    const localSettings = standalone && (config.dataDir || !config.faux && !config.model)
-      ? await readStandaloneSettings(config.agentDir) : {};
     if (standalone && config.dataDir && localSettings.codemode === true) codemode = await workspaceCodemode();
     const base = config.ephemeral ? [prompt] : [prompt, builtin,
       ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxExtension] : [])];
@@ -181,6 +182,13 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     for (const extension of [...base, ...ordered]) registry.install(extension);
     if (schedules) registry.install(schedules.extension);
     if (checkpoints) registry.install(checkpoints.extension);
+    if (manifest?.format === 1) {
+      if (!managed || !allowLegacy) throw new BackendError("store_profile");
+      try { await verifyLegacyStore(managed.runtime, managed.control, registry.snapshot()); }
+      catch { throw new BackendError("store_profile"); }
+      await checkSocket(config.socket, "clean");
+      compatibleStore = true;
+    }
     const rootResources = await dirs.load(config.cwd);
     const selection = (project: typeof rootResources): AgentChange => {
       const requested = project.settings.getDefaultTools();

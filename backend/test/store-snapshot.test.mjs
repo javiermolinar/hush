@@ -9,7 +9,7 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from '
 import { createRegistry, defineExtension, defineTool, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { initializeStore } from '../../dist/backend/src/profile.js';
-import { makeSnapshot, verifySnapshot } from '../../dist/backend/src/store-snapshot.js';
+import { makeSnapshot, verifyLegacyStore, verifySnapshot } from '../../dist/backend/src/store-snapshot.js';
 
 // Synthetic app validation fixture only: tests the persisted pi.tool:v4
 // representation with a sleeping substitute for read. This is not evidence
@@ -64,6 +64,22 @@ test('store validation preserves a due parked tool without starting a Harness', 
     assert.deepEqual(sleeping(dst), sleeping(src));
     assert.equal(JSON.parse(sleeping(dst).record).state.until, f.wake);
   } finally { dst.close(); src.close(); }
+});
+
+test('legacy compatibility checks persisted task versions in the WAL without changing history', async t => {
+  const f = await parkedRead(t);
+  const installed = createRegistry().snapshot();
+  await verifyLegacyStore(f.runtime, f.out, installed);
+  const db = new DatabaseSync(f.source);
+  try {
+    db.exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+      UPDATE tasks SET record=json_set(record, '$.version', 99) WHERE status='sleeping'`);
+    const main = await readFile(f.source), wal = await readFile(f.source + '-wal');
+    assert.ok(wal.length > 32, 'fixture must have committed WAL frames');
+    await assert.rejects(verifyLegacyStore(f.runtime, f.out, installed), /unsupported task definition/i);
+    assert.deepEqual(await readFile(f.source), main);
+    assert.deepEqual(await readFile(f.source + '-wal'), wal);
+  } finally { db.close(); }
 });
 
 test('malformed wake or unrecognized task cannot produce a usable cutover snapshot', async t => {

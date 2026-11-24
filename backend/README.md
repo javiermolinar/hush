@@ -42,6 +42,16 @@ Hush checks this binding under the writer lock, before SQLite opens history or
 Hush removes a stale socket. It does not adopt a Pi database, a bare SQLite
 file, or an incomplete bootstrap. There is no automatic upgrade.
 
+To keep using an existing format-1 store with the current backend, add
+`"allowLegacyStore": true` to the private backend-host `~/.hush/settings.json`
+and restart. This opt-in applies only to the default managed standalone runtime
+with no recorded cutover. Before opening history or removing a stale socket,
+Hush checks the binding and validates the Durable schema, document versions and
+persisted task definitions on a private temporary copy including any WAL. An
+incompatible store is still refused. The original format, store ID and generation
+stay the same; this is not a cutover or a guarantee that older builds can handle
+work written by the current backend. Fresh stores still use format 2.
+
 The managed cutover implementation has this compatibility matrix. `hush store
 inspect` reports the exact target bundle SHA-256 and the on-disk phase; compare
 that SHA-256 with the current candidate's release evidence. This is an

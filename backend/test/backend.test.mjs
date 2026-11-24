@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
@@ -102,6 +102,58 @@ test("runtime stop closes the host and permits a replacement over retained histo
   assert.notEqual(second.epoch, first.epoch);
   const threads = ok(await wire.send("thread.list", { limit: 100 }));
   assert.ok(threads.threads.some(row => row.id === threadId));
+});
+
+test("managed format-1 compatibility is opt-in and preserves identity and history", { timeout: 15_000 }, async t => {
+  const { dir, config } = await layout(t, { idleMs: 10_000 });
+  const agentDir = join(dir, ".hush"), dataDir = join(agentDir, "runtime"), socket = join(dataDir, "hush.sock");
+  const options = { ...config, profile: "hush", agentDir, dataDir, socket };
+  let app = await startBackend(options);
+  t.after(() => app.close());
+  let connection = await dial(socket);
+  t.after(() => connection.close());
+  const hello = () => connection.send("hello", { versions: [1], capabilities: { storeIdentity: [1], threadDirectory: [2] } });
+  ok(await hello());
+  const identity = ok(await connection.send("ext.storeIdentity.get", {}));
+  const { id } = ok(await connection.send("ext.threadDirectory.new", { title: "Retained format-1 thread" }));
+  const input = await submit(connection, id, "existing prompt", "legacy-1");
+  assert.equal((await wait(connection, id, input.submissionId)).status, "done");
+  await app.close();
+
+  // Seed the legacy manifest shape on an otherwise identical schema and binding.
+  const marker = join(dataDir, "store-profile");
+  const { format, registry, cutover, ...binding } = JSON.parse(await readFile(marker, "utf8"));
+  assert.equal(format, 2);
+  await json(marker, { ...binding, format: 1 });
+  const before = await readFile(marker);
+  await assert.rejects(startBackend(options), { code: "store_profile" });
+  await json(join(agentDir, "settings.json"), { allowLegacyStore: true, codemode: true });
+
+  for (const requestId of ["legacy-2", "legacy-3"]) {
+    app = await startBackend(options);
+    connection = await dial(socket);
+    t.after(() => connection.close());
+    ok(await hello());
+    assert.deepEqual(ok(await connection.send("ext.storeIdentity.get", {})), identity);
+    const { threads } = ok(await connection.send("ext.threadDirectory.list", { limit: 100 }));
+    assert.ok(threads.some(row => row.id === id && row.title === "Retained format-1 thread"));
+    assert.equal((await wait(connection, id, input.submissionId)).status, "done");
+    const next = await submit(connection, id, "continue existing thread", requestId);
+    assert.equal((await wait(connection, id, next.submissionId)).status, "done");
+    await app.close();
+    assert.deepEqual(await readFile(marker), before);
+  }
+
+  // The setting does not adopt a standalone store at a custom data path.
+  const custom = join(agentDir, "custom");
+  await rename(dataDir, custom);
+  await assert.rejects(startBackend({ ...options, dataDir: custom, socket: join(custom, "hush.sock") }), { code: "store_profile" });
+  await rename(custom, dataDir);
+
+  // Even a valid format-1 marker with opt-in cannot bypass an unknown fence.
+  await json(join(agentDir, "store-cutover", "state.json"), { phase: "prepared" });
+  await assert.rejects(startBackend(options), { code: "store_cutover" });
+  assert.deepEqual(await readFile(marker), before);
 });
 
 test("native catalog search finds OpenRouter beyond the first 64 models with only an env key", { timeout: 10_000 }, async t => {
