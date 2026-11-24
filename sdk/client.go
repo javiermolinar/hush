@@ -132,6 +132,10 @@ func invoke[T any](ctx context.Context, c *Client, method string, params any) (T
 // A passive wait has its own connection: cancelling it actually releases the server's
 // waiter without closing other calls or withdrawing an already-admitted input.
 func waitOn[T any](ctx context.Context, c *Client, method string, params any) (T, error) {
+	return waitOnCapability[T](ctx, c, method, params, "", 0)
+}
+
+func waitOnCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, version uint64) (T, error) {
 	var zero T
 	if c.life.Err() != nil {
 		return zero, ErrClosed
@@ -144,6 +148,9 @@ func waitOn[T any](ctx context.Context, c *Client, method string, params any) (T
 		return zero, err
 	}
 	defer s.fail(ErrClosed)
+	if capability != "" && s.hello.Capabilities[capability] != version {
+		return zero, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: capability}
+	}
 	v, err := s.call(life, method, params, nil)
 	if ctx.Err() != nil {
 		return zero, ctx.Err()

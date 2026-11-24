@@ -129,7 +129,7 @@ function git(cwd: string, signal: AbortSignal, ...args: string[]) {
 const checkoutConfig = ["-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false",
   "-c", "core.ignoreStat=false", "-c", "core.fileMode=true", "-c", "core.trustctime=true", "-c", "core.checkStat=default"];
 
-async function checkFilters(cwd: string, signal: AbortSignal) {
+export async function checkFilters(cwd: string, signal: AbortSignal) {
   // Checkout and status can execute external filters. A conditional include
   // can also introduce one only after Git switches to the fork's path/branch.
   const config = await git(cwd, signal, "config", "--includes", "--null", "--list");
@@ -240,6 +240,16 @@ export class RewindGit {
       }, { git: true, expected: identity });
       await exactRef(cwd, signal, ref, commit, "snapshot");
       return Object.freeze({ repository: identity.path, fingerprint: fingerprint(identity), commit, ref });
+    });
+  }
+
+  /** Resolve committed file evidence for read-only review, without staging a rewind. */
+  async comparisonCommit(workspace: string, snapshot: GitSnapshot, signal: AbortSignal): Promise<string> {
+    return this.#safe(signal, async () => {
+      const input = snapshotInput(snapshot);
+      const identity = await this.#identity(workspace, signal, input);
+      await this.#snapshot(identity, input, signal);
+      return input.commit;
     });
   }
 

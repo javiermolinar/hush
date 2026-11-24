@@ -126,6 +126,15 @@ export class CheckpointService implements CheckpointsHost {
 
   #git() { return new RewindGit(realpathSync(this.dataDir), this.trust); }
 
+  async latestFileSnapshot(id: ConversationId, ctx: Context) {
+    const items = (await this.harness().snapshot(Checkpoints, id, ctx))?.items;
+    return items?.find(item => item.snapshot)?.snapshot;
+  }
+
+  async comparisonCommit(workspace: string, snapshot: GitSnapshot, signal: AbortSignal) {
+    return this.#git().comparisonCommit(workspace, snapshot, signal);
+  }
+
   async call(q: CheckpointRequest, signal: AbortSignal) {
     const h = this.harness(), ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const source = await h.conversation(thread(q.threadId), ctx);

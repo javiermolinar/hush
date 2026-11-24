@@ -72,12 +72,13 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, archive := m.backend.(archiveBackend)
 	_, schedules := m.backend.(scheduleBackend)
 	_, checkpoints := m.backend.(checkpointBackend)
+	_, gitDiff := m.backend.(gitDiffBackend)
 	_, native := m.backend.(modelCatalogBackend)
 	_, search := m.backend.(modelCatalogSearchBackend)
 	_, draft := m.backend.(modelCatalogDraftBackend)
 	catalog = catalog && m.options.Services.Models == nil
 	native = native && m.options.Services.Models == nil
-	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive && !schedules && !checkpoints {
+	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive && !schedules && !checkpoints && !gitDiff {
 		return nil
 	}
 	ctx := m.ctx
@@ -121,6 +122,9 @@ func (m *Model) menuProbe() tea.Cmd {
 		}
 		if checkpoints && hello.Capabilities["checkpoints"] == sdk.CheckpointsVersion {
 			f |= x.Checkpoints
+		}
+		if gitDiff && hello.Capabilities["gitDiff"] == sdk.GitDiffVersion {
+			f |= x.GitDiff
 		}
 		return menuCapabilities{features: f, directory: managed && directory}
 	}

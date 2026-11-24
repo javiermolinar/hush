@@ -305,7 +305,7 @@ func (m *Model) View() tea.View {
 		}
 		rule = paint(x.Muted, "─ ") + m.control(label+" · "+shellKeys.follow.Help().Key+" resume") + " "
 	}
-	add(y, displayRow{text: rule + paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(rule))))})
+	add(y, m.gitDiffRule(t, rule, w))
 	y++
 	for _, row := range attachments {
 		add(y, row)
@@ -343,6 +343,9 @@ func (m *Model) View() tea.View {
 			anchorSpace = max(0, f.transcriptHeight-paletteMaxHeight)
 		}
 		top := min(space, anchorSpace/3+2*i)
+		if d.git != nil && !d.git.patch {
+			top = space
+		}
 		for j, row := range rows {
 			y := top + j
 			base := fit(f.rows[y], m.width)
@@ -353,6 +356,9 @@ func (m *Model) View() tea.View {
 			f.dialogWidth, f.dialogHeight = width, len(rows)
 			f.dialogFramed = f.transcriptHeight >= minOverlayFrameRows
 			f.dialogChoices = choices
+			if d.git != nil {
+				v.Cursor = nil
+			}
 			if d.palette && m.focused {
 				v.Cursor = m.paletteCursor(d, left, top, width, len(rows), f.dialogFramed)
 			}
@@ -661,6 +667,9 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		inside := p.X >= f.dialogX && p.X < f.dialogX+f.dialogWidth && p.Y >= f.dialogY && p.Y < f.dialogY+f.dialogHeight
+		if inside && d.git != nil {
+			return m.gitDiffMouse(d, msg, p.Y-f.dialogY)
+		}
 		switch msg.(type) {
 		case tea.MouseClickMsg:
 			if !inside {

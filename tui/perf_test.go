@@ -25,7 +25,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "image-preview", "queued-inputs"} {
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "image-preview", "queued-inputs"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -80,6 +80,17 @@ func TestFrameBudget(t *testing.T) {
 				m.images.mode, m.images.capable, s.expanded = ImageBlocks, true, true
 				s.merge([]sdk.Entry{imageEntry(2003)})
 				m.cacheImage(imageFetched{sdk.ImageRef{ThreadID: m.active, EntryID: "2003", BlockIndex: 1}, sampleImage(320, 180)})
+			}
+			if which == "git-diff" {
+				longTranscript(t, m, s)
+				enableGitDiffFixture(m, s)
+				m.openGitDiff(m.route(m.active, coreID))
+				d := m.focusedDialog()
+				p := sdk.GitDiffPatch{}
+				for i := range 1500 {
+					p.Lines = append(p.Lines, sdk.GitDiffLine{Kind: "add", NewLine: i + 1, Text: "  // newly added line of code, with metadata"})
+				}
+				d.git.patch, d.git.view = true, newGitPatchView(p)
 			}
 			if which == "rewind-preview" {
 				b := maxEffects
@@ -136,7 +147,7 @@ func TestFrameBudget(t *testing.T) {
 					msg = tea.KeyPressMsg{Code: 'a', Text: "a"}
 				case "motion":
 					msg = tea.MouseMotionMsg(tea.Mouse{X: 2 + i%10, Y: m.frame.transcriptHeight - 4})
-				case "sheet":
+				case "sheet", "git-diff":
 					msg = tea.KeyPressMsg{Code: tea.KeyDown}
 				case "model-catalog":
 					switch i % 4 {

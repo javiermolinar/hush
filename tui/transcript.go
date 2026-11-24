@@ -21,6 +21,7 @@ type threadState struct {
 	footer                                                   footerMetadata
 	presentation                                             *sdk.IntroThread
 	directory                                                *sdk.ThreadDirectoryRow
+	gitDiff                                                  gitDiffState
 	life, revision                                           uint64
 	info                                                     extension.Thread
 	ids, shown, detailShown                                  []sdk.ID

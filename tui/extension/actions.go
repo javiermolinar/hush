@@ -129,6 +129,9 @@ const Schedules Features = 1 << 12
 // Checkpoints enables host-owned bookmarks, snapshot previews and rewind.
 const Checkpoints Features = 1 << 13
 
+// GitDiff enables read-only review of a thread's Git worktree.
+const GitDiff Features = 1 << 14
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.

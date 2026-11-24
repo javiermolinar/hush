@@ -37,6 +37,7 @@ type dialog struct {
 	output                      *outputViewer
 	review                      bool
 	modelSearch                 *modelSearchState
+	git                         *gitReview
 	result                      func(tea.Model) (any, bool)
 	done                        func(x.Context, any, bool) x.Outcome
 }
@@ -222,6 +223,9 @@ func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) te
 	if d.modelSearch != nil {
 		d.modelSearch.stop()
 	}
+	if d.git != nil {
+		d.git.stop()
+	}
 	if !m.live(d.route) || d.done == nil {
 		return nil
 	}
@@ -390,6 +394,9 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	if key {
 		chord = normalizeChord(k.String())
 		if chord == "esc" {
+			if d.git != nil && d.git.patch {
+				return m.gitDiffKey(d, chord)
+			}
 			return m.closeDialog(d, nil, false)
 		}
 	}
@@ -398,6 +405,9 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	}
 	if d.custom != nil {
 		return m.customUpdate(d, msg)
+	}
+	if d.git != nil {
+		return m.gitDiffKey(d, chord)
 	}
 	if d.output != nil {
 		return m.outputKey(d, chord)
@@ -526,6 +536,12 @@ func (m *Model) changeDialogQuery(d *dialog, query string) tea.Cmd {
 func (m *Model) dialogWidth(d *dialog) int {
 	if d.placement == x.Sheet {
 		return max(1, m.width-4)
+	}
+	if d.git != nil {
+		if d.git.patch {
+			return m.width
+		}
+		return min(92, m.width-4)
 	}
 	if d.palette {
 		return min(60, max(12, m.width-8))
@@ -662,6 +678,9 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	w := m.dialogWidth(d)
 	if available < minOverlayFrameRows {
 		// At short heights, prefer usable body rows to a border.
+		if d.git != nil {
+			return m.gitReviewRows(d.git, w, available)
+		}
 		if d.output != nil {
 			return m.outputRows(d, w, available)
 		}
@@ -672,7 +691,13 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	}
 	var body []string
 	var choices []int
-	if d.palette {
+	if d.git != nil {
+		height := available - 2
+		if !d.git.patch {
+			height = min(12, height-1) // keep some chat visible behind the popover
+		}
+		body, choices = m.gitReviewRows(d.git, w-4, height)
+	} else if d.palette {
 		body, choices = m.paletteRows(d, w-4, min(paletteMaxHeight, available)-2)
 	} else if d.output != nil {
 		body, choices = m.outputRows(d, w-4, available-2)

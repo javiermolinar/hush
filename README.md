@@ -44,6 +44,11 @@ Faux: Now check the install instructions
 In the Go TUI, you can open threads in tabs. It caches transcript blocks and
 renders the visible window, rather than rewrapping the whole thread on each keystroke.
 
+On a supported standalone backend, click the `±` badge or use `/diff` or
+`Ctrl+X I D` to review the active thread’s trusted Git worktree. Open a file
+with Enter, go back with Esc, or use Tab in the list to compare with the last
+file checkpoint. Review is read-only; it does not stage or restore files.
+
 ## What it won’t do
 
 A scheduled run can’t fire while the backend is down. A new thread worktree starts

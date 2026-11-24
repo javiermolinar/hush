@@ -254,6 +254,13 @@ func (s *session) receive(f map[string]any) error {
 		}); err != nil {
 			return err
 		}
+	} else if ok && (method == gitDiffPrefix+"summary" || method == gitDiffPrefix+"file") {
+		s.mu.Lock()
+		version := s.hello.Capabilities[gitDiffCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, GitDiffVersion); err != nil {
+			return err
+		}
 	} else if ok && strings.HasPrefix(method, checkpointPrefix) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[checkpointCapability]

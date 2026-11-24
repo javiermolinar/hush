@@ -67,6 +67,7 @@ type Model struct {
 	feed                      feedLease
 	reportFeed                feedLease
 	directoryFeed             feedLease
+	gitDiffFeed               gitDiffPoll
 	directoryIDs              []sdk.ID
 	directoryEnabled          bool
 	tabs                      []sdk.ID
@@ -219,6 +220,7 @@ func (m *Model) Close() {
 	}
 	m.stopFeed()
 	m.stopBackendReport()
+	m.stopGitDiff()
 	for id, work := range m.pending {
 		work.cancel()
 		delete(m.pending, id)
@@ -298,7 +300,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case menuCapabilities:
 		m.menuFeaturesFromBackend = v.features
 		m.directoryEnabled = v.directory
-		cmd = m.syncDirectory()
+		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff())
+	case gitDiffTick:
+		if uint64(v) == m.gitDiffFeed.tick {
+			cmd = m.scanGitDiff()
+		}
+	case gitDiffSummaryMsg:
+		cmd = m.receiveGitSummary(v)
+	case gitDiffPatchMsg:
+		m.receiveGitPatch(v)
 	case directoryFeedMsg:
 		cmd = m.receiveDirectory(v)
 	case tea.FocusMsg:
@@ -425,7 +435,7 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 	}
 	m.overlays, m.sheet = nil, nil
 	m.emit(id, extension.Event{Kind: extension.ThreadSwitched, PreviousThreadID: previous})
-	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncTabFeeds(), m.syncDirectory()}
+	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncTabFeeds(), m.syncDirectory(), m.syncGitDiff()}
 	budget := maxEffects
 	for _, d := range old {
 		cmds = append(cmds, m.replyDialog(d, nil, false, &budget))
@@ -781,6 +791,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	}
 	t := m.threads[r.owner]
 	switch e.Op {
+	case openGitDiffOp:
+		return m.openGitDiff(r)
 	case retryFailureOp, dismissFailureOp:
 		return m.recoverRun(r, e, budget)
 	case providerLoginOp:

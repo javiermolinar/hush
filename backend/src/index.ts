@@ -23,6 +23,7 @@ import { ThreadDirectory } from "./thread-directory.js";
 import { threadTitleGenerator } from "./thread-title-model.js";
 import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
+import { GitDiffService } from "./git-diff.js";
 import { readStandaloneSettings, standaloneModelDefault } from "./standalone-settings.js";
 import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
@@ -322,7 +323,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       images = new ImageFitter(runtime);
     }
     const modelCatalog = standalone ? nativeModelCatalog(harness, runtime, modelRegistry, nativeDefault) : undefined;
-    server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints,
+    const gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
+    server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff,
       hushProfile: standalone ? 1 : undefined, nativeStop: standalone ? 1 : undefined,
       clientEnvironment: standalone ? 1 : undefined, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });

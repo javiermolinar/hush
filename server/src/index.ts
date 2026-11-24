@@ -11,6 +11,7 @@ import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
+import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
 import { PiPeer, piEventsVersion, type PiEventsHost } from "./pi-events.js";
 import { imageReply, imagesVersion, parseImageRef, parseImageSubmit, type ImagesHost } from "./images.js";
 export type { ImagesHost } from "./images.js";
@@ -36,6 +37,7 @@ export type HostCapabilities = Readonly<{
   runtime?: RuntimeHost;
   schedules?: SchedulesHost;
   checkpoints?: CheckpointsHost;
+  gitDiff?: GitDiffHost;
 }>;
 
 export interface ServerOptions {
@@ -154,6 +156,8 @@ class Peer {
   #images?: ImagesHost;
   #schedules?: SchedulesHost;
   #checkpoints?: CheckpointsHost;
+  #gitDiff?: GitDiffHost;
+  #gitDiffPending = false;
   #modelCatalog?: { host: ModelCatalogHost; version: ModelCatalogVersion };
   #storeIdentity?: StoreIdentity;
   #runtime?: RuntimeHost;
@@ -244,6 +248,19 @@ class Peer {
         if (parts[1] === "checkpoints" && this.#checkpoints) {
           const result = await this.#checkpoints.call(parseCheckpoint(parts[2]!, req.params), this.#abort.signal);
           this.#write(encode({ ...identity(req), ok: true, result }));
+          return;
+        }
+        if (parts[1] === "gitDiff" && this.#gitDiff) {
+          const query = parseGitDiff(parts[2]!, req.params);
+          if (this.#gitDiffPending) throw new WireError("limit");
+          this.#gitDiffPending = true;
+          // Disk scans are passive reads. A slow or cancelled review must not
+          // block EOF, input admission, or abort on the same connection.
+          void this.#gitDiff.call(query, this.#abort.signal).then(result => {
+            if (!this.socket.destroyed) this.#write(encode({ ...identity(req), ok: true, result }));
+          }).catch(error => {
+            if (!this.socket.destroyed) this.#error(req, error);
+          }).finally(() => { this.#gitDiffPending = false; });
           return;
         }
         if (parts[1] === "schedules" && this.#schedules) {
@@ -399,6 +416,10 @@ class Peer {
         if (this.capabilities?.checkpoints && req.params.capabilities?.checkpoints?.includes(checkpointsVersion)) {
           capabilities.checkpoints = checkpointsVersion;
           this.#checkpoints = this.capabilities.checkpoints;
+        }
+        if (this.capabilities?.gitDiff && req.params.capabilities?.gitDiff?.includes(gitDiffVersion)) {
+          capabilities.gitDiff = gitDiffVersion;
+          this.#gitDiff = this.capabilities.gitDiff;
         }
         if (this.capabilities?.schedules && req.params.capabilities?.schedules?.includes(schedulesVersion)) {
           capabilities.schedules = schedulesVersion;

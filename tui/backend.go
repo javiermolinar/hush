@@ -199,11 +199,16 @@ func (m *Model) receiveFeed(msg feedMsg) tea.Cmd {
 		m.emit(owner, extension.Event{Kind: extension.StreamChanged, Stream: t.stream})
 	}
 	m.observeTools(owner, oldTools, t.tools)
-	var probe tea.Cmd
+	var probe, review tea.Cmd
 	if !wasConnected {
 		probe = m.menuProbe()
 	}
-	return tea.Batch(next, m.fetchGap(t), m.maybeOlder(false), m.desktopStatus(owner, old.Status, t.info.Status), probe)
+	if m.gitDiffFeed.token != 0 && (old.Status != t.info.Status || slices.ContainsFunc(newRows, func(r *record) bool {
+		return slices.ContainsFunc(r.entry.Record.Messages, func(msg sdk.Message) bool { return msg.Role == "tool" })
+	})) {
+		review = m.expediteGitDiff()
+	}
+	return tea.Batch(next, m.fetchGap(t), m.maybeOlder(false), m.desktopStatus(owner, old.Status, t.info.Status), probe, review)
 }
 
 type historyMsg struct {
