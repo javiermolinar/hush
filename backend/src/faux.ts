@@ -9,9 +9,10 @@ export function makeFaux(ephemeral: boolean) {
   const faux = fauxProvider({ api: "hush-faux", tokenSize: { min: 16, max: 16 } });
   const reply: FauxResponseFactory = async ({ messages }, options) => {
     faux.appendResponses([reply]);
-    const last = messages.at(-1);
+    const last = messages.findLast(message => message.role !== "system");
     if (last?.role === "toolResult") {
-      if (last.toolName.startsWith("mcp__") || last.toolName === "hush_fixture_fast" || last.toolCallId === "workspace-read") {
+      if (last.toolName.startsWith("mcp__") || last.toolName === "codemode" ||
+          last.toolName === "hush_fixture_fast" || last.toolCallId === "workspace-read") {
         return fauxAssistantMessage(last.content.filter(b => b.type === "text").map(b => b.text).join("\n"));
       }
       return fauxAssistantMessage(last.isError ? "The interrupted fixture tool did not rerun." : "The deadline fired.");
@@ -32,6 +33,8 @@ export function makeFaux(ephemeral: boolean) {
       }
     }
     if (!ephemeral) {
+      if (text.startsWith("!codemode\n")) return fauxAssistantMessage(
+        fauxToolCall("codemode", { code: text.slice("!codemode\n".length) }, { id: "codemode-fixture-" + faux.state.callCount }), { stopReason: "toolUse" });
       if (text === "!workspace-read") return fauxAssistantMessage(
         fauxToolCall("read", { path: "workspace-marker.txt" }, { id: "workspace-read" }), { stopReason: "toolUse" });
       if (text === "!fast-tool") return fauxAssistantMessage([

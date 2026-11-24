@@ -10,14 +10,13 @@ import { hushDefaultModel, privateFile } from "./profile.js";
 
 const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-// Pi-compatible global keys. Standalone never reads project .pi settings or
-// writes Pi's settings file; existing threads retain their committed model.
-export async function standaloneModelDefault(agentDir: string, runtime: ModelRuntime) {
+// This is the backend host's private Hush profile, never a project settings file.
+export async function readStandaloneSettings(agentDir: string): Promise<Record<string, unknown>> {
   const path = join(agentDir, "settings.json");
-  if (!await privateFile(path)) return { model: hushDefaultModel, thinkingLevel: "off" as ModelThinkingLevel };
+  if (!await privateFile(path)) return {};
   let value: unknown;
   try {
-    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const info = await file.stat();
       if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
@@ -27,7 +26,11 @@ export async function standaloneModelDefault(agentDir: string, runtime: ModelRun
     } finally { await file.close(); }
   } catch { throw new BackendError("configuration"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BackendError("configuration");
-  const settings = value as Record<string, unknown>;
+  return value as Record<string, unknown>;
+}
+
+// Pi-compatible global keys; existing threads retain their committed model.
+export function standaloneModelDefault(settings: Record<string, unknown>, runtime: ModelRuntime) {
   const provider = settings.defaultProvider, modelId = settings.defaultModel;
   const thinking = settings.defaultThinkingLevel;
   if ((provider !== undefined && !publicCatalogText(provider)) ||

@@ -25,7 +25,8 @@ import { ThreadDirectory } from "./thread-directory.js";
 import { threadTitleGenerator } from "./thread-title-model.js";
 import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
-import { standaloneModelDefault } from "./standalone-settings.js";
+import { readStandaloneSettings, standaloneModelDefault } from "./standalone-settings.js";
+import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
 import { runWorkspaceTrustCommand, WorkspaceTrust } from "./workspace-trust.js";
 import { ImageFitter } from "./images.js";
@@ -150,6 +151,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
   let intro: IntroReports | undefined;
   let threadDirectory: ThreadDirectory | undefined;
   let images: ImageFitter | undefined;
+  let codemode: Awaited<ReturnType<typeof workspaceCodemode>> | undefined;
   let h: Harness | undefined, resources: ProjectResources | undefined, server: ReturnType<typeof createCoreServer> | undefined;
   let models: Awaited<ReturnType<typeof loadModels>> | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -165,6 +167,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       () => images?.close(),
       () => threadDirectory?.close(),
       () => h?.close(context),
+      () => codemode?.sandbox.close(),
       () => resources?.close(),
       () => models?.runtime.settleCredentialWrites(),
       unlock,
@@ -192,7 +195,11 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const prompt = dirs.extension(() => h);
     const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;
     const builtin = tap(coding), fauxExtension = tap(fauxTools);
-    const base = config.ephemeral ? [prompt] : config.faux ? [prompt, builtin, fauxExtension] : [prompt, builtin];
+    const localSettings = standalone && (config.dataDir || !config.faux && !config.model)
+      ? await readStandaloneSettings(config.agentDir) : {};
+    if (standalone && config.dataDir && localSettings.codemode === true) codemode = await workspaceCodemode();
+    const base = config.ephemeral ? [prompt] : [prompt, builtin,
+      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxExtension] : [])];
     const ordered = sources?.extensions(() => h!) ?? [];
     const trust = standalone && config.dataDir ? new WorkspaceTrust(config.agentDir) : undefined;
     const schedules = standalone && config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs) : undefined;
@@ -216,7 +223,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       return { ...selection(project), extensions: [...base, ...ordered, ...(project.mcp ? [project.mcp] : [])] };
     };
     const nativeSelection = standalone && !config.faux && !config.model
-      ? await standaloneModelDefault(config.agentDir, runtime) : undefined;
+      ? standaloneModelDefault(localSettings, runtime) : undefined;
     const nativeDefault = config.faux ? fauxModel : config.model ?? nativeSelection?.model ?? hushDefaultModel;
     const defaultModel = async (settings: SettingsManager) => {
       if (standalone) return { model: nativeDefault, thinkingLevel: config.model ? "off" as const : nativeSelection?.thinkingLevel ?? "off" as const };

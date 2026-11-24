@@ -20,6 +20,7 @@ mkdir -p "$HOME/.local/bin" && install -m 755 ./hush "$HOME/.local/bin/hush"
 
 Run `~/.local/bin/hush` in your project and type `/login` to sign in with OpenAI Codex.
 The binary embeds the backend. You need Node.js 22.19.0 or newer, but not a separate Pi installation.
+[Codemode](backend/README.md#standalone-codemode) is an optional host setting for batching workspace reads.
 
 For a [release candidate](CONTRIBUTING.md#release-candidates), use the GitHub Actions
 workflow or run `mise run release` locally with [Mise](https://mise.jdx.dev/) and Python 3.

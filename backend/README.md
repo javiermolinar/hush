@@ -158,6 +158,37 @@ go build -o /tmp/hush-keyring-fixture ./app/cmd/hush
 HUSH_TEST_KEYRING_BINARY=/tmp/hush-keyring-fixture node --test app/test/keyring.test.mjs
 ```
 
+## Standalone Codemode
+
+Codemode is off by default. To enable it, add `"codemode": true` to the JSON object in
+`~/.hush/settings.json` on the **backend host**. The file must be owned by your user and private
+(`chmod 600 ~/.hush/settings.json`). Restart the backend (`hush stop`, then open Hush again for a
+managed backend). Set the key to `false` or remove it and restart to turn it off. The installable
+binary includes QuickJS; it does not need Pi or adjacent Node packages. Project settings and
+prompts cannot enable Codemode. The Pi compatibility profile and `--no-session` runs do not get it.
+
+Direct tools remain available. A `codemode` script can only call `tools.inspect_file({ path })`,
+a read-only tool for regular, single-link UTF-8 files up to 32 KiB. Paths are relative to the thread's
+working directory and cannot traverse `..` or follow symlinks. Use a physical working directory
+(`pwd -P`); Linux requires `/proc/self/fd` to verify the file actually opened. This restriction
+applies to scripts, not to the separate direct coding tools.
+
+```js
+const files = await Promise.all(["one.txt", "two.txt"].map(path => tools.inspect_file({ path })));
+return files.map(file => file.split("\n").find(line => line.startsWith("REVIEW_KEY=")));
+```
+
+Each script has up to 16 calls and 10 seconds, including tool time. The result is capped at about
+1,500 tokens (at most 16 KiB and 500 lines), with no spill files or image output. A first line of
+`// @options: {"timeout_ms": 2000, "max_output_tokens": 500}` can lower those limits. Scripts cannot
+call the direct shell, write, edit, or read tools, MCP tools, or model helpers. QuickJS isolates
+JavaScript; the backend separately enforces the call allowlist and file checks.
+
+With Codemode still enabled, [Pi Durable 1.6.0](https://github.com/earendil-works/pi/blob/v1.6.0/packages/durable/README.md#code-mode)
+can replay an interrupted script within its original deadline. It reuses committed nested results;
+an inspection that had not committed can run again. See [the controlled comparison](../docs/codemode-comparison.md)
+for measured costs of filtering four independent reads in one script.
+
 ## Standalone system prompt
 
 The backend bundle includes [`src/prompts/system.md`](src/prompts/system.md) as text. No prompt file is

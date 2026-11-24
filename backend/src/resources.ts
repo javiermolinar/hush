@@ -78,6 +78,7 @@ const toolInstructions: ReadonlyMap<string, string> = new Map([
   ["bash", "Run shell commands only as needed for the task."],
   ["edit", "Apply targeted changes to existing files when requested."],
   ["write", "Create or replace files only when needed for requested changes."],
+  ["codemode", "Batch independent workspace text reads and return only the relevant excerpts."]
 ]);
 
 async function standalonePromptSections(profileDir: string, cwd: string, selectedTools: string[]): Promise<Record<string, string>> {

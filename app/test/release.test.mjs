@@ -133,6 +133,34 @@ function reply(res) {
   res.end('data: [DONE]\n\n');
 }
 
+const batchPrompt = 'release-run-codemode-batch';
+const batchSource = `const results = await Promise.all(['first.txt', 'second.txt'].map(path => tools.inspect_file({ path })));\n` +
+  `return results.map(value => value.split('=')[1].trim()).join(', ');`;
+
+// Newer Codex models receive tool declarations in transcript deltas, not at
+// the top level. Keep the latest declaration by name in either format.
+function requestTools(request) {
+  const tools = new Map();
+  for (const tool of [...(request.tools ?? []), ...request.input.flatMap(item => item.tools ?? [])]) tools.set(tool.name, tool);
+  return [...tools.values()];
+}
+
+function replyBatch(res, tool) {
+  assert.ok(tool, 'the installed backend did not offer Codemode');
+  const raw = tool.type === 'custom';
+  const item = { type: raw ? 'custom_tool_call' : 'function_call', id: raw ? 'ctc_batch' : 'fc_batch',
+    call_id: 'call_release_batch', name: 'codemode', ...(raw ? { input: batchSource } : { arguments: JSON.stringify({ code: batchSource }) }) };
+  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+  res.setHeader('Content-Type', 'text/event-stream');
+  send('response.created', { response: { id: 'fixture-batch', status: 'in_progress', output: [] } });
+  send('response.output_item.added', { output_index: 0, item: { ...item, status: 'in_progress' } });
+  send('response.output_item.done', { output_index: 0, item: { ...item, status: 'completed' } });
+  send('response.completed', { response: { id: 'fixture-batch', status: 'completed', output: [item], usage: {
+    input_tokens: 10, output_tokens: 12, total_tokens: 22,
+  } } });
+  res.end('data: [DONE]\n\n');
+}
+
 async function native(socket, action) {
   const conn = createConnection(socket);
   conn.setTimeout(5000, () => conn.destroy(new Error('native fixture timed out')));
@@ -200,7 +228,15 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
       }
     }
     if (req.method === 'POST' && req.url === '/fixture/responses' && req.headers.authorization === 'Bearer ' + token && req.headers['chatgpt-account-id'] === account) {
-      try { seen.push(JSON.parse(body)); reply(res); return; } catch { /* report as unexpected */ }
+      try {
+        const request = JSON.parse(body);
+        seen.push(request);
+        const batch = JSON.stringify(request.input).includes(batchPrompt) &&
+          !request.input.some(item => item.call_id === 'call_release_batch');
+        if (batch) replyBatch(res, requestTools(request).find(tool => tool.name === 'codemode'));
+        else reply(res);
+        return;
+      } catch { /* report as unexpected */ }
     }
     unexpected.push([req.method, req.url]);
     res.writeHead(400).end();
@@ -213,10 +249,13 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
     import { appendFileSync, readFileSync, lstatSync } from 'node:fs';
     import { createHash } from 'node:crypto';
     import { dirname } from 'node:path';
-    const entry = process.argv[1];
-    appendFileSync(${JSON.stringify(log)}, JSON.stringify({ pid: process.pid, entry, args: process.argv.slice(2),
-      version: process.version, mode: lstatSync(entry).mode & 0o777, dirMode: lstatSync(dirname(entry)).mode & 0o777,
-      sha: createHash('sha256').update(readFileSync(entry)).digest('hex') }) + '\\n');
+    import { isMainThread } from 'node:worker_threads';
+    if (isMainThread) {
+      const entry = process.argv[1];
+      appendFileSync(${JSON.stringify(log)}, JSON.stringify({ pid: process.pid, entry, args: process.argv.slice(2),
+        version: process.version, mode: lstatSync(entry).mode & 0o777, dirMode: lstatSync(dirname(entry)).mode & 0o777,
+        sha: createHash('sha256').update(readFileSync(entry)).digest('hex') }) + '\\n');
+    }
     const fetchFixture = globalThis.fetch;
     const zlib = process.getBuiltinModule('node:zlib');
     if (zlib) zlib.zstdCompressSync = undefined;
@@ -282,6 +321,8 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
 
   await writeFile(join(profile, 'APPEND_SYSTEM.md'), 'release fixture personal supplement\n');
   await writeFile(join(cwd, 'AGENTS.md'), 'release fixture project supplement\n');
+  await mkdir(join(cwd, '.hush'));
+  await writeFile(join(cwd, '.hush', 'settings.json'), '{"codemode":true}', { mode: 0o600 });
   const profileBefore = (await readdir(profile)).sort();
   const authBefore = await readFile(auth);
   await good(['--no-session', '--print', 'release-private-only'], /^Loopback Codex reply\n$/);
@@ -290,7 +331,7 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   assert.deepEqual(await readdir(tmp), []);
   await absent(join(profile, 'runtime'));
   assert.match(JSON.stringify(seen[0]), /release-private-only/);
-  assert.deepEqual(seen[0].tools ?? [], []);
+  assert.deepEqual(requestTools(seen[0]), []);
 
   const status = () => good(['status', '--json']).then(JSON.parse);
   const first = await status();
@@ -299,6 +340,8 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   const id = JSON.parse(await good(['thread', 'new', '--json'])).id;
   await good(['--print', '--thread', id, 'release-first-durable'], /^Loopback Codex reply\n$/);
   assert.equal(seen[1].model, 'gpt-6-sol');
+  const directTools = ['read', 'bash', 'edit', 'write'];
+  assert.deepEqual(requestTools(seen[1]).map(tool => tool.name), directTools);
   await good(['auth', 'logout'], /no Hush-managed credential/);
   const relogin = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, 'Loopback Codex reply', 'login'], { cwd, env });
   assert.equal(relogin.code, 0, relogin.stdout + relogin.stderr);
@@ -354,6 +397,21 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   await good(['--print', '--thread', id, 'release-after-restart'], /^Loopback Codex reply\n$/);
   checkSelected(seen[3], /release-after-restart/);
   assert.match(JSON.stringify(seen[3].input), /release-first-durable/);
+  assert.deepEqual(requestTools(seen[3]).map(tool => tool.name), directTools);
+
+  // Enable on the host and restart the managed daemon. By the time it runs
+  // the script the embedded backend has been unlinked, with no Pi on PATH.
+  await writeFile(join(profile, 'settings.json'), '{"codemode":true}', { mode: 0o600 });
+  await stop(socket, join(profile, 'runtime'));
+  await good(['--no-session', '--print', 'release-private-with-codemode-enabled'], /^Loopback Codex reply\n$/);
+  assert.deepEqual(requestTools(seen[4]), []);
+  await writeFile(join(cwd, 'first.txt'), 'KEY=north\n');
+  await writeFile(join(cwd, 'second.txt'), 'KEY=south\n');
+  await good(['--print', '--thread', id, batchPrompt], /^Loopback Codex reply\n$/);
+  assert.deepEqual(requestTools(seen[5]).map(tool => tool.name), [...directTools, 'codemode']);
+  const batchResult = seen[6].input.find(item => item.call_id === 'call_release_batch' && item.type.endsWith('_output'));
+  assert.match(batchResult?.output ?? '', /Script completed[\s\S]*north, south/);
+  assert.doesNotMatch(batchResult.output, /KEY=/);
   await good(['auth', 'logout'], /no Hush-managed credential/);
   const afterLogout = await readFile(auth, 'utf8').catch(e => {
     if (e.code !== 'ENOENT') throw e;
@@ -361,7 +419,7 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   });
   assert.equal(JSON.parse(afterLogout || '{}')['openai-codex'], undefined);
   await bad(['--print', '--thread', id, 'release-after-logout'], /hush auth login/);
-  assert.equal(seen.length, 4);
+  assert.equal(seen.length, 7);
   assert.deepEqual(unexpected, []);
   await stop(socket, join(profile, 'runtime'));
   await absent(join(home, '.pi'));
