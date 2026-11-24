@@ -174,6 +174,28 @@ go build -o /tmp/hush-keyring-fixture ./app/cmd/hush
 HUSH_TEST_KEYRING_BINARY=/tmp/hush-keyring-fixture node --test app/test/keyring.test.mjs
 ```
 
+## Standalone configuration
+
+`/config` opens the persistent settings modal on a standalone host. It is also available as
+**Configuration** in the main command palette. **Default model** and
+**Default thinking effort** apply to newly created threads; `/model` continues to change the current
+thread. **Reasoning text** is independent: `expanded` shows supplied live and historical reasoning
+while leaving tool output folded, and `folded` retains the Ctrl+O behavior. Changes take effect
+without a backend restart and are stored in the backend host's private `~/.hush/settings.json`.
+
+```json
+{
+  "defaultProvider": "openrouter",
+  "defaultModel": "moonshotai/kimi-k3.1-pro",
+  "defaultThinkingLevel": "high",
+  "display": { "reasoning": "expanded" }
+}
+```
+
+The file must remain owned by the user and mode `0600`. Existing unrelated keys are preserved.
+Reasoning display cannot recover empty or redacted provider reasoning. Other already-connected
+clients reload the setting on their next configuration read or restart rather than receiving a push.
+
 ## Standalone Codemode
 
 Codemode is off by default. To enable it, add `"codemode": true` to the JSON object in

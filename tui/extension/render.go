@@ -50,8 +50,10 @@ type RenderContext struct {
 	MaxLines int
 	MaxBytes int
 	Theme    Theme
-	Expanded bool
-	Live     bool
+	Expanded bool // tool results and other detailed activity
+	// ReasoningExpanded controls supplied reasoning independently of tool details.
+	ReasoningExpanded bool
+	Live              bool
 }
 
 // Theme describes the current terminal palette and fill policy. Use semantic

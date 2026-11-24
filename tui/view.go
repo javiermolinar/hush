@@ -86,15 +86,25 @@ func (m *Model) View() tea.View {
 	w := m.width - 4
 	var slash []registeredAction
 	var below []displayRow
+	var dockTargets []int
+	var dockCursor *tea.Cursor
 	f.slashStart, f.slashEnd = m.height, m.height
 	continuation, filePicker := false, false
+	configDock := m.sheet != nil && m.sheet.config != nil
 	chrome := m.chromeRows(t, w)
 	listEnd := m.height - len(chrome)
 	var overlayRoom int
 	if len(m.overlays) != 0 {
 		overlayRoom = minOverlayBodyRows
 	}
-	if m.sheet != nil {
+	if configDock {
+		limit := min(12, max(6, m.height-4))
+		rows, targets, cursor := m.configDockRows(m.sheet, w, limit)
+		for _, row := range rows {
+			below = append(below, displayRow{text: row})
+		}
+		dockTargets, dockCursor = targets, cursor
+	} else if m.sheet != nil {
 		limit := m.dialogLimit(m.sheet)
 		if overlayRoom != 0 {
 			limit = min(limit, max(1, listEnd-1-max(1, m.height/4)-overlayRoom))
@@ -119,8 +129,13 @@ func (m *Model) View() tea.View {
 	below = append(below, chrome...)
 
 	editorRows, cursor := m.promptRows(t, w, slash)
+	fixedRows := 1
+	if configDock {
+		editorRows, cursor = nil, dockCursor
+		fixedRows = 0
+	}
 	var notice displayRow
-	free := m.height - 1 - len(editorRows) - len(below)
+	free := m.height - fixedRows - len(editorRows) - len(below)
 	var attachments []displayRow
 	if free > overlayRoom+1 && m.focusedDialog() == nil && (t.attaching || len(t.attachments) != 0) {
 		attachments = []displayRow{m.attachmentRow(t, w)}
@@ -142,7 +157,7 @@ func (m *Model) View() tea.View {
 		widgetBelow := m.widgetRows(t, w, x.BelowEditor, min(3, room-len(widgetAbove)))
 		below = append(widgetBelow, below...)
 	}
-	f.transcriptHeight = max(0, m.height-1-len(editorRows)-len(below)-len(widgetAbove)-len(queued)-noticeRows-len(attachments))
+	f.transcriptHeight = max(0, m.height-fixedRows-len(editorRows)-len(below)-len(widgetAbove)-len(queued)-noticeRows-len(attachments))
 	rows := m.transcript(t, w, f.transcriptHeight)
 	origin := 0
 	// Keep short transcripts under their intro. Once the viewport fills,
@@ -282,19 +297,32 @@ func (m *Model) View() tea.View {
 			paused = "output below"
 		}
 	}
-	f.ruleY = y
-	add(y, m.promptRule(t, w, paused, m.ruleHints(t, len(slash) > 0, filePicker)))
-	y++
-	if cursor != nil && m.focused {
-		cursor.Position.X += len(margin)
-		cursor.Position.Y += y
-		v.Cursor = cursor
-	}
-	for _, row := range editorRows {
-		add(y, row)
+	if !configDock {
+		f.ruleY = y
+		add(y, m.promptRule(t, w, paused, m.ruleHints(t, len(slash) > 0, filePicker)))
 		y++
+		if cursor != nil && m.focused {
+			cursor.Position.X += len(margin)
+			cursor.Position.Y += y
+			v.Cursor = cursor
+		}
+		for _, row := range editorRows {
+			add(y, row)
+			y++
+		}
 	}
-	for _, row := range below {
+	for i, row := range below {
+		if configDock && i == 0 {
+			f.ruleY = y
+			f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, 2, w
+			f.dialogY, f.dialogHeight = y, len(dockTargets)
+			f.dialogChoices = dockTargets
+			if cursor != nil && m.focused {
+				cursor.Position.X += len(margin)
+				cursor.Position.Y += y
+				v.Cursor = cursor
+			}
+		}
 		add(y, row)
 		y++
 	}
@@ -563,10 +591,21 @@ func (m *Model) ruleHints(t *threadState, slashes, files bool) []string {
 	if m.editor.value() != "" {
 		return []string{m.keyHint("enter", "send")}
 	}
-	if t.intro != nil && !t.intro.frozen && len(m.tabs) < 2 {
-		return []string{m.keyHint("/", "commands"), m.keyHint(m.actionBinding(m.host.actions[m.host.byID[switcherID]]), "threads"), m.keyHint("?", "all keys")}
+	settings := func(hints []string) []string {
+		model, modelOK := m.host.byID[x.ActionID(menusID+".model")]
+		thinking, thinkingOK := m.host.byID[x.ActionID(menusID+".thinking")]
+		if !modelOK || !thinkingOK || !m.eligible(m.host.actions[model], t.info.ID) || !m.eligible(m.host.actions[thinking], t.info.ID) {
+			return hints
+		}
+		return append(hints,
+			m.keyHint(m.actionBinding(m.host.actions[model]), "model"),
+			m.keyHint(m.actionBinding(m.host.actions[thinking]), "thinking"))
 	}
-	return []string{m.keyHint("/", "commands"), m.keyHint("?", "all keys")}
+	if t.intro != nil && !t.intro.frozen && len(m.tabs) < 2 {
+		hints := settings([]string{m.keyHint("/", "commands")})
+		return append(hints, m.keyHint(m.actionBinding(m.host.actions[m.host.byID[switcherID]]), "threads"), m.keyHint("?", "all keys"))
+	}
+	return append(settings([]string{m.keyHint("/", "commands")}), m.keyHint("?", "all keys"))
 }
 
 type cell struct{ x, y int }
@@ -686,6 +725,9 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 		inside := p.X >= f.dialogX && p.X < f.dialogX+f.dialogWidth && p.Y >= f.dialogY && p.Y < f.dialogY+f.dialogHeight
 		if inside && d.git != nil {
 			return m.gitDiffMouse(d, msg, p.Y-f.dialogY)
+		}
+		if inside && d.config != nil {
+			return m.configMouse(d, msg, p.Y-f.dialogY)
 		}
 		switch msg.(type) {
 		case tea.MouseClickMsg:

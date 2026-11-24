@@ -27,7 +27,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "image-preview", "queued-inputs"} {
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "image-preview", "queued-inputs", "expanded-reasoning"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -56,6 +56,16 @@ func TestFrameBudget(t *testing.T) {
 			}
 			if strings.HasPrefix(which, "long-") {
 				longTranscript(t, m, s)
+			}
+			if which == "expanded-reasoning" {
+				longTranscript(t, m, s)
+				for _, r := range s.entries {
+					for i := range r.entry.Record.Messages {
+						msg := &r.entry.Record.Messages[i]
+						msg.Blocks = append([]sdk.Block{{Type: "thinking", Text: "Check the implementation and preserve unrelated settings."}}, msg.Blocks...)
+					}
+				}
+				m.applySettings(sdk.SettingsSnapshot{Model: configModel().Model, ThinkingLevel: "high", Reasoning: sdk.ReasoningExpanded})
 			}
 
 			if which == "folded-tool-results" || which == "expanded-tool-results" {
@@ -151,6 +161,10 @@ func TestFrameBudget(t *testing.T) {
 				case "streaming":
 					stream.WriteString("func next() { println(42) }\n")
 					s.stream = detachStream(&sdk.Streaming{Blocks: []sdk.Block{{Type: "text", Text: stream.String()}}})
+					s.streamRevision++
+				case "expanded-reasoning":
+					stream.WriteString("Check the next implementation detail.\n")
+					s.stream = detachStream(&sdk.Streaming{Blocks: []sdk.Block{{Type: "thinking", Text: stream.String()}}})
 					s.streamRevision++
 				case "typing":
 					msg = tea.KeyPressMsg{Code: 'a', Text: "a"}

@@ -1,0 +1,24 @@
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ─ settings · this thread  default · tab switches scope ─────────────────────
+
+    thinking       off  low  high
+
+    model          fixture/one  ↵ pick
+
+  › reasoning      folded  expanded
+
+
+    Show reasoning text by default without expanding tool output.
+
+    ↑↓ move  ←→ change, applies now  tab scope  / models  u undo  esc close
+  dir workspace

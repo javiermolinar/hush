@@ -45,6 +45,8 @@ Faux: Now check the install instructions
 
 In the Go TUI, you can open threads in tabs. It caches transcript blocks and
 renders the visible window, rather than rewrapping the whole thread on each keystroke.
+Use `/config` to set the default model and thinking effort for new threads, and to show live and
+historical reasoning without expanding tool output. `/model` still changes only the current thread.
 
 On a supported standalone backend, click the `±` badge or use `/diff` or
 `Ctrl+X I D` to review the active thread’s trusted Git worktree. The review

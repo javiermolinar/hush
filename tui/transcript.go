@@ -34,6 +34,7 @@ type threadState struct {
 	runInputs                                                []sdk.ID
 	atStart, loadingOlder, loadingGap, pageError, olderError bool
 	following, expanded                                      bool
+	detailsSet, reasoningDefault                             bool
 	anchor                                                   rowAnchor
 	stream                                                   extension.Stream
 	tools                                                    []extension.Tool
@@ -90,6 +91,7 @@ type renderKey struct {
 	width               int
 	theme               uint64
 	expanded            bool
+	reasoning           bool
 	workspace           string
 	revision, viewEpoch uint64
 	context, navigation uint64
@@ -284,8 +286,14 @@ func (t *threadState) merge(values []sdk.Entry) []*record {
 
 func (t *threadState) index(id sdk.ID) int      { return indexEntry(t.ids, id) }
 func (t *threadState) shownIndex(id sdk.ID) int { return indexEntry(t.visibleIDs(), id) }
+func (t *threadState) reasoningVisible() bool {
+	if t.detailsSet || t.expanded {
+		return t.expanded
+	}
+	return t.reasoningDefault
+}
 func (t *threadState) visibleIDs() []sdk.ID {
-	if t.expanded {
+	if t.expanded || t.reasoningVisible() {
 		return t.detailShown
 	}
 	return t.shown
@@ -305,7 +313,7 @@ func indexEntry(ids []sdk.ID, id sdk.ID) int {
 
 func (m *Model) renderContext(t *threadState, width, lines int, live bool) extension.RenderContext {
 	return extension.RenderContext{Context: m.contextFor(t.info.ID), Width: width, MaxLines: lines, MaxBytes: recordBytes,
-		Theme: m.theme, Expanded: t.expanded, Live: live}
+		Theme: m.theme, Expanded: t.expanded, ReasoningExpanded: t.reasoningVisible(), Live: live}
 }
 
 func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
@@ -314,7 +322,7 @@ func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
 	}
 	shown := t.visibleIDs()
 	live := i == len(shown)
-	key := renderKey{owner: t.info.ID, width: width, theme: m.theme.Revision, expanded: t.expanded, workspace: t.info.Workspace}
+	key := renderKey{owner: t.info.ID, width: width, theme: m.theme.Revision, expanded: t.expanded, reasoning: t.reasoningVisible(), workspace: t.info.Workspace}
 	ctx := m.renderContext(t, width, recordRows, live)
 	if live {
 		key.revision = t.streamRevision
@@ -334,7 +342,8 @@ func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
 	r := t.entries[shown[i]]
 	key.entry = r.entry.Record.ID
 	ctx.Expanded = r.details(t)
-	key.expanded = ctx.Expanded
+	ctx.ReasoningExpanded = r.reasoningDetails(t)
+	key.expanded, key.reasoning = ctx.Expanded, ctx.ReasoningExpanded
 	if r.hasImages || t.hasImages && len(r.bursts) > 0 {
 		key.images = m.images.revision
 	}
@@ -376,6 +385,13 @@ func (r *record) details(t *threadState) bool {
 		return r.expanded
 	}
 	return t.expanded
+}
+
+func (r *record) reasoningDetails(t *threadState) bool {
+	if r.override && r.expandEpoch == t.expandEpoch {
+		return r.expanded
+	}
+	return t.reasoningVisible()
 }
 
 func (m *Model) recordContent(ctx extension.RenderContext, t *threadState, r *record) (extension.Content, []blockRange) {

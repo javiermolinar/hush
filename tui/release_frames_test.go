@@ -147,6 +147,26 @@ func TestReleaseFrames(t *testing.T) {
 				t.Fatal("tab band or active tab did not retain its separate surface")
 			}
 
+			thought := entry(8, "assistant", "")
+			thought.Messages[0].Blocks = []sdk.Block{{Type: "thinking", Text: "Check the settings flow before changing the defaults."}}
+			s.merge([]sdk.Entry{thought})
+			m.applySettings(sdk.SettingsSnapshot{Model: configModel().Model, ThinkingLevel: "high", Reasoning: sdk.ReasoningExpanded})
+			if body := shot("reasoning-expanded"); !strings.Contains(body, "Check the settings flow") {
+				t.Fatal("expanded reasoning was not captured")
+			}
+			fixture := &configFixture{settings: configModel()}
+			m.backend = fixture
+			m.Update(m.menuProbe()())
+			m.Update(m.loadSettings()())
+			m.finishWork(m.runAction(m.host.byID[x.ActionID(menusID+".config")], "")().(workMsg))
+			configDialog := m.focusedDialog()
+			currentModel, _, _ := m.configCurrent(configDialog)
+			configDialog.config.levels[currentModel] = []string{"off", "low", "high", "max"}
+			if body := shot("config"); !strings.Contains(body, "settings") || !strings.Contains(body, "reasoning") || !strings.Contains(body, "folded") {
+				t.Fatal("configuration sheet was not captured")
+			}
+			press(m, tea.KeyEscape, 0)
+
 			enableGitDiffFixture(m, s)
 			s.info.Branch = s.gitDiff.summary.Branch
 			m.openGitDiff(m.route(m.active, coreID))

@@ -132,6 +132,9 @@ const Checkpoints Features = 1 << 13
 // GitDiff enables read-only review of a thread's Git worktree.
 const GitDiff Features = 1 << 14
 
+// Settings enables persistent host defaults and display preferences.
+const Settings Features = 1 << 15
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.
@@ -153,6 +156,7 @@ type ClientResult struct {
 	Schedule         sdk.ScheduleItem
 	Checkpoints      []sdk.Checkpoint
 	Checkpoint       sdk.Checkpoint
+	Settings         *sdk.SettingsSnapshot
 	RewindPreview    sdk.RewindPreview
 	Rewind           sdk.RewindResult
 	Modes            []Choice
@@ -266,6 +270,16 @@ type ConfigureCatalog struct {
 }
 
 func (ConfigureCatalog) clientOperation() {}
+
+// ReadSettings reads persistent defaults and display preferences.
+type ReadSettings struct{}
+
+func (ReadSettings) clientOperation() {}
+
+// WriteSettings replaces only the supplied settings and returns the committed snapshot.
+type WriteSettings struct{ Change sdk.SettingsChange }
+
+func (WriteSettings) clientOperation() {}
 
 // Compact admits a compaction task, returning its ID, not its result.
 type Compact struct {

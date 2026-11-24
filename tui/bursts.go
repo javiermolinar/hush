@@ -105,7 +105,7 @@ func (t *threadState) projectionAdd(ids []sdk.ID, appendOnly bool) {
 	}
 	t.shown = slices.Replace(t.shown, from, to, visible...)
 	t.detailShown = slices.Replace(t.detailShown, detailFrom, detailTo, details...)
-	if r := t.entries[t.anchor.id]; !t.following && r != nil && r.burstAnchor != "" && !r.visible && (!t.expanded || !r.readableThought) {
+	if r := t.entries[t.anchor.id]; !t.following && r != nil && r.burstAnchor != "" && !r.visible && (!t.reasoningVisible() || !r.readableThought) {
 		t.anchor = rowAnchor{id: r.burstAnchor}
 	}
 }

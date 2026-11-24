@@ -117,7 +117,7 @@ func messageBlocks(ctx x.RenderContext, role string, blocks []sdk.Block) x.Conte
 				out = append(out, x.Block{Text: b.Text, Tone: x.Muted})
 			}
 		case "thinking":
-			if b.Text != "" && ctx.Expanded {
+			if b.Text != "" && ctx.ReasoningExpanded {
 				out = append(out, x.Block{Text: b.Text, Format: x.Markdown, Tone: x.Muted})
 			}
 		}

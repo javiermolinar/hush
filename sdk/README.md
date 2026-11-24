@@ -39,6 +39,10 @@ include image bytes. See the [wire contract](../protocol/v1/images.md).
 
 ## Native model catalog
 
+Offer `settings: [sdk.SettingsVersion]` when the host supports `/config`. `Settings` reads the
+persistent snapshot and `ConfigureSettings` applies a partial `SettingsChange`; both return the
+committed defaults and reasoning-display mode. Model defaults affect new threads only.
+
 Offer `modelCatalog: [sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion]`
 in `ClientOptions.Capabilities` to use the [native model picker](../protocol/v1/model-catalog.md).
 `ModelCatalog` lists the default rows. `SearchModelCatalog` requires version 2 or

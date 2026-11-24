@@ -24,7 +24,7 @@ import { threadTitleGenerator } from "./thread-title-model.js";
 import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
-import { readStandaloneSettings, standaloneModelDefault } from "./standalone-settings.js";
+import { readStandaloneSettings, StandaloneSettingsHost, standaloneModelDefault, standaloneSettingsView } from "./standalone-settings.js";
 import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
 import { runWorkspaceTrustCommand, WorkspaceTrust, WorkspaceWorkTrust } from "./workspace-trust.js";
@@ -155,7 +155,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const gate = managed && await activeCutover(managed);
     await privateDirectory(directory, !config.ephemeral && !gate);
     if (config.dataDir) unlockRuntime = await dataLock(config.dataDir);
-    const localSettings = standalone && (config.dataDir || !config.faux && !config.model)
+    let localSettings = standalone && (config.dataDir || !config.faux && !config.model)
       ? await readStandaloneSettings(config.agentDir) : {};
     const allowLegacy = managed && !gate && localSettings.allowLegacyStore === true;
     const manifest = config.dataDir ? await checkStoreProfile(config.dataDir, standalone, allowLegacy ? "either" : undefined) : undefined;
@@ -205,11 +205,12 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       const project = await dirs.load(cwd);
       return { ...selection(project), extensions: [...base, ...ordered, ...(project.mcp ? [project.mcp] : [])] };
     };
-    const nativeSelection = standalone && !config.faux && !config.model
+    const nativeSelection = () => standalone && !config.faux && !config.model
       ? standaloneModelDefault(localSettings, runtime) : undefined;
-    const nativeDefault = config.faux ? fauxModel : config.model ?? nativeSelection?.model ?? hushDefaultModel;
+    const nativeDefault = () => config.faux ? fauxModel : config.model ?? nativeSelection()?.model ?? hushDefaultModel;
+    if (standalone && !config.faux && !config.model) standaloneSettingsView(localSettings, runtime);
     const defaultModel = async (settings: SettingsManager) => {
-      if (standalone) return { model: nativeDefault, thinkingLevel: config.model ? "off" as const : nativeSelection?.thinkingLevel ?? "off" as const };
+      if (standalone) return { model: nativeDefault(), thinkingLevel: config.model ? "off" as const : nativeSelection()?.thinkingLevel ?? "off" as const };
       const initial = await findInitialModel({
         scopedModels: resolveModelScopeFromModels(settings.getSettings().enabledModels ?? [], modelRegistry.getAvailable()).scopedModels,
         isContinuing: false,
@@ -341,9 +342,11 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }
     const modelCatalog = standalone ? nativeModelCatalog(harness, runtime, modelRegistry, nativeDefault) : undefined;
     const gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
+    const settingsHost = standalone && config.dataDir && !config.faux && !config.model
+      ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff,
       hushProfile: standalone ? 1 : undefined, nativeStop: standalone ? 1 : undefined,
-      workspaceWorkTrust: workTrust ? 1 : undefined,
+      workspaceWorkTrust: workTrust ? 1 : undefined, settings: settingsHost,
       clientEnvironment: standalone ? 1 : undefined, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });
     await server.listen(config.socket);

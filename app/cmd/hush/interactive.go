@@ -44,7 +44,7 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		"modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion},
 		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceVersion},
 		"images": {sdk.ImagesVersion}, "nativeStop": {sdk.NativeStopVersion}, "schedules": {sdk.SchedulesVersion},
-		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion},
+		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "settings": {sdk.SettingsVersion},
 	}
 	var environment sdk.ClientEnvironment
 	if profile == backendstart.Pi {

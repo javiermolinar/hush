@@ -9,6 +9,7 @@ import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, mode
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
+import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
 import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
@@ -35,6 +36,7 @@ export type HostCapabilities = Readonly<{
   piEvents?: PiEventsHost; intro?: IntroHost; threadDirectory?: ThreadDirectoryHost; images?: ImagesHost;
   hushProfile?: 1; nativeStop?: 1; modelCatalog?: ModelCatalogHost; storeIdentity?: StoreIdentity; clientEnvironment?: 1;
   runtime?: RuntimeHost;
+  settings?: SettingsHost;
   workspaceWorkTrust?: 1;
   schedules?: SchedulesHost;
   checkpoints?: CheckpointsHost;
@@ -162,6 +164,7 @@ class Peer {
   #modelCatalog?: { host: ModelCatalogHost; version: ModelCatalogVersion };
   #storeIdentity?: StoreIdentity;
   #runtime?: RuntimeHost;
+  #settings?: SettingsHost;
   #nativeStop = false;
   #clientEnvironment = false;
   #introPending = false;
@@ -238,6 +241,14 @@ class Peer {
           if (Object.keys(req.params).length !== 0) throw new WireError("invalid_request");
           const runtime = this.#runtime;
           this.#write(encode({ ...identity(req), ok: true, result: {} }), () => runtime.stop());
+          return;
+        }
+        if (parts[1] === "settings" && this.#settings) {
+          if (parts[2] !== "get" && parts[2] !== "set") throw new WireError("unknown_method");
+          if (parts[2] === "get" && Object.keys(req.params).length !== 0) throw new WireError("invalid_request");
+          const result = parts[2] === "get" ? await this.#settings.get() : await this.#settings.set(parseSettingsChange(req.params));
+          checkSettings(result);
+          this.#write(encode({ ...identity(req), ok: true, result }));
           return;
         }
         if (parts[1] === "storeIdentity" && this.#storeIdentity) {
@@ -407,6 +418,10 @@ class Peer {
         if (this.capabilities?.runtime && req.params.capabilities?.runtime?.includes(runtimeVersion)) {
           capabilities.runtime = runtimeVersion;
           this.#runtime = this.capabilities.runtime;
+        }
+        if (this.capabilities?.settings && req.params.capabilities?.settings?.includes(settingsVersion)) {
+          capabilities.settings = settingsVersion;
+          this.#settings = this.capabilities.settings;
         }
         if (this.capabilities?.clientEnvironment === clientEnvironmentVersion &&
             req.params.capabilities?.clientEnvironment?.includes(clientEnvironmentVersion)) {

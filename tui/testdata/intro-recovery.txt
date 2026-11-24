@@ -17,6 +17,6 @@
 
 
 
-  ─────────────────────────────────────── / commands  ctrl+t threads  ? all keys
+  ───── / commands  ctrl+l model  shift+tab thinking  ctrl+t threads  ? all keys
   main › ask anything
   ◌ thread 1

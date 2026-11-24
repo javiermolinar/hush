@@ -37,6 +37,7 @@ type dialog struct {
 	output                      *outputViewer
 	review                      bool
 	modelSearch                 *modelSearchState
+	config                      *configPanel
 	git                         *gitReview
 	workTrust                   *workspaceTrustDialog
 	result                      func(tea.Model) (any, bool)
@@ -397,6 +398,9 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	chord := ""
 	if key {
 		chord = normalizeChord(k.String())
+		if d.config != nil {
+			return m.configInput(d, msg, chord)
+		}
 		if chord == "esc" {
 			if d.workTrust != nil {
 				return m.workspaceTrustKey(d, chord)
@@ -406,6 +410,8 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 			}
 			return m.closeDialog(d, nil, false)
 		}
+	} else if d.config != nil {
+		return m.configInput(d, msg, chord)
 	}
 	if m.width < 40 || m.height < 12 || m.currentFrame() && m.frame.dialogToken == d.token && m.frame.dialogHeight == 0 {
 		return nil // Escape still dismisses an undrawn dialog

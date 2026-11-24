@@ -330,3 +330,29 @@ test("SIGKILL yields a fresh epoch, a stale cursor and one original admission ac
   second.child.kill("SIGTERM");
   assert.deepEqual(await second.dead, [0, null]);
 });
+
+test("settings capability validates changes and detached replies", async t => {
+  let current = { model: { provider: "fixture", modelId: "one" }, thinkingLevel: "high", reasoning: "folded" };
+  const calls = [];
+  const { path } = await fixture(t, { server: { capabilities: { settings: {
+    get: async () => current,
+    set: async change => { calls.push(change); return current = { ...current, ...change }; },
+  } } } });
+  const wire = await dial(path);
+  t.after(() => wire.close());
+  assert.deepEqual(result(await wire.send("hello", { versions: [1], capabilities: { settings: [1] } })).capabilities, { settings: 1 });
+  assert.deepEqual(result(await wire.send("ext.settings.get", {})), current);
+  const change = { model: { provider: "fixture", modelId: "two" }, thinkingLevel: "low", reasoning: "expanded" };
+  assert.deepEqual(result(await wire.send("ext.settings.set", change)), change);
+  assert.deepEqual(calls, [change]);
+  for (const params of [{}, { reasoning: "live" }, { model: { provider: "fixture" } }, { unknown: true }]) {
+    code(await wire.send("ext.settings.set", params), "invalid_request");
+  }
+  code(await wire.send("ext.settings.get", { unexpected: true }), "invalid_request");
+  code(await wire.send("ext.settings.unknown", {}), "unknown_method");
+  assert.equal(calls.length, 1);
+  const plain = await dial(path);
+  t.after(() => plain.close());
+  result(await plain.send("hello", { versions: [1] }));
+  code(await plain.send("ext.settings.get", {}), "unsupported_capability");
+});

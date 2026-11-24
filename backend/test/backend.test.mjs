@@ -900,3 +900,52 @@ test("invocation-private memory leaves no persisted transcript, backups or log o
     assert.doesNotMatch(host.stderr, new RegExp(marker));
   }
 });
+
+test("standalone settings persist model defaults and reasoning display without rewriting existing threads", async t => {
+  const { config } = await layout(t);
+  const models = ["fixture-one", "fixture-two"].map(id => ({ id, name: id, reasoning: true, contextWindow: 20000, maxTokens: 500 }));
+  await json(join(config.agentDir, "models.json"), { providers: { fixture: {
+    baseUrl: "http://127.0.0.1:9/v1", api: "openai-completions", models,
+  } } });
+  await json(join(config.agentDir, "settings.json"), {
+    defaultProvider: "fixture", defaultModel: "fixture-one", defaultThinkingLevel: "high", codemode: true,
+  });
+  const real = { ...config, profile: "hush", faux: false };
+  let app = await startBackend(real);
+  let wire = await dial(config.socket);
+  t.after(async () => { wire.close(); await app.close(); });
+  const hello = ok(await wire.send("hello", { versions: [1], capabilities: { settings: [1], modelCatalog: [3] } }));
+  assert.equal(hello.capabilities.settings, 1);
+  assert.deepEqual(ok(await wire.send("ext.settings.get", {})), {
+    model: { provider: "fixture", modelId: "fixture-one" }, thinkingLevel: "high", reasoning: "folded",
+  });
+  assert.deepEqual(ok(await wire.send("ext.settings.set", { reasoning: "expanded" })), {
+    model: { provider: "fixture", modelId: "fixture-one" }, thinkingLevel: "high", reasoning: "expanded",
+  });
+  const changed = ok(await wire.send("ext.settings.set", {
+    model: { provider: "fixture", modelId: "fixture-two" }, thinkingLevel: "low",
+  }));
+  assert.deepEqual(changed, { model: { provider: "fixture", modelId: "fixture-two" }, thinkingLevel: "low", reasoning: "expanded" });
+  const catalog = ok(await wire.send("ext.modelCatalog.list", { threadId: String(app.root.id) }));
+  assert.deepEqual(catalog.current, { provider: "fixture", modelId: "fixture-one" });
+  assert.deepEqual(catalog.default, { provider: "fixture", modelId: "fixture-two" });
+  const created = ok(await wire.send("thread.new", {}));
+  const state = ok(await wire.send("subscribe", { threadId: created.id }));
+  assert.deepEqual(state.state.agent.model, { provider: "fixture", modelId: "fixture-two" });
+  assert.equal(state.state.agent.thinkingLevel, "low");
+  code(await wire.send("ext.settings.set", { thinkingLevel: "max" }), "invalid_request");
+  const saved = JSON.parse(await readFile(join(config.agentDir, "settings.json"), "utf8"));
+  assert.equal(saved.codemode, true);
+  assert.equal(saved.defaultModel, "fixture-two");
+  assert.equal(saved.defaultThinkingLevel, "low");
+  assert.deepEqual(saved.display, { reasoning: "expanded" });
+  assert.equal((await lstat(join(config.agentDir, "settings.json"))).mode & 0o077, 0);
+  wire.close();
+  await app.close();
+  app = await startBackend(real);
+  wire = await dial(config.socket);
+  ok(await wire.send("hello", { versions: [1], capabilities: { settings: [1] } }));
+  assert.deepEqual(ok(await wire.send("ext.settings.get", {})), changed);
+  wire.close();
+  await app.close();
+});

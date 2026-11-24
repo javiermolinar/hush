@@ -11,7 +11,7 @@ const projectRef = ({ provider, modelId }: ModelRef): ModelRef => ({ provider, m
 const publicRef = (ref: ModelRef) => publicCatalogText(ref.provider) && publicCatalogText(ref.modelId);
 
 export function nativeModelCatalog(h: Harness, runtime: ModelRuntime, registry: ModelRegistry,
-    defaultModel: ModelRef): ModelCatalogHost {
+    defaultModel: () => ModelRef): ModelCatalogHost {
   async function list(threadId: string | undefined, signal: AbortSignal, query = ""): Promise<Catalog> {
     let current: ModelRef | null = null;
     if (threadId !== undefined) {
@@ -21,7 +21,7 @@ export function nativeModelCatalog(h: Harness, runtime: ModelRuntime, registry: 
       const stored = (await h.snapshot(AgentDoc, id, ctx))?.model;
       if (stored) current = projectRef(stored);
     }
-    const fallback = projectRef(defaultModel);
+    const fallback = projectRef(defaultModel());
     const priority: CatalogRow[] = [], usable: CatalogRow[] = [], disabled: CatalogRow[] = [];
     const seen = new Set<string>();
     const auth = new Map<string, CatalogReason | null>();
