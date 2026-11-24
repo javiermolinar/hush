@@ -10,7 +10,7 @@ import { dial } from "../../server/test/client.mjs";
 
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
 
-test("keyring unavailable fails closed; a live host does not switch stores", { timeout: 12_000 }, async t => {
+test("keyring unavailable fails closed; a live host does not switch stores", { timeout: 60_000 }, async t => {
   const root = await mkdtemp("/tmp/hkr-missing-");
   const profile = join(root, ".hush"), dir = join(profile, "runtime");
   const choice = join(profile, "credential-store"), auth = join(profile, "auth.json");
@@ -24,9 +24,12 @@ test("keyring unavailable fails closed; a live host does not switch stores", { t
     HUSH_KEYRING_HELPER: join(root, "missing-helper") };
   await Promise.all([writeFile(choice, "keyring\n", { mode: 0o600 }), writeFile(auth, old, { mode: 0o600 })]);
   const authCommand = action => new Promise((resolve, reject) => {
-    execFile(process.execPath, [bundle, "auth", action], { cwd: root, env, timeout: 5000 }, (err, stdout, stderr) => {
-      if (err && typeof err.code !== "number") reject(err);
-      else resolve({ code: err?.code ?? 0, stdout, stderr });
+    // Bound the whole fixture process, including cold bundle startup on CI.
+    // A timeout or signal is not the expected fail-closed status (exit 1).
+    execFile(process.execPath, [bundle, "auth", action], { cwd: root, env, timeout: 15_000, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
+      if (err && (err.killed || err.signal || typeof err.code !== "number")) {
+        reject(new Error(`auth ${action} did not exit normally (${err.signal ?? err.code ?? "unknown"})`, { cause: err }));
+      } else resolve({ code: err?.code ?? 0, stdout, stderr });
     });
   });
   const stop = [];
