@@ -8,7 +8,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -18,7 +17,8 @@
   ── go  copy     ────────────────────────
     func main() { println(42) }
   ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────────────────
-  you › check @ma                                                   enter send
+  ────────────────────────────────────────────────────────────────── esc close
+  you › check @ma
   Workspace files · loading
   › main.go
+  dir workspace

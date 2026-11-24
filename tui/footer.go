@@ -16,6 +16,8 @@ import (
 
 const footerID = "hush/footer"
 const activateTabID x.ActionID = footerID + ".activate"
+const usageID x.ActionID = footerID + ".usage"
+const openUsageOp x.LocalOp = "usage.open"
 const switcherID x.ActionID = "hush/menus.switch"
 const maxOpenTabs = 24
 const compactFooterWidth = 58
@@ -89,13 +91,8 @@ func workspaceLabel(path string) string {
 }
 
 func footerRegistration() x.Registration {
-	value := func(key string, slot x.SegmentSlot, order, priority int, f func(x.Thread) string) x.Segment {
-		return x.Segment{Key: key, Slot: slot, Order: order, Priority: priority, Render: func(c x.RenderContext) x.Line {
-			if s := f(c.Thread); s != "" {
-				return x.Line{{Text: s, Tone: x.Muted}}
-			}
-			return nil
-		}}
+	usageSpan := func(text string, tone x.Tone) x.Line {
+		return x.Line{{Text: text, Tone: tone, Action: x.ActionRef{ID: usageID}, Hint: "show usage details"}}
 	}
 	return x.Registration{ID: footerID, APIVersion: x.APIVersion, Actions: []x.Action{
 		{ID: activateTabID, Title: "Previous tab", Binding: x.Binding{Direct: "ctrl+[", Leader: "["}, Available: func(ctx x.Context) bool { return ctx.ActiveThreadID != "" }, Run: func(ctx x.Context, v x.Invocation) x.Outcome {
@@ -108,14 +105,17 @@ func footerRegistration() x.Registration {
 			}
 			return x.Outcome{x.Client{Op: x.Switch{ThreadID: id}}}
 		}},
+		{ID: usageID, Title: "Usage details", Binding: x.Binding{Leader: "i u"}, Slash: &x.Slash{Name: "usage"},
+			Available: func(c x.Context) bool { return c.Thread.ID.Valid() }, Run: func(x.Context, x.Invocation) x.Outcome {
+				return x.Outcome{x.Local{Op: openUsageOp}}
+			}},
 	}, Segments: []x.Segment{
-		value("branch", x.StatusLeft, 10, 15, func(t x.Thread) string {
-			if t.Branch == "" {
-				return ""
+		{Key: "branch", Slot: x.StatusLeft, Order: 10, Priority: 35, Render: func(c x.RenderContext) x.Line {
+			if c.Thread.Branch == "" {
+				return nil
 			}
-			return "⎇ " + t.Branch
-		}),
-		value("mode", x.StatusLeft, 20, 20, func(t x.Thread) string { return t.Mode }),
+			return x.Line{{Text: ansi.Truncate("⎇ "+oneLine(c.Thread.Branch), max(4, c.Width/3), "…"), Tone: x.Muted}}
+		}},
 		{Key: "model", Slot: x.StatusLeft, Order: 30, Priority: 46, Render: func(c x.RenderContext) x.Line {
 			t := c.Thread
 			if t.Model.ModelID == "" {
@@ -133,11 +133,7 @@ func footerRegistration() x.Registration {
 			if !v.Known || v.Window == 0 {
 				return nil
 			}
-			limit := min(c.Thread.ContextThreshold, v.Window)
-			if limit == 0 {
-				limit = v.Window
-			}
-			ratio := float64(v.Tokens) / float64(limit)
+			ratio := float64(v.Tokens) / float64(contextLimit(c.Thread))
 			p := int(min(9.99, ratio) * 100)
 			filled := min(6, max(0, int(ratio*6+0.5)))
 			if v.Tokens != 0 {
@@ -157,21 +153,37 @@ func footerRegistration() x.Registration {
 			if c.Width >= compactFooterWidth {
 				label = fmt.Sprintf("ctx %s%s %s", strings.Repeat("▰", filled), strings.Repeat("▱", 6-filled), percent)
 			}
-			return x.Line{{Text: label, Tone: tone}}
+			return usageSpan(label, tone)
 		}},
-		value("tokens", x.StatusRight, 20, 5, func(t x.Thread) string {
-			if t.Usage.TotalTokens == 0 {
-				return ""
+		{Key: "cost", Slot: x.StatusRight, Order: 30, Priority: 43, Render: func(c x.RenderContext) x.Line {
+			usage := c.Thread.Usage
+			if usage.CostUSD == 0 && usage.TotalTokens == 0 {
+				return nil
 			}
-			return tokenLabel(t.Usage.TotalTokens)
-		}),
-		value("cost", x.StatusRight, 30, 10, func(t x.Thread) string {
-			if t.Usage.CostUSD == 0 && t.Usage.TotalTokens == 0 {
-				return ""
-			}
-			return fmt.Sprintf("$%.2f", t.Usage.CostUSD)
-		}),
+			return usageSpan(fmt.Sprintf("$%.2f", usage.CostUSD), x.Muted)
+		}},
 	}}
+}
+
+func contextLimit(t x.Thread) uint64 {
+	if t.ContextThreshold != 0 {
+		return min(t.ContextThreshold, t.ContextUse.Window)
+	}
+	return t.ContextUse.Window
+}
+
+func (m *Model) openUsage(r ownerRoute, t *threadState, budget *int) tea.Cmd {
+	thread := m.footerThread(t)
+	usage := thread.Usage
+	text := fmt.Sprintf("Total tokens: %d\nSpend: $%.2f", usage.TotalTokens, usage.CostUSD)
+	if v := thread.ContextUse; v.Known && v.Window > 0 {
+		used := strconv.FormatUint(v.Tokens, 10)
+		if v.Estimated {
+			used = "~" + used
+		}
+		text += fmt.Sprintf("\n\nCurrent context: %s of %d tokens", used, contextLimit(thread))
+	}
+	return m.openDialog(r, x.ReviewDialog{Title: "Usage details", Text: text}, budget)
 }
 
 func tokenLabel(n uint64) string {
@@ -195,10 +207,38 @@ func threadTitle(t x.Thread) string {
 	return threadLabel(t.ID)
 }
 
+// Titles are chrome, not prose. Reserve the ellipsis and keep only whole
+// words rather than cutting through a word or a double-width character.
+func fitTitle(title string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if stringWidth(title) <= width {
+		return title
+	}
+	var out strings.Builder
+	room := width - stringWidth("…")
+	for word := range strings.FieldsSeq(title) {
+		n := stringWidth(word)
+		if out.Len() != 0 {
+			n++
+		}
+		if n > room {
+			break
+		}
+		if out.Len() != 0 {
+			out.WriteByte(' ')
+		}
+		out.WriteString(word)
+		room -= n
+	}
+	return out.String() + "…"
+}
+
 func tabStatus(s x.ThreadStatus) (string, x.Tone) {
 	switch s {
 	case x.Running:
-		return "●", x.Accent
+		return "●", x.Plain
 	case x.Parked:
 		return "◐", x.Warning
 	case x.Scheduled:
@@ -245,28 +285,22 @@ func (m *Model) segmentRow(t *threadState, w int, left x.SegmentSlot) displayRow
 	if left == x.StatusLeft {
 		registered = m.host.statusSegments
 		ctx.Thread = m.footerThread(t)
-		repo := workspaceLabel(ctx.Thread.Workspace)
-		repoWidth := w / 3
-		if w < compactFooterWidth && ctx.Thread.Model.ModelID != "" && ctx.Thread.ContextUse.Known {
-			repoWidth = w / 5
+		dir := workspaceLabel(ctx.Thread.Workspace)
+		if dir == "" && ctx.Thread.Workspace != "" {
+			dir = oneLine(filepath.Clean(ctx.Thread.Workspace))
 		}
-		repoLabel := ansi.Truncate(repo, max(1, repoWidth), "…")
-		if len(m.tabs) < 2 && t.info.ID != "" {
+		if dir != "" {
+			room := max(8, w/3)
+			if w >= compactFooterWidth {
+				room += len("dir ")
+			}
+			add("hush/workspace", 45, -90, m.control(ansi.Truncate("dir "+dir, room, "…")))
+		}
+		if len(m.tabs) < 2 && t.info.ID != "" && (t.info.Title != "" || dir == "") {
 			glyph, tone := tabStatus(t.info.Status)
-			if t.info.Status == x.Running || t.info.Status == x.Idle || t.info.Status == x.Done {
-				tone = x.Accent
-			}
-			label, priority := ansi.Truncate(threadTitle(ctx.Thread), max(2, w/2-2), "…"), 28
-			if t.info.Title == "" && repoLabel != "" {
-				label, priority = repoLabel, 45
-				if w >= compactFooterWidth || !ctx.Thread.ContextUse.Known {
-					label = ansi.Truncate(label+" #"+string(t.info.ID), max(2, w/2-2), "…")
-				}
-				repoLabel = ""
-			}
-			add("hush/thread", priority, -100, paint(tone, glyph)+" "+m.control(label))
+			label := fitTitle(threadTitle(ctx.Thread), max(2, w/2-2))
+			add("hush/thread", 28, -100, paint(tone, glyph)+" "+m.control(label))
 		}
-		add("hush/workspace", 45, -90, m.control(repoLabel))
 		if t.info.Archived {
 			add("hush/archive", 25, -85, paint(x.Muted, "archived"))
 		}
@@ -369,36 +403,30 @@ func (m *Model) tabItem(id sdk.ID, w int) displayRow {
 	state := m.threads[id]
 	t := state.info
 	glyph, tone := tabStatus(t.Status)
-	baseTone := x.Plain
-	if id == m.active {
-		baseTone = x.Accent
-	}
 	if id == "" {
 		glyph = "+"
 	}
-	label := threadTitle(t)
+	fork := ""
 	if t.Forked {
-		label = "⑂ " + label
+		fork = "⑂ "
 	}
-	row := displayRow{text: paint(tone, glyph) + " " + paint(baseTone, ansiCut(label, max(1, w-4)))}
-	if room := w - stringWidth(row.text) - 1; room > 5 {
-		mergeRow(&row, m.segmentRow(state, room, x.Tab), " ")
+	label := fork + fitTitle(threadTitle(t), max(1, w-4-stringWidth(fork)))
+	ink := ""
+	if id == m.active {
+		label = "\x1b[1m" + label + "\x1b[22m"
+		ink = m.palette.activeTab
+	} else if t.Status == x.Parked {
+		ink = m.palette.parkedTab
 	}
-	color := m.palette.soft
-	if id == m.active && m.theme.Fills {
-		if dark := blendPalette(m.palette.background, m.palette.colors[4], 0.26); dark != nil {
-			color = dark
-		}
-	} else if t.Status == x.Parked && m.theme.Fills {
-		if dark := blendPalette(m.palette.background, m.palette.colors[3], 0.20); dark != nil {
-			color = dark
-		}
+	row := displayRow{text: paint(tone, glyph) + " " + label}
+	if room := w - stringWidth(row.text) - 2; room > 5 {
+		mergeRow(&row, m.segmentRow(state, room-1, x.Tab), " ")
 	}
 	for i := range row.hits {
 		row.hits[i].first++
 		row.hits[i].last++
 	}
-	row.text = fill(" "+row.text+" ", color)
+	row.text = surface(" "+row.text+" ", ink)
 	if id != "" && id != m.active {
 		row.hits = append(row.hits, spanHit{0, stringWidth(row.text), x.ActionRef{ID: activateTabID, Target: string(id)}, "switch to " + threadTitle(t)})
 	}
@@ -429,7 +457,7 @@ func (m *Model) tabLayout(w int) displayRow {
 			chosen[i] = true
 		}
 	}
-	var out displayRow
+	out := displayRow{tabBand: true}
 	hidden := 0
 	for i, row := range rows {
 		if chosen[i] {
@@ -440,7 +468,7 @@ func (m *Model) tabLayout(w int) displayRow {
 	}
 	if hidden > 0 {
 		s := "+" + strconv.Itoa(hidden)
-		mergeRow(&out, displayRow{text: paint(x.Accent, s), hits: []spanHit{{0, stringWidth(s), x.ActionRef{ID: switcherID}, "show threads"}}}, " ")
+		mergeRow(&out, displayRow{text: m.control(s), hits: []spanHit{{0, stringWidth(s), x.ActionRef{ID: switcherID}, "show threads"}}}, " ")
 	}
 	return out
 }

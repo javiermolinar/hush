@@ -222,13 +222,14 @@ tools are **not** a sandbox from other processes running as the same user.
 
 ## Thread titles and worktrees
 
-The default title is an excerpt of the first committed user message. For automatic
-names, run a persistent backend with `--thread-title-model provider/small-model`
-(or set `"thread-title-model"` in its config). This opts in to sending bounded excerpts
-of the first prompt and answer to that configured provider after a committed answer.
-No tools, system context, or image bytes are sent with that request. It is best-effort:
-new native chats can claim one attempt in Durable, and do not replay it after restart.
-Manual names win. Without the option, no title model is called.
+The backend derives a short topic from the first completed exchange, using the
+first prompt as a provisional label until then. This runs locally and the settled
+title is saved. For model-written titles, run a persistent backend with
+`--thread-title-model provider/small-model` (or set `"thread-title-model"` in its config).
+This opts in to sending bounded excerpts of the first prompt and answer to the
+configured provider. No tools, system context, or image bytes are sent. The request
+is best-effort: new native chats can claim one attempt in Durable, and do not replay
+it after restart. Manual names win. Without the option, no title model is called.
 
 In standalone Hush, grant consent explicitly on the backend host with
 `hush trust grant --cwd PATH`. Use `status` to inspect it and `revoke` to remove it.

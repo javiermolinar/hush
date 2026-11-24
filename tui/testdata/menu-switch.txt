@@ -2,7 +2,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -20,3 +19,4 @@
     workspace unknown · ◌ workspace #1  idle · # Answer  See [the docs](https:
     workspace unknown ·   ⑂ ◌ thread 14  from #1 ·
   enter choose  ↑↓ move  esc close
+  dir workspace

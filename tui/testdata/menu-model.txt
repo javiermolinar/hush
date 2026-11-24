@@ -4,7 +4,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -20,3 +19,4 @@
   › Type to filter
   › fake/reasoner  Reasoning
   enter choose  ↑↓ move  esc close
+  dir workspace

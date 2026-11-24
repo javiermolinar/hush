@@ -95,8 +95,8 @@ type renderKey struct {
 	context, navigation uint64
 	images              uint64
 
-	speakerBreak bool
-	forkHint     bool
+	speakerBreak    bool
+	first, forkHint bool
 }
 type blockCache struct {
 	key  renderKey
@@ -108,10 +108,10 @@ type spanHit struct {
 	hint        string
 }
 type displayRow struct {
-	text  string
-	hits  []spanHit
-	user  bool
-	image *imageDemand
+	text                string
+	hits                []spanHit
+	user, card, tabBand bool
+	image               *imageDemand
 }
 
 func limitText(s string, size int) string {
@@ -340,6 +340,7 @@ func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
 	}
 	if len(r.bursts) > 0 {
 		key.viewEpoch = t.expandEpoch
+		key.first = i == t.firstBlock()
 	}
 	key.speakerBreak = i > 0 && t.entries[shown[i-1]].voice != r.voice
 	if len(r.entry.Record.Messages) == 0 {
@@ -352,12 +353,19 @@ func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
 	if r.cache.key == key && r.cache.rows != nil {
 		return r.cache.rows
 	}
-	rows := m.layoutContent(ctx, key, m.recordContent(ctx, t, r))
+	content, cards := m.recordContent(ctx, t, r)
+	rows := m.layoutBlocks(ctx, key, content, cards)
 	if r.hasImages || t.hasImages && len(r.bursts) > 0 {
 		rows = append(rows, m.recordImageRows(ctx, t, r, ctx.MaxLines-len(rows))...)
 	}
-	if key.speakerBreak && len(rows) > 0 {
-		rows = append([]displayRow{{}}, rows...)
+	if len(rows) > 0 {
+		// A burst divider also serves as the speaker break. Don't stack
+		// two blank rows or show a divider before the first record.
+		if rows[0].text == "" && key.first {
+			rows = rows[1:]
+		} else if key.speakerBreak && rows[0].text != "" {
+			rows = append([]displayRow{{}}, rows...)
+		}
 	}
 	r.cache = blockCache{key, rows}
 	return rows
@@ -370,19 +378,20 @@ func (r *record) details(t *threadState) bool {
 	return t.expanded
 }
 
-func (m *Model) recordContent(ctx extension.RenderContext, t *threadState, r *record) extension.Content {
+func (m *Model) recordContent(ctx extension.RenderContext, t *threadState, r *record) (extension.Content, []blockRange) {
 	var content extension.Content
+	var cards []blockRange
 	var handled bool
 	if hook, ok := m.host.entries[r.entry.Kind()]; ok {
 		content, handled = hook.Render(ctx, detachEntryForRender(r.entry))
 	}
 	if !handled {
-		content = m.activityEntry(ctx, t, r)
+		content, cards = m.activityEntry(ctx, t, r)
 	}
 	if r.entry.Truncated {
 		content = append(content, extension.Block{Text: "… record truncated", Tone: extension.Muted})
 	}
-	return content
+	return content, cards
 }
 
 func (m *Model) liveRecordContent(ctx extension.RenderContext, t *threadState) extension.Content {
@@ -403,12 +412,17 @@ func detachEntryForRender(e extension.Entry) extension.Entry {
 }
 
 func (m *Model) layoutContent(ctx extension.RenderContext, key renderKey, content extension.Content) []displayRow {
+	return m.layoutBlocks(ctx, key, content, nil)
+}
+
+func (m *Model) layoutBlocks(ctx extension.RenderContext, key renderKey, content extension.Content, cards []blockRange) []displayRow {
 	rows := make([]displayRow, 0, min(8, ctx.MaxLines))
 	bytes := ctx.MaxBytes
 	for i, b := range content[:min(128, len(content))] {
 		if len(rows) >= ctx.MaxLines || bytes <= 0 {
 			break
 		}
+		first := len(rows)
 		if b.Lines != nil {
 			for _, line := range b.Lines[:min(ctx.MaxLines, len(b.Lines))] {
 				rows = append(rows, m.layoutLine(ctx, line, &bytes, ctx.MaxLines-len(rows))...)
@@ -416,17 +430,25 @@ func (m *Model) layoutContent(ctx extension.RenderContext, key renderKey, conten
 					break
 				}
 			}
-			continue
+		} else {
+			text := limitText(b.Text, bytes)
+			bytes -= len(text)
+			key.block = i
+			lines := m.renderDocument(key, b.Format, text, limitText(b.Language, 128), ctx.Width, ctx.Thread.Workspace, ctx.Live)
+			if ctx.Live && len(lines) > ctx.MaxLines-len(rows) {
+				lines = lines[len(lines)-(ctx.MaxLines-len(rows)):]
+			}
+			for _, line := range lines[:min(ctx.MaxLines-len(rows), len(lines))] {
+				rows = append(rows, displayRow{text: paint(b.Tone, line), user: b.Format == extension.UserText})
+			}
 		}
-		text := limitText(b.Text, bytes)
-		bytes -= len(text)
-		key.block = i
-		lines := m.renderDocument(key, b.Format, text, limitText(b.Language, 128), ctx.Width, ctx.Thread.Workspace, ctx.Live)
-		if ctx.Live && len(lines) > ctx.MaxLines-len(rows) {
-			lines = lines[len(lines)-(ctx.MaxLines-len(rows)):]
-		}
-		for _, line := range lines[:min(ctx.MaxLines-len(rows), len(lines))] {
-			rows = append(rows, displayRow{text: paint(b.Tone, line), user: b.Format == extension.UserText})
+		if len(cards) > 0 && i >= cards[0].start {
+			for j := first; j < len(rows); j++ {
+				rows[j].card = true
+			}
+			if i+1 == cards[0].end {
+				cards = cards[1:]
+			}
 		}
 	}
 	return rows

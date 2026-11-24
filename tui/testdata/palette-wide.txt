@@ -7,6 +7,7 @@
                   │ Thread                                                   │
                   │ › Switch threads                                ctrl+x s │
                   │   New thread                                    ctrl+x n │
+                  │   Usage details                               ctrl+x i u │
                   │   Browse all workspaces                   ctrl+x shift+s │
                   │   Fork history                                    ctrl+f │
                   │   Select thinking level                        shift+tab │
@@ -14,11 +15,10 @@
                   │   Reset the context                             ctrl+x z │
                   │   Close tab                                       ctrl+w │
                   │   Previous tab                                  ctrl+x [ │
-                  │ Prompt                                                   │
-│ What changed in │   Edit prompt                                   ctrl+x e │
-                  │   Recall queued messages                          alt+up │
+│ What changed in │ Prompt                                                   │
+                  │   Edit prompt                                   ctrl+x e │
   Answer          │                                                          │
-                  │ enter run  ↑↓ move  esc close                  1–11 / 20 │
+                  │ enter run  ↑↓ move  esc close                  1–11 / 21 │
   See the docs and╰──────────────────────────────────────────────────────────╯
 
   ── go  copy     ────────────────────────
@@ -26,4 +26,4 @@
   ────────────────────────────────────────
   ────────────────────────────────────────────────────────────────────────────────────────────
   you ›
-  ◌ workspace #1
+  dir workspace

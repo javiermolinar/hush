@@ -2,6 +2,7 @@
 
 
 
+
 │ hi
 
   Hi. What can I help with?
@@ -9,12 +10,11 @@
 │ Where do the 13.8k tokens come from?
 
   ▾ ran 14 · 1 failed · 1m 12s                                                               13:24
-     ✗ rg -n tokens docs/                                                                   exit 2
-     ✓ wc -c README.md                                                                        0.2s
-     ✓ git ls-files | wc -l                                                                   0.2s
-     ✓ rg -n tokens docs/                                                                     0.2s
-     … 10 more · enter open
-  ◌ waiting for model · 8s
-  ────────────────────────────────────────────────────────────────────────────────────────────────
-  steer ›                                               enter steer  esc stop  alt+enter follow-up
-  ● hush #1 · fixture-model max                                                 336.7k tok · $0.13
+    ✗ rg -n tokens docs/                                                                  exit 2
+    ✓ wc -c README.md                                                                       0.2s
+    ✓ git ls-files | wc -l                                                                  0.2s
+    ✓ rg -n tokens docs/                                                                    0.2s
+    … 10 more · enter open
+  ◌ Waiting for model · 8s ────────────────────────────────────────────────────────────── esc stop
+  steer ›
+  dir hush · fixture-model max                                                               $0.13

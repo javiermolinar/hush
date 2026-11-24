@@ -55,9 +55,9 @@ func gitDiffBadge(summary sdk.GitDiffSummary) string {
 	return result
 }
 
-func (m *Model) gitDiffRule(t *threadState, left string, w int) displayRow {
-	if !m.active.Valid() || !m.menuFeaturesFromBackend.Has(x.GitDiff) || m.connection != x.Connected {
-		return displayRow{text: left + paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(left))))}
+func (m *Model) gitDiffBadgeRow(t *threadState, room int) displayRow {
+	if room < 3 || !m.active.Valid() || !m.menuFeaturesFromBackend.Has(x.GitDiff) || m.connection != x.Connected {
+		return displayRow{}
 	}
 	label := t.gitDiff.badge
 	if label == "" {
@@ -66,18 +66,13 @@ func (m *Model) gitDiffRule(t *threadState, left string, w int) displayRow {
 			label = "± unavailable"
 		}
 	}
-	if stringWidth(label)+stringWidth(left)+4 > w {
-		if i := strings.Index(label, "  "); i >= 0 {
-			label = label[:i]
-		}
+	if stringWidth(label) > room {
+		label, _, _ = strings.Cut(label, "  ")
 	}
-	if stringWidth(label)+stringWidth(left)+4 > w {
-		left = ansi.Truncate(left, max(0, w-stringWidth(label)-4), "…")
+	if w := stringWidth(label); w <= room {
+		return displayRow{text: m.control(label), hits: []spanHit{{0, w, x.ActionRef{ID: gitDiffID}, "review worktree changes"}}}
 	}
-	first := w - stringWidth(label) - 3
-	return displayRow{text: left + paint(x.Muted, strings.Repeat("─", max(0, first-1-stringWidth(left)))) + " " +
-		paint(x.Accent, label) + paint(x.Muted, " ──"),
-		hits: []spanHit{{first, first + stringWidth(label), x.ActionRef{ID: gitDiffID}, "review worktree changes"}}}
+	return displayRow{}
 }
 
 type gitDiffPoll struct {

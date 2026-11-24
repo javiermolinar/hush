@@ -1,3 +1,4 @@
+
 │ What changed in @app/main.go:12?
 
   Answer
@@ -12,7 +13,6 @@
   ── go  copy     ────────────────────────
     fmt.Print("Hello")
   ────────────────────────────────────────
-  ◌ running go test ./... · ok  example/pkg
-  ────────────────────────────────────────────────────────────
-  steer ›           enter steer  esc stop  alt+enter follow-up
-  ● workspace #1
+  ◌ Running go test ./... ─────────────────────────── esc stop
+  steer ›
+  dir workspace

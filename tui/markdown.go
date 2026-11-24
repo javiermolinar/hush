@@ -101,11 +101,7 @@ func (d *document) block(n ast.Node, w int) []string {
 	w = max(1, w)
 	switch v := n.(type) {
 	case *ast.Heading:
-		ink := "\x1b[1m"
-		if v.Level == 1 {
-			ink = "\x1b[1;4m"
-		}
-		return wrapped(ink+d.inline(n, true)+"\x1b[22;24m", w)
+		return wrapped("\x1b[1m"+d.inline(n, true)+"\x1b[22m", w)
 	case *ast.ThematicBreak:
 		return []string{paint(x.Muted, "· · ·")}
 	case *ast.Paragraph, *ast.TextBlock:
@@ -203,7 +199,13 @@ func (d *document) inline(n ast.Node, links bool) string {
 					break
 				}
 			}
-			s = "\x1b[36m" + s + "\x1b[39m"
+			if links && s != "" {
+				if ink := d.m.palette.softInk; ink != "" {
+					s = ink + s + resetBackground
+				} else {
+					s = "\x1b[1m" + s + "\x1b[22m"
+				}
+			}
 		case *ast.Link:
 			s = d.inline(v, false)
 			if links {
@@ -275,8 +277,8 @@ func wrapped(s string, w int) []string {
 	if out != nil {
 		lines = out
 	}
-	if strings.Contains(s, oscLink) {
-		balanceRowLinks(lines)
+	if len(lines) > 1 && strings.ContainsRune(s, '\x1b') {
+		balanceRowMarkup(lines)
 	}
 	return lines
 }
@@ -612,7 +614,7 @@ func (m *Model) copyCode(r ownerRoute, id string, budget *int) tea.Cmd {
 	} else if rec := t.entries[sdk.ID(parts[0])]; rec != nil {
 		ctx := m.renderContext(t, m.width-4, recordRows, false)
 		ctx.Expanded = rec.details(t)
-		content = m.recordContent(ctx, t, rec)
+		content, _ = m.recordContent(ctx, t, rec)
 	}
 	if block >= len(content) || content[block].Format != x.Markdown {
 		return nil

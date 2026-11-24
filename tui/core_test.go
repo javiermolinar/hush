@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
@@ -104,6 +105,9 @@ func TestFrameGeometry(t *testing.T) {
 		s.streamRevision++
 		s.queue = []sdk.QueueItem{{Mode: "steer", Text: strings.Repeat("wide 界界\n\x1b[2J", 40)}, {Mode: "followUp", Text: "then test"}}
 		assertFrame(t, m)
+		m.runAction(m.host.byID[usageID], "")
+		assertFrame(t, m)
+		press(m, tea.KeyEscape, 0)
 		m.backend = modelSearchFixture{}
 		m.Update(m.menuProbe()())
 		search := m.runAction(m.host.byID[modelPickerID], "openrouter")
@@ -152,6 +156,49 @@ func TestProseWrapKeepsEveryCellAndLinkAfterResize(t *testing.T) {
 		}
 		if !strings.Contains(typed.String(), token+"lasttypedword") || prose.String() != "See"+linkLabel+"thencontinue." {
 			t.Fatalf("width %d: content was clipped:\ntyped %q\nprose %q", width, typed.String(), prose.String())
+		}
+	}
+}
+
+func TestInlineMaterialsKeepTheirOwnCells(t *testing.T) {
+	m, _ := demo(t, Options{Fills: FillOn})
+	m.Update(tea.BackgroundColorMsg{Color: color.White})
+	m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
+	const text = "Use `hush stop and resume` then app/main.go:12 or [the guide](https://example.org)"
+	for _, mode := range []FillMode{FillOn, FillOff} {
+		m.options.Fills = mode
+		m.refreshTheme()
+		rows := m.renderDocument(renderKey{}, x.Markdown, text, "", 16, "/workspace", false)
+		var chip, path, web, plain int
+		for _, row := range rows {
+			for _, line := range uv.NewStyledString(row).Lines(ansi.GraphemeWidth) {
+				for _, cell := range line {
+					switch {
+					case cell.Link.URL == "file:///workspace/app/main.go":
+						path++
+						if cell.Style.Underline != uv.UnderlineStyleDotted || cell.Link.Params != "line=12" || cell.Style.Bg != nil || cell.Style.Fg != nil {
+							t.Fatalf("bad path cell: %+v", cell)
+						}
+					case cell.Link.URL == "https://example.org":
+						web++
+						if cell.Style.Underline != uv.UnderlineStyleSingle || cell.Style.Bg != nil || cell.Style.Fg != nil {
+							t.Fatalf("bad web link cell: %+v", cell)
+						}
+					case cell.Style.Bg != nil || cell.Style.Attrs&uv.AttrBold != 0:
+						if (mode == FillOn) != (cell.Style.Bg != nil) || cell.Style.Fg != nil || cell.Style.Underline != uv.UnderlineStyleNone {
+							t.Fatalf("bad chip cell: %+v", cell)
+						}
+						if cell.Content != " " {
+							chip++
+						}
+					case cell.Content != " ":
+						plain++
+					}
+				}
+			}
+		}
+		if chip != len("hushstopandresume") || path != len("app/main.go:12") || web != len("the guide") || plain != len("Usethenor") {
+			t.Fatalf("styles escaped the intended cells in %s: chip=%d path=%d web=%d plain=%d\n%q", mode, chip, path, web, plain, rows)
 		}
 	}
 }
@@ -228,22 +275,12 @@ func TestDedicatedNoticePreservesPromptAndHints(t *testing.T) {
 	m.notify(m.active, "Backend rejected the request: "+strings.Repeat("detail ", 40), x.Danger)
 	m.editor.set("try")
 	frame := ansi.Strip(assertFrame(t, m))
-	noticeRow, promptRow := -1, -1
-	for i, row := range strings.Split(frame, "\n") {
-		if strings.Contains(row, "Backend rejected") {
-			noticeRow = i
-			if !strings.Contains(row, "…") || strings.Contains(row, "enter send") {
-				t.Fatalf("wrong notice row: %q", row)
-			}
-		}
-		if strings.Contains(row, "you › try") && strings.Contains(row, "enter send") {
-			promptRow = i
-		}
+	rows := strings.Split(frame, "\n")
+	rule := m.frame.ruleY
+	if rule < 1 || !strings.Contains(rows[rule-1], "Backend rejected") || !strings.Contains(rows[rule-1], "…") ||
+		!strings.Contains(rows[rule], "enter send") || !strings.Contains(rows[rule+1], "you › try") || strings.Contains(rows[rule+1], "enter send") {
+		t.Fatalf("notice, rule, or prompt misplaced:\n%s", frame)
 	}
-	if noticeRow < 0 || promptRow < 0 || noticeRow >= promptRow {
-		t.Fatalf("notice hid the prompt or its send hint:\n%s", frame)
-	}
-	m.editor.set("")
 	s.info.Status = x.Running
 	frame = ansi.Strip(assertFrame(t, m))
 	if !strings.Contains(frame, "enter steer") || !strings.Contains(frame, "esc stop") {
@@ -265,7 +302,7 @@ func TestControlInkChecksContrast(t *testing.T) {
 			t.Fatalf("insufficient contrast with %v", colors.background)
 		}
 		s.info.Status = x.Running
-		for _, hint := range m.promptChrome(s, false) {
+		for _, hint := range m.ruleHints(s, false, false) {
 			if strings.Contains(hint, "\x1b[2m") {
 				t.Fatalf("actionable key is faint: %q", hint)
 			}
@@ -418,8 +455,11 @@ func TestColorAndClock(t *testing.T) {
 }
 
 func TestStreamingMatchesFullRender(t *testing.T) {
-	m, _ := demo(t, Options{ReducedMotion: true})
+	m, _ := demo(t, Options{Fills: FillOn, ReducedMotion: true})
+	m.Update(tea.BackgroundColorMsg{Color: color.White})
+	m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
 	for _, s := range []string{
+		"Use `hush stop` and `app/main.go:12` before checking the next rule.\n\nThen wait.",
 		"# Heading\n\nAn ordinary paragraph with exact content.\n\nNext paragraph.\n\nAnd another\n\n```go\npackage main\nfunc demo() {\n\tprintln(42)\n}\n```\n\nAfter the code.",
 		"First paragraph.\n\n> Some quoted lines\n> More\n\n- list\n- item\n\n| Header | Here |\n| --- | --- |\n| data | other |\n",
 		"First [ref] paragraph.\n\nNext.\n\n[ref]: https://example.org\n",

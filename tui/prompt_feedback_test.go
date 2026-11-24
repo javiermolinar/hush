@@ -30,9 +30,9 @@ func TestPromptFeedbackBeforeFirstModelContent(t *testing.T) {
 		}
 	}
 	op := m.sendPrompt(sdk.Steer)
-	viewHas("sending")
+	viewHas("Sending")
 	m.finishWork(op().(workMsg))
-	viewHas("starting")
+	viewHas("Starting")
 
 	s := sdk.State{Thread: sdk.Thread{ID: "1"}, Run: &sdk.Run{TaskID: "22", SubmissionIDs: []sdk.ID{"42"}},
 		Streaming: &sdk.Streaming{Attempt: 1}}
@@ -40,7 +40,7 @@ func TestPromptFeedbackBeforeFirstModelContent(t *testing.T) {
 		m.receiveFeed(feedMsg{owner: "1", ok: true, update: sdk.StateUpdate{Snapshot: sdk.Snapshot{State: s}}})
 	}
 	feed()
-	viewHas("waiting for model")
+	viewHas("Waiting for model")
 	if m.threads["1"].awaiting != "" {
 		t.Fatal("run observation did not consume the admission bridge")
 	}
@@ -49,12 +49,13 @@ func TestPromptFeedbackBeforeFirstModelContent(t *testing.T) {
 	}
 	s.Streaming.Blocks = []sdk.Block{{Type: "omitted", Kind: "redactedThinking"}}
 	feed()
-	viewHas("thinking")
+	viewHas("Thinking")
 	s.Streaming.Blocks = append(s.Streaming.Blocks, sdk.Block{Type: "text", Text: "answer begins"})
 	feed()
 	viewHas("answer begins")
+	viewHas("Writing answer")
 	frame := ansi.Strip(assertFrame(t, m))
-	for _, stale := range []string{"starting", "waiting for model", "thinking"} {
+	for _, stale := range []string{"Starting", "Waiting for model", "Thinking"} {
 		if strings.Contains(frame, stale) {
 			t.Fatalf("stale %q after visible answer", stale)
 		}

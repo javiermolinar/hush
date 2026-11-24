@@ -13,12 +13,14 @@ import type { ManagedThreadRow, ThreadArchive, ThreadCreation, ThreadDirectoryHo
   ThreadDirectoryReport, ThreadDirectoryRow, ThreadDirectoryVersion, ThreadLookup, ThreadStatus, WorkspaceMatch } from "../../server/src/thread-directory.js";
 import { WireError } from "../../server/src/wire.js";
 import { ProfileDoc } from "./pi/projection.js";
-import { actionableFailure, displayTitle, threadActivity, ThreadPresentationDoc, threadLabel } from "./thread-presentation.js";
+import { actionableFailure, displayTitle, threadActivity, ThreadPresentationDoc, threadLabel, topicTitle } from "./thread-presentation.js";
 import type { GenerateThreadTitle } from "./thread-title-model.js";
 import { existingDirectory, type ThreadWorktrees } from "./worktrees.js";
 
 const historyBatch = 16;
 const inventoryBatch = 32;
+const topicExcerpt = 768;
+const providerExcerpt = 72;
 const git = promisify(execFile);
 
 // Only committed, visible chat text counts; tool results, thinking and
@@ -27,14 +29,14 @@ function chatRole(message: Message) {
   return message.role === "user" || message.role === "assistant";
 }
 
-function chatText(message: Message) {
+function chatText(message: Message, max = providerExcerpt) {
   if (!chatRole(message)) return "";
   const describe = (value: string) => {
     if (message.role === "user" && value.startsWith("<skill name=")) {
       const skill = /^<skill name="([^"\r\n]{1,96})" location=/.exec(value)?.[1];
       return skill ? threadLabel("/skill:" + skill, 72) : "Skill invocation";
     }
-    return threadLabel(value, 72);
+    return threadLabel(value, max);
   };
   if (typeof message.content === "string") return describe(message.content);
   for (const part of message.content) {
@@ -63,14 +65,8 @@ function lastMessage(entry: EntryRecord) {
   return 0;
 }
 
-function answerExcerpt(entry: EntryRecord) {
-  for (const message of entry.model ?? []) {
-    if (message.role === "assistant" && (message.stopReason === "stop" || message.stopReason === "length")) {
-      const text = chatText(message);
-      if (text) return text;
-    }
-  }
-  return "";
+function completedAnswer(message: Message) {
+  return message.role === "assistant" && (message.stopReason === "stop" || message.stopReason === "length");
 }
 
 function lastOutcome(entry: EntryRecord): "idle" | "done" | undefined {
@@ -78,7 +74,7 @@ function lastOutcome(entry: EntryRecord): "idle" | "done" | undefined {
   for (let n = (entry.model?.length ?? 0) - 1; n >= 0; n--) {
     const msg = entry.model![n]!;
     if (msg.role === "user") return "idle";
-    if (msg.role === "assistant" && (msg.stopReason === "stop" || msg.stopReason === "length")) return "done";
+    if (completedAnswer(msg)) return "done";
   }
   return undefined;
 }
@@ -89,9 +85,9 @@ type Fence = { last: number; id: number };
 const ownerless = { kind: "ownerless" } as const;
 const liveFields = new Set(["run", "runFailure", "compactions", "compactionFailure"]);
 
-// The ordering index is disposable. A cooperative worker also saves the
-// first prompt's title in Hush's presentation document, including for legacy
-// threads. Queries read bounded pages without opening conversation watches.
+// The ordering index is disposable. A cooperative worker saves a title from
+// the first completed exchange in Hush's presentation document, including for
+// older threads. Queries read bounded pages without opening conversation watches.
 export class ThreadDirectory implements ThreadDirectoryHost {
   readonly workspace = true as const;
   readonly #life = new AbortController();
@@ -132,7 +128,7 @@ export class ThreadDirectory implements ThreadDirectoryHost {
           else if (c.type === "entry" && (c.value.kind === "pi.reset" || c.value.model?.some(chatRole))) {
             const id = c.value.conversationId;
             this.#pending.add(id);
-            if (this.generateTitle && this.#titleCandidates.size < 64 && c.value.model?.some(m => m.role === "assistant" && m.stopReason === "stop")) {
+            if (this.#titleCandidates.size < 64 && c.value.model?.some(completedAnswer)) {
               this.#titleCandidates.add(id);
             }
           }
@@ -207,7 +203,7 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     do {
       const page = await this.h.commit(tx => tx.scanConversations({ order: "descending" }, inventoryBatch, cursor), this.#ctx);
       for (const record of page.items) {
-        if (!record.owner) await this.#refresh(record);
+        if (!record.owner) await this.#refresh(record, false, true);
         await yieldTurn(undefined, { signal: this.#life.signal });
       }
       cursor = page.next;
@@ -230,21 +226,23 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     return undefined;
   }
 
-  async #refresh(record: ConversationRecord, candidate = false) {
+  async #firstExchange(id: ConversationId) {
+    let user: string | undefined;
+    return this.#find(id, "ascending", entry => {
+      for (const message of entry.model ?? []) {
+        if (message.role === "user") user ??= chatText(message, topicExcerpt);
+        else if (user !== undefined && completedAnswer(message)) return { user, answer: chatText(message, topicExcerpt) };
+      }
+    });
+  }
+
+  async #refresh(record: ConversationRecord, candidate: boolean, bootstrap = false) {
     const { id } = record;
     const [profile, presentation, agent, live] = await Promise.all([
       this.h.snapshot(ProfileDoc, id, this.#ctx), this.h.snapshot(ThreadPresentationDoc, id, this.#ctx),
       this.h.snapshot(AgentDoc, id, this.#ctx), this.h.snapshot(LiveDoc, id, this.#ctx),
     ]);
     let title = displayTitle(presentation, profile?.name);
-    if (!title) {
-      const prompt = await this.#find(id, "ascending", firstPrompt);
-      if (prompt) title = await this.h.commit(async tx => {
-        const doc = await tx.doc(ThreadPresentationDoc, id);
-        doc.autoTitle ??= prompt;
-        return displayTitle(doc, profile?.name);
-      }, this.#ctx);
-    }
     let last = 0;
     let outcome: "idle" | "done" | undefined;
     await this.#find(id, "descending", entry => {
@@ -252,6 +250,23 @@ export class ThreadDirectory implements ThreadDirectoryHost {
       outcome ??= lastOutcome(entry);
       return last !== 0 && outcome !== undefined;
     });
+    const unnamed = !presentation?.title && !profile?.name;
+    const local = unnamed && !presentation?.topicTitle && (candidate || outcome === "done" || bootstrap && !!presentation?.autoTitle);
+    const remote = this.generateTitle && candidate && unnamed && !record.parent && !profile?.id &&
+      !presentation?.archived && !presentation?.titleAttempted && this.#titlesGenerating < 2;
+    const exchange = local || remote ? await this.#firstExchange(id) : undefined;
+    const topic = local && exchange ? topicTitle(exchange.user, exchange.answer) : "";
+    // An unanswered thread (including a fork cut before the first answer)
+    // can still be recognized by its provisional prompt topic.
+    const prompt = !title && !topic ? await this.#find(id, "ascending", firstPrompt) : undefined;
+    if (topic || prompt) title = await this.h.commit(async tx => {
+      const doc = await tx.doc(ThreadPresentationDoc, id);
+      if (!doc.title) {
+        if (topic) doc.topicTitle ??= topic;
+        else if (prompt) doc.autoTitle ??= prompt;
+      }
+      return displayTitle(doc, profile?.name);
+    }, this.#ctx);
     const failure = live?.runFailure;
     const status = live?.run || live?.compactions?.length ? "running"
       : live?.compactionFailure ? "failed"
@@ -271,18 +286,13 @@ export class ThreadDirectory implements ThreadDirectoryHost {
         (excluded.parent, excluded.title, excluded.last, excluded.archived, excluded.status, excluded.cwd, excluded.branch, excluded.workspace)`)
       .run(id, record.parent?.conversationId ?? null, title ?? "", last, presentation?.archived ? 1 : 0, status, cwd, branch, workspace);
     if (update.changes) this.#advance();
-    if (candidate && !record.parent && !profile?.id && !profile?.name && !presentation?.title && !presentation?.archived &&
-        !presentation?.titleAttempted && outcome === "done" && this.#titlesGenerating < 2) {
+    if (remote && exchange?.user && exchange.answer) {
       this.#titlesGenerating++;
-      void this.#track(this.#generate(id)).catch(() => {}).finally(() => { this.#titlesGenerating--; });
+      void this.#track(this.#generate(id, exchange)).catch(() => {}).finally(() => { this.#titlesGenerating--; });
     }
   }
 
-  async #generate(id: ConversationId) {
-    const [user, answer] = await Promise.all([
-      this.#find(id, "ascending", firstPrompt), this.#find(id, "ascending", answerExcerpt),
-    ]);
-    if (!user || !answer) return;
+  async #generate(id: ConversationId, { user, answer }: { user: string; answer: string }) {
     const claimed = await this.h.commit(async tx => {
       const doc = await tx.doc(ThreadPresentationDoc, id);
       if (doc.title || doc.archived || doc.titleAttempted) return false;
@@ -290,7 +300,7 @@ export class ThreadDirectory implements ThreadDirectoryHost {
       return true;
     }, this.#ctx);
     if (!claimed) return;
-    const title = await this.generateTitle!(user, answer, this.#life.signal);
+    const title = await this.generateTitle!(threadLabel(user, providerExcerpt), threadLabel(answer, providerExcerpt), this.#life.signal);
     if (!title) return;
     await this.h.commit(async tx => {
       const doc = await tx.doc(ThreadPresentationDoc, id);

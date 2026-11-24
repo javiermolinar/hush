@@ -12,7 +12,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
 )
@@ -530,19 +529,4 @@ func recordIntroStamp(path string, at time.Time) tea.Cmd {
 		}
 		return nil
 	}
-}
-
-func (m *Model) introHints(w int, mono bool) displayRow {
-	out := "/ commands"
-	for _, s := range []string{m.actionBinding(m.host.actions[m.host.byID[switcherID]]) + " threads", "? actions"} {
-		if stringWidth(out)+5+stringWidth(s) > w {
-			break
-		}
-		out += "  ·  " + s
-	}
-	out = ansi.Truncate(out, w, "…")
-	if !mono {
-		out = m.control(out)
-	}
-	return displayRow{text: out}
 }

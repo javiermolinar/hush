@@ -15,6 +15,6 @@
 │ Where do the 13.8k tokens come from?
 
   ▸ ran 14 · 1 failed · 1m 12s                                                               13:24
-  ────────────────────────────────────────────────────────────────────────────────────────────────
-  you ›                                                                     / commands  ? all keys
-  ✓ hush #1 · fixture-model max                                                 336.7k tok · $0.13
+  ───────────────────────────────────────────────────────────────────────── / commands  ? all keys
+  you ›
+  dir hush · fixture-model max                                                               $0.13

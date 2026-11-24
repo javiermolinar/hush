@@ -1,18 +1,18 @@
-│ What changed in @app/main.go:12?
 
-  An╭──────────────────────────────────────────────────────╮
-    │ Confirm                                              │
-  Se│ This is a layered overlay.                           │
-    │ › No                                                 │
-  ──│   Yes                                                │
-    │ enter choose  ↑↓ move  esc close                     │
-  ──╰──────────────────────────────────────────────────────╯
+│ What changed in @app/main.go:12?
+    ╭──────────────────────────────────────────────────────╮
+  An│ Confirm                                              │
+    │ This is a layered overlay.                           │
+  Se│ › No                                                 │
+    │   Yes                                                │
+  ──│ enter choose  ↑↓ move  esc close                     │
+    ╰──────────────────────────────────────────────────────╯
+  ────────────────────────────────────────
   Streaming
 
   ── go  copy     ────────────────────────
     fmt.Print("Hello")
   ────────────────────────────────────────
-  ◌ running go test ./... · ok  example/pkg
-  ────────────────────────────────────────────────────────────
+  ◌ Running go test ./... ────────────────────────────────────
   you ›
-  ● workspace #1
+  dir workspace

@@ -2,7 +2,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -20,3 +19,4 @@
     low
     high
   enter choose  ↑↓ move  esc close
+  dir workspace

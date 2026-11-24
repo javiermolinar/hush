@@ -71,7 +71,7 @@ func TestActivityGoldens(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
 	golden(t, "activity-running", m)
 	body := ansi.Strip(m.View().Content)
-	if strings.Count(body, "▸ ran 14 · 1 failed · 1m 12s") != 1 || strings.Contains(body, "Thought") || !strings.Contains(body, "waiting for model · 8s") {
+	if strings.Count(body, "▸ ran 14 · 1 failed · 1m 12s") != 1 || strings.Contains(body, "Thought") || !strings.Contains(body, "Waiting for model · 8s") {
 		t.Fatalf("unexpected summary or live line:\n%s", body)
 	}
 	if !strings.Contains(m.View().Content, "\x1b[31m1 failed\x1b[39m") || strings.Contains(m.View().Content, "\x1b[34m▸") {
@@ -130,10 +130,10 @@ func TestThinkingSpinnerCadence(t *testing.T) {
 		frames        []frame
 	}{
 		{"animated", false, []frame{
-			{0, "◌ thinking"}, {50, "◌ thinking"}, {150, "◌ thinking"}, {200, "◔ thinking"},
-			{400, "◑ thinking"}, {600, "◕ thinking"}, {800, "◌ thinking"}, {1000, "◔ thinking · 1s"},
+			{0, "◌ Thinking"}, {50, "◌ Thinking"}, {150, "◌ Thinking"}, {200, "◔ Thinking"},
+			{400, "◑ Thinking"}, {600, "◕ Thinking"}, {800, "◌ Thinking"}, {1000, "◔ Thinking · 1s"},
 		}},
-		{"reduced-motion", true, []frame{{0, "◌ thinking"}, {1000, "◌ thinking · 1s"}}},
+		{"reduced-motion", true, []frame{{0, "◌ Thinking"}, {1000, "◌ Thinking · 1s"}}},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			m, s := demo(t, Options{ReducedMotion: mode.reducedMotion})
@@ -148,7 +148,8 @@ func TestThinkingSpinnerCadence(t *testing.T) {
 					m.Update(effectTick{token: m.clockPending, at: start.Add(time.Duration(f.ms) * time.Millisecond)})
 				}
 				m.View()
-				if got := strings.TrimSpace(ansi.Strip(m.frame.rows[m.frame.transcriptHeight])); got != f.line {
+				label, _, _ := strings.Cut(ansi.Strip(m.frame.rows[m.frame.ruleY]), "─")
+				if got := strings.TrimSpace(label); got != f.line {
 					t.Fatalf("at %d ms: got %q, want %q", f.ms, got, f.line)
 				}
 			}
@@ -160,8 +161,8 @@ func TestLiveModelFailureRecovery(t *testing.T) {
 	m, s := demo(t, Options{ReducedMotion: true})
 	s.activity.failure = sdk.Failure{TaskID: "22", Reason: "model_error"}
 	assertFrame(t, m)
-	line := func() string { return ansi.Strip(m.frame.rows[m.frame.transcriptHeight]) }
-	if !strings.Contains(line(), "✗ no answer · model run failed") || strings.Contains(line(), "/model") || len(m.frame.hits[m.frame.transcriptHeight]) != 0 {
+	line := func() string { return ansi.Strip(m.frame.rows[m.frame.ruleY]) }
+	if !strings.Contains(line(), "✗ no answer · model run failed") || strings.Contains(line(), "/model") || len(m.frame.hits[m.frame.ruleY]) != 0 {
 		t.Fatalf("failure without provider details or catalog offered an unsupported action: %q", line())
 	}
 	m.options.Services.Models = func(context.Context) ([]x.CatalogModel, error) {
@@ -178,7 +179,7 @@ func TestLiveModelFailureRecovery(t *testing.T) {
 	if col < 0 {
 		t.Fatalf("no recovery action with a model catalog: %q", line())
 	}
-	y, col := m.frame.transcriptHeight, stringWidth(line()[:col])
+	y, col := m.frame.ruleY, stringWidth(line()[:col])
 	click := tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft, X: col, Y: y})
 	_, cmd := m.Update(click)
 	if cmd == nil || m.hoverAt(col, y) != "choose a model" {
@@ -309,8 +310,11 @@ func TestBurstPreviewPrioritizesFailuresThenEdits(t *testing.T) {
 	}
 	rows := strings.Split(body, "\n")
 	for i, row := range rows {
+		if strings.Contains(row, "▾ read 4") && (i < 2 || strings.TrimSpace(rows[i-1]) != "" || !strings.Contains(rows[i-2], "──")) {
+			t.Fatalf("missing single blank above burst:\n%s", body)
+		}
 		if strings.Contains(row, "The tests need another pass.") && (i < 2 || strings.TrimSpace(rows[i-1]) != "" || !strings.Contains(rows[i-2], "… 5 more")) {
-			t.Fatalf("burst and prose are not spaced:\n%s", body)
+			t.Fatalf("missing single blank below burst:\n%s", body)
 		}
 	}
 	if strings.Contains(body, "read other.go") {
@@ -387,14 +391,16 @@ func TestLiveStatusIsOnePinnedRow(t *testing.T) {
 	s.tools = []x.Tool{{CallID: "a", Name: "bash", Live: true}, {CallID: "b", Name: "read", Live: true}}
 	s.activity.thinking = true
 	frame := ansi.Strip(assertFrame(t, m))
-	if strings.Count(frame, "running bash · +1") != 1 || strings.Contains(frame, "thinking") || strings.Contains(frame, "waiting for model") {
-		t.Fatalf("expected a single live line at the bottom:\n%s", frame)
+	if strings.Count(frame, "Running shell command · +1") != 1 || strings.Contains(frame, "Thinking") || strings.Contains(frame, "Waiting for model") {
+		t.Fatalf("expected one live label at the bottom:\n%s", frame)
 	}
 	if m.frame.top.id != "1" {
 		t.Fatal("changing live status shifted the scroll anchor")
 	}
-	if !strings.Contains(m.frame.rows[m.frame.transcriptHeight], "running bash") {
-		t.Fatal("live activity was not pinned")
+	y := m.frame.ruleY
+	if !strings.Contains(m.frame.rows[y], "Running shell command") || !strings.Contains(m.frame.rows[y], "──") ||
+		!strings.Contains(m.frame.rows[y+1], "steer ›") || y != m.frame.transcriptHeight {
+		t.Fatal("live activity did not share the rule immediately above the prompt")
 	}
 }
 
@@ -419,16 +425,48 @@ func TestLiveToolRendererUsesOneRowAndCurrentOutput(t *testing.T) {
 		frame := ansi.Strip(assertFrame(t, m))
 		want := "custom: " + output
 		if output == "" {
-			want = "running fixture · 3s"
+			want = "Running fixture · 3s"
 		}
-		if row := ansi.Strip(m.frame.rows[m.frame.transcriptHeight]); !strings.Contains(row, want) || strings.Contains(frame, "second row") {
+		if row := ansi.Strip(m.frame.rows[m.frame.ruleY]); !strings.Contains(row, want) || strings.Contains(frame, "second row") {
 			t.Fatalf("wrong pinned row for %q: %q", output, row)
 		}
 	}
 	s.tools[0].Name, s.tools[0].Output = "bash", "previous output\nlatest output\n"
 	frame := ansi.Strip(assertFrame(t, m))
-	if !strings.Contains(frame, "running bash · latest output · 3s") || strings.Contains(frame, "previous output") {
-		t.Fatalf("wrong default live preview:\n%s", frame)
+	if !strings.Contains(frame, "Running shell command · 3s") || strings.Contains(frame, "previous output") || strings.Contains(frame, "latest output") {
+		t.Fatalf("tool output leaked into the rule:\n%s", frame)
+	}
+}
+
+func TestLiveRuleKeepsCommittedToolIntentAndArguments(t *testing.T) {
+	for _, note := range []string{"", "*Running full tests*"} {
+		m, s := demo(t, Options{ReducedMotion: true})
+		m.Update(tea.WindowSizeMsg{Width: 104, Height: 24})
+		start := time.Unix(100, 0)
+		call := toolCallEntry(3, "test", "bash", `{"command":"go test ./..."}`, start)
+		call.Messages[0].Blocks = append([]sdk.Block{{Type: "text", Text: note}}, call.Messages[0].Blocks...)
+		state := sdk.State{Thread: sdk.Thread{ID: "1"}, Run: &sdk.Run{TaskID: "5"},
+			Tools:  []sdk.Tool{{CallID: "test", Name: "bash", Status: "running", Output: ptr("tool out\n...")}},
+			Window: sdk.TranscriptWindow{LastEntryID: ptr(sdk.ID("3")), Entries: []sdk.Entry{call}}}
+		m.receiveFeed(feedMsg{owner: "1", ok: true, update: sdk.StateUpdate{Snapshot: sdk.Snapshot{State: state}}})
+		since := s.activity.tools["test"]
+		m.now = since.Add(61 * time.Second)
+		m.editor.set("keep this draft")
+		assertFrame(t, m)
+		want := progressIntent(note)
+		if want == "" {
+			want = "Running go test ./..."
+		}
+		rule := m.frame.rows[m.frame.ruleY]
+		if !strings.Contains(rule, "\x1b[3m"+want+"\x1b[23m · 1m 01s") || strings.Contains(rule, "tool out") ||
+			!strings.Contains(ansi.Strip(rule), "esc stop  enter steer  alt+enter follow-up") {
+			t.Fatalf("quiet tool intent not shown with hints: %q", rule)
+		}
+		m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+		assertFrame(t, m)
+		if !strings.Contains(ansi.Strip(m.frame.rows[m.frame.ruleY+1]), "keep this draft") {
+			t.Fatal("narrow live rule displaced prompt")
+		}
 	}
 }
 
@@ -442,14 +480,14 @@ func TestTranscriptAndSingleThreadShareLeftEdge(t *testing.T) {
 			if stringWidth(line[:strings.Index(line, "Where do")]) != 2 {
 				t.Fatal("user text moved off the content edge")
 			}
-		case strings.Contains(line, "Hi. What"), strings.Contains(line, "▸ ran 14"), strings.Contains(line, "waiting for model"), strings.Contains(line, "steer ›"):
+		case strings.Contains(line, "Hi. What"), strings.Contains(line, "▸ ran 14"), strings.Contains(line, "Waiting for model"), strings.Contains(line, "steer ›"):
 			if len(line) < 3 || line[:2] != "  " || line[2] == ' ' {
 				t.Fatalf("misaligned %q", line)
 			}
 		}
 	}
 	last := ansi.Strip(m.frame.rows[m.height-1])
-	if !strings.HasPrefix(last, "  ● hush #1 · fixture-model max") || strings.Count(ansi.Strip(body), "hush #1") != 1 {
+	if !strings.HasPrefix(last, "  dir hush · fixture-model max") || strings.Count(ansi.Strip(body), "dir hush") != 1 {
 		t.Fatalf("single-thread footer:\n%s", body)
 	}
 	m.options.Fills = FillOn
@@ -458,8 +496,8 @@ func TestTranscriptAndSingleThreadShareLeftEdge(t *testing.T) {
 	assertFrame(t, m)
 	for _, row := range m.frame.rows {
 		if line := ansi.Strip(row); strings.Contains(line, "Where do") {
-			if !strings.HasPrefix(line, "  Where do") || !strings.HasPrefix(row, "\x1b[48;") {
-				t.Fatalf("tint must begin in the margin without moving user text: %q", row)
+			if !strings.HasPrefix(line, "│ Where do") || !strings.HasPrefix(row, "\x1b[34m│") || strings.Contains(row, "\x1b[48;") {
+				t.Fatalf("accent bar should mark user text with no tint or shift: %q", row)
 			}
 		}
 	}

@@ -168,12 +168,16 @@ func (m *Model) outputRows(d *dialog, w, n int) ([]string, []int) {
 		compact := copyHint + "  " + m.keyCap("↑↓ ←→") + "  " + m.keyCap("esc")
 		target := outputCopyTarget
 		if d.review {
-			accept := m.keyHint("enter", "continue")
-			if top+page < len(v.lines) {
-				accept = m.keyHint("enter", "more")
+			accept, escape := "continue", "cancel"
+			if d.done == nil {
+				accept, escape = "close", "close"
 			}
-			full = accept + "  " + m.keyHint("↑↓", "scroll") + "  " + m.keyHint("esc", "cancel") + "  " + copyHint
-			compact = accept + "  " + m.keyCap("esc")
+			if top+page < len(v.lines) {
+				accept = "more"
+			}
+			key := m.keyHint("enter", accept)
+			full = key + "  " + m.keyHint("↑↓", "scroll") + "  " + m.keyHint("esc", escape) + "  " + copyHint
+			compact = key + "  " + m.keyCap("esc")
 			target = -1
 		}
 		add(m.hintRow(w, full, compact, visibleRange(top, top+page, len(v.lines))), target)

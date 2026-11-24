@@ -49,7 +49,7 @@ func builtins() x.Registration {
 	for _, spec := range []struct{ name, arg string }{{"bash", "command"}, {"read", "path"}, {"edit", "path"}, {"write", "path"}} {
 		r.Tools = append(r.Tools, x.ToolRenderer{Name: spec.name, Render: func(ctx x.RenderContext, t x.Tool) (x.Content, bool) {
 			if ctx.Live {
-				return nil, false // the live shell row keeps timing, state and a short output preview
+				return nil, false // the prompt rule already shows the current tool and timing
 			}
 			return renderTool(ctx, t, spec.arg), true
 		}})

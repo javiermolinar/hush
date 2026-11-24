@@ -118,7 +118,7 @@ func TestStreamFromBackend(t *testing.T) {
 		}
 	}
 	wait(func() bool {
-		return state.activeRun && strings.Contains(ansi.Strip(m.View().Content), "waiting for model")
+		return state.activeRun && strings.Contains(ansi.Strip(m.View().Content), "Waiting for model")
 	})
 	if state.activity.thinking {
 		t.Fatal("waiting for first content was labeled as thinking")
@@ -127,7 +127,7 @@ func TestStreamFromBackend(t *testing.T) {
 	wait(func() bool {
 		return state.stream.Present && strings.Contains(ansi.Strip(m.View().Content), "A live answer")
 	})
-	if strings.Contains(ansi.Strip(m.View().Content), "waiting for model") {
+	if strings.Contains(ansi.Strip(m.View().Content), "Waiting for model") {
 		t.Fatal("the wait row outlived the first text")
 	}
 	if state.lastAnswer != "" {

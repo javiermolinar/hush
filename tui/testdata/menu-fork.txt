@@ -3,7 +3,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -20,3 +19,4 @@
   › 2 · Done  transcript fork
     1 · Open the fixture  transcript fork
   enter choose  ↑↓ move  esc close
+  dir workspace

@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
@@ -99,6 +101,42 @@ func TestReleaseFrames(t *testing.T) {
 			m.Update(feedMsg{owner: "1", ok: true, update: sdk.StateUpdate{Err: errors.New("backend connection lost")}})
 			if frame := shot("reconnecting"); !strings.Contains(frame, "reconnecting") || !strings.Contains(frame, "Keep this draft") {
 				t.Fatal("reconnect row erased the prompt")
+			}
+
+			blue := "1e/66/f5"
+			if theme.name == "mocha" {
+				blue = "89/b4/fa"
+			}
+			m.Update(uv.UnknownOscEvent("\x1b]4;4;rgb:" + blue + "\x07"))
+			m.setConnection(x.Connected)
+			m.notice = noticeState{}
+			m.Update(tea.WindowSizeMsg{Width: 108, Height: 23})
+			s.following = true
+			s.info.Title, s.info.Branch, s.info.Model.ModelID = "tab-click bug", "main", "fixture-model"
+			s.info.Workspace, s.info.Thinking, s.info.Status = "/work/hush", "max", x.Running
+			s.info.Usage = sdk.Usage{TotalTokens: 16_000_000, CostUSD: 5.48}
+			s.info.ContextUse = x.ContextUse{Known: true, Tokens: 26_000, Window: 100_000}
+			m.ensureThread("2").info.Title = "skills loading"
+			m.threads["2"].info.Status = x.Done
+			m.tabs = []sdk.ID{"2", "1"}
+			m.now = time.Unix(200, 0)
+			s.merge([]sdk.Entry{entry(3, "assistant", "Use `hush stop` for an attach-only shutdown."),
+				toolCallEntry(4, "tests", "bash", `{"command":"go test ./..."}`, m.now.Add(-time.Minute)),
+				toolResultEntry(5, "tests", "bash", "Command exited with code 1", true, m.now),
+				toolResultEntry(6, "read", "read", "fixture content", false, m.now),
+				entry(7, "assistant", "The targeted reload test passes. See backend/src/index.ts:260.")})
+			s.toggleBurst("5/0")
+			s.tools = []x.Tool{{CallID: "full", Name: "bash", Live: true}}
+			s.activity.intent = "Running full tests"
+			s.activity.tools = map[string]time.Time{"full": m.now.Add(-61 * time.Second)}
+			body := shot("thread-chrome")
+			if !strings.Contains(body, "│ What changed") || !strings.Contains(body, "Running full tests · 1m 01s") ||
+				!strings.Contains(body, "$5.48") || !strings.Contains(body, "exit 1") {
+				t.Fatalf("incomplete chrome capture:\n%s", body)
+			}
+			if !strings.HasPrefix(m.frame.rows[m.height-1], m.palette.softInk) || m.palette.activeTab == "" ||
+				!strings.Contains(m.frame.rows[m.height-1], m.palette.activeTab) {
+				t.Fatal("tab band or active tab did not retain its separate surface")
 			}
 		})
 	}

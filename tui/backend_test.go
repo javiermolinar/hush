@@ -144,7 +144,7 @@ func TestBackendE2E(t *testing.T) {
 	}
 	var found bool
 	for _, row := range directory.Threads {
-		if row.ID == thread.ID && row.Title == "/skill:fixture-review" && row.LastMessageMS != 0 {
+		if row.ID == thread.ID && row.Title == "fixture-review skill" && row.LastMessageMS != 0 {
 			found = true
 		}
 	}
@@ -168,7 +168,7 @@ func TestBackendE2E(t *testing.T) {
 			m.Update(msg)
 		}
 	}
-	waitReport(func() bool { return !state.footer.context.Estimated && state.info.Title == "/skill:fixture-review" })
+	waitReport(func() bool { return !state.footer.context.Estimated && state.info.Title == "fixture-review skill" })
 	if row := ansi.Strip(m.frame.rows[m.height-1]); state.footer.context.Tokens == 0 || !state.intro.frozen || !strings.Contains(ansi.Strip(m.View().Content), "ctx ") {
 		t.Fatalf("missing reported context after submit: %q", row)
 	}

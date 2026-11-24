@@ -27,13 +27,19 @@ func activityRegistration() x.Registration {
 	}}}
 }
 
-func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) x.Content {
+// blockRange identifies the expanded children, not the summary or the
+// surrounding space. Only the built-in activity projection supplies these.
+type blockRange struct{ start, end int }
+
+func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x.Content, []blockRange) {
 	var out x.Content
+	var cards []blockRange
+	gap := x.Block{Lines: []x.Line{nil}}
 	e := r.entry
 	if e.Record.Kind == "pi.compaction" {
 		out = append(out, x.Block{Text: "─  context compacted", Tone: x.Muted})
 		if !ctx.Expanded {
-			return out
+			return out, nil
 		}
 	} else if len(e.Record.Messages) == 0 && e.Record.Kind != "model" {
 		label := "─  " + e.Record.Kind + " · transcript fork"
@@ -43,17 +49,30 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) x.
 		if m.canHintFork() {
 			label += " · esc esc"
 		}
-		return x.Content{{Text: label, Tone: x.Muted}}
+		return x.Content{{Text: label, Tone: x.Muted}}, nil
+	}
+	needsGap := false
+	space := func() {
+		if needsGap {
+			out = append(out, gap)
+			needsGap = false
+		}
 	}
 	for i, msg := range e.Record.Messages {
 		if msg.Role == "toolResult" {
 			if burst := r.bursts[i]; burst != nil {
+				out = append(out, gap)
+				start := len(out)
 				out = append(out, m.burstContent(ctx, t, burst)...)
+				if start+1 < len(out) {
+					cards = append(cards, blockRange{start + 1, len(out)})
+				}
+				needsGap = true
 			}
 			continue
 		}
+		needsGap = needsGap || r.afterBurst&(1<<i) != 0
 		shownThought := false
-		afterBurst := r.afterBurst&(1<<i) != 0
 		for _, b := range msg.Blocks {
 			switch b.Type {
 			case "thinking":
@@ -61,6 +80,7 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) x.
 					continue
 				}
 				if !shownThought {
+					space()
 					label := "Thought"
 					if r.thought.Round(time.Second) > 0 {
 						label += " · " + elapsedLabel(r.thought)
@@ -74,18 +94,16 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) x.
 				if strings.TrimSpace(b.Text) == "" {
 					continue
 				}
-				if afterBurst {
-					out = append(out, x.Block{Lines: []x.Line{nil}})
-					afterBurst = false
-				}
+				space()
 			}
 			out = append(out, messageBlocks(ctx, msg.Role, []sdk.Block{b})...)
 		}
 		if msg.Error != "" {
+			space()
 			out = append(out, x.Block{Text: msg.Error, Tone: x.Danger})
 		}
 	}
-	return out
+	return out, cards
 }
 
 func (m *Model) applyActivity(t *threadState, s sdk.State, now time.Time, newRows []*record) {
@@ -101,15 +119,26 @@ func (m *Model) applyActivity(t *threadState, s sdk.State, now time.Time, newRow
 		v.failure = *s.Failure
 	}
 	v.compactionFailure = deref(s.CompactionFailure)
+	phase, tool, _ := t.toolStatus()
+	if phase == liveToolRunning {
+		v.intent = t.projected.pending[tool.CallID].intent
+	}
 	if s.Streaming != nil {
 		v.attempt = s.Streaming.Attempt
+		intent := ""
 		for _, b := range s.Streaming.Blocks {
+			if b.Type == "toolCall" && phase == liveToolRunning && b.ID == tool.CallID && v.intent == "" {
+				v.intent = intent
+			}
 			if isReasoning(b) {
 				v.thinking = true
 			}
 			if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
 				v.responding = true
 				v.thinking = false
+				if phase == liveToolRunning && v.intent == "" {
+					intent = progressIntent(b.Text)
+				}
 			}
 		}
 	}
@@ -176,6 +205,22 @@ type activityState struct {
 	compacting, thinking, responding bool
 	failure, compactionFailure       sdk.Failure
 	tools                            map[string]time.Time
+	intent                           string
+}
+
+// Use an explicit, short progress aside immediately before a tool call, not
+// arbitrary prose, private reasoning, or the last line printed by the tool.
+func progressIntent(text string) string {
+	line := strings.TrimSpace(text)
+	line = strings.TrimSpace(line[strings.LastIndexByte(line, '\n')+1:])
+	if len(line) < 3 || len(line) > 192 || (line[0] != '*' && line[0] != '_') || line[len(line)-1] != line[0] {
+		return ""
+	}
+	inner := strings.TrimSpace(line[1 : len(line)-1])
+	if inner == "" || strings.ContainsRune(inner, rune(line[0])) {
+		return ""
+	}
+	return oneLine(inner)
 }
 
 func isReasoning(b sdk.Block) bool {
@@ -211,6 +256,8 @@ const (
 	liveSending
 	liveStarting
 	liveWaiting
+	liveResponding
+	liveWorking
 	liveFailed
 )
 
@@ -222,6 +269,32 @@ func (t *threadState) liveStatus() (livePhase, *x.Tool, int) {
 	if t.stream.Value.Retry != nil {
 		return liveRetry, nil, 0
 	}
+	if phase, tool, count := t.toolStatus(); phase != liveIdle {
+		return phase, tool, count
+	} else if count > 0 && !a.thinking && !a.responding {
+		return liveWaiting, nil, 0
+	}
+	switch {
+	case a.thinking:
+		return liveThinking, nil, 0
+	case t.sending && a.task == "" && !t.stream.Present:
+		return liveSending, nil, 0
+	case t.awaiting != "" && a.task == "" && !t.stream.Present:
+		return liveStarting, nil, 0
+	case a.responding:
+		return liveResponding, nil, 0
+	case t.waitingForModel():
+		return liveWaiting, nil, 0
+	case t.visibleFailure().TaskID != "" && !t.activeRun:
+		return liveFailed, nil, 0
+	case threadBusy(t):
+		return liveWorking, nil, 0
+	default:
+		return liveIdle, nil, 0
+	}
+}
+
+func (t *threadState) toolStatus() (livePhase, *x.Tool, int) {
 	var running, parked, pending *x.Tool
 	var outstanding int
 	for i := range t.tools {
@@ -251,18 +324,8 @@ func (t *threadState) liveStatus() (livePhase, *x.Tool, int) {
 		return liveToolParked, parked, outstanding
 	case pending != nil:
 		return liveToolPending, pending, outstanding
-	case a.thinking:
-		return liveThinking, nil, 0
-	case t.sending && a.task == "" && !t.stream.Present:
-		return liveSending, nil, 0
-	case t.awaiting != "" && a.task == "" && !t.stream.Present:
-		return liveStarting, nil, 0
-	case t.waitingForModel() || outstanding > 0:
-		return liveWaiting, nil, 0
-	case t.visibleFailure().TaskID != "" && !t.activeRun:
-		return liveFailed, nil, 0
 	}
-	return liveIdle, nil, 0
+	return liveIdle, nil, outstanding
 }
 
 func (t *threadState) visibleFailure() sdk.Failure {
@@ -283,7 +346,7 @@ func (m *Model) liveFailureContent(ctx x.RenderContext, t *threadState) x.Conten
 			hints = m.recoveryHints(issueActions(t.info.ID, issue), true)
 		}
 	} else if t.presentation == nil && (f.Reason == "model_error" || f.Reason == "no_model") && m.menuFeatures().Has(x.Catalog) {
-		hints = x.Line{{Text: "/model to switch", Tone: x.Accent, Action: x.ActionRef{ID: modelPickerID}, Hint: "choose a model"}}
+		hints = x.Line{{Text: "/model to switch", Tone: x.Muted, Action: x.ActionRef{ID: modelPickerID}, Hint: "choose a model"}}
 	}
 	label := runFailureText(f.Reason, f.Detail)
 	if f == t.activity.compactionFailure {
@@ -295,71 +358,91 @@ func (m *Model) liveFailureContent(ctx x.RenderContext, t *threadState) x.Conten
 
 const thinkingSpinnerStep = 200 * time.Millisecond
 
-func (m *Model) liveActivity(ctx x.RenderContext, t *threadState) x.Content {
-	phase, tool, count := t.liveStatus()
-	if tool != nil {
-		if content, handled := m.toolRenderer(ctx, *tool); handled {
-			return content
+func (m *Model) liveActivity(t *threadState, width int, phase livePhase, tool *x.Tool, count int) displayRow {
+	if phase == liveIdle || width < 4 {
+		return displayRow{}
+	}
+	if tool != nil || phase == liveFailed {
+		ctx := m.renderContext(t, width, 1, true)
+		ctx.MaxBytes = 4 << 10
+		if t.liveOverride {
+			ctx.Expanded = t.liveExpanded
+		}
+		var content x.Content
+		var handled bool
+		if tool != nil {
+			content, handled = m.toolRenderer(ctx, *tool)
+		} else {
+			content, handled = m.liveFailureContent(ctx, t), true
+		}
+		if handled {
+			if rows := m.layoutContent(ctx, renderKey{}, content); len(rows) > 0 {
+				return rows[0]
+			}
+			return displayRow{}
 		}
 	}
 	a := t.activity
 	spinner := [...]string{"◌", "◔", "◑", "◕"}
-	label, preview, icon, tone := "", "", spinner[m.phase], x.Accent
+	label, icon, tone := "", spinner[m.phase], x.Accent
 	since := a.since
 	switch phase {
 	case liveCompacting:
-		label = "compacting the context"
+		label = "Compacting context"
 	case liveRetry:
 		r := t.stream.Value.Retry
 		left := max(0, int64(r.AtMS)-m.now.UnixMilli()+999) / 1000
-		label = fmt.Sprintf("retry %d · %ds", t.stream.Value.Attempt, left)
-		icon, tone = "⟳", x.Warning
-		since = time.Time{}
-	case liveToolRunning, liveToolParked:
-		label = "running " + toolActionLabel(*tool)
-		if count > 1 {
-			label = fmt.Sprintf("%s · +%d", label, count-1)
-		}
-		if phase == liveToolParked {
-			icon, tone = "◐", x.Warning
-			label = tool.Name + " " + tool.Status
-		} else if output := strings.TrimRight(tool.Output, " \t\r\n"); output != "" {
-			preview = output[strings.LastIndexByte(output, '\n')+1:]
+		label = fmt.Sprintf("Retry %d · %ds", t.stream.Value.Attempt, left)
+		icon, tone, since = "⟳", x.Warning, time.Time{}
+	case liveToolRunning:
+		label = a.intent
+		if label == "" {
+			action := toolActionLabel(*tool)
+			if action == "bash" {
+				action = "shell command"
+			}
+			label = "Running " + action
 		}
 		since = a.tools[tool.CallID]
+	case liveToolParked:
+		icon, tone, since = "◐", x.Warning, a.tools[tool.CallID]
+		label = "Waiting on " + tool.Name
+		if tool.Status == "sleeping" {
+			label = "Sleeping"
+		}
 	case liveToolPending:
-		label = "waiting for " + tool.Name
+		label = "Waiting for " + tool.Name
 	case liveThinking:
-		label, since, icon = "thinking", a.thinkAt, spinner[0]
+		label, since, icon = "Thinking", a.thinkAt, spinner[0]
 		if !m.options.ReducedMotion && !since.IsZero() {
 			step := max(0, m.now.Sub(since)) / thinkingSpinnerStep
 			icon = spinner[step%time.Duration(len(spinner))]
 		}
 	case liveSending:
-		label, since = "sending", time.Time{}
+		label, since = "Sending", time.Time{}
 	case liveStarting:
-		label, since = "starting", time.Time{}
+		label, since = "Starting", time.Time{}
 	case liveWaiting:
-		label = "waiting for model"
-	case liveFailed:
-		return m.liveFailureContent(ctx, t)
-	default:
-		return nil
+		label = "Waiting for model"
+	case liveResponding:
+		label, since, icon = "Writing answer", time.Time{}, spinner[0]
+	case liveWorking:
+		label, since, icon = "Working", time.Time{}, spinner[0]
 	}
 	suffix := ""
+	if count > 1 {
+		suffix = fmt.Sprintf(" · +%d", count-1)
+	}
 	if elapsed := m.now.Sub(since); !since.IsZero() && elapsed >= time.Second {
-		suffix = " · " + elapsedLabel(elapsed)
+		suffix += " · " + elapsedLabel(elapsed)
 	}
-	row := x.Line{{Text: icon + " ", Tone: tone}, {Text: label, Tone: x.Plain}}
-	if suffix != "" || preview != "" {
-		room := max(1, ctx.Width-stringWidth(icon+" ")-stringWidth(suffix))
-		label = ansi.Truncate(oneLine(limitText(label, 4096)), room, "…")
-		if spare := room - stringWidth(label); preview != "" && spare >= 5 {
-			label += ansi.Truncate(" · "+oneLine(limitText(preview, 1024)), spare, "…")
-		}
-		row[1].Text = label + suffix
+	if stringWidth(suffix) > width-8 {
+		suffix = ""
 	}
-	return x.Content{activityRow(row, "", ctx.Width)}
+	room := width - stringWidth(icon+" ") - stringWidth(suffix)
+	label = strings.TrimSpace(oneLine(limitText(label, 512)))
+	label = ansi.Truncate(label, room, "…")
+	return displayRow{text: paint(tone, icon+" \x1b[3m"+label+"\x1b[23m"+suffix)}
 }
 
 func (m *Model) canHintFork() bool {

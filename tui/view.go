@@ -18,7 +18,7 @@ type frameMemo struct {
 	owner                                       sdk.ID
 	navigation                                  uint64
 	width, height                               int
-	transcriptHeight                            int
+	transcriptHeight, ruleY                     int
 	hasAbove, hasBelow, hasTranscript           bool
 	thumbStart, thumbEnd                        int
 	top                                         rowAnchor
@@ -87,15 +87,9 @@ func (m *Model) View() tea.View {
 	var slash []registeredAction
 	var below []displayRow
 	f.slashStart, f.slashEnd = m.height, m.height
-	continuation := false
-	footerRows := 0
-	if m.intro != nil {
-		footerRows = 1
-		if len(m.tabs) >= 2 {
-			footerRows++
-		}
-	}
-	listEnd := m.height - footerRows
+	continuation, filePicker := false, false
+	chrome := m.chromeRows(t, w)
+	listEnd := m.height - len(chrome)
 	var overlayRoom int
 	if len(m.overlays) != 0 {
 		overlayRoom = minOverlayBodyRows
@@ -115,22 +109,16 @@ func (m *Model) View() tea.View {
 	} else if overlayRoom > 0 {
 		continuation = true // an overlay owns focus; hide background completion lists
 	} else if files := m.fileRows(w); len(files) > 0 {
-		below = files
+		below, filePicker = files, true
 	} else if slash = m.slashMatches(); len(slash) > 0 {
 		below = m.slashSheet(slash, w)
 		f.slashStart, f.slashEnd = listEnd-len(below)+1, listEnd
 	} else {
-		if t.intro != nil && !t.intro.frozen && len(m.tabs) < 2 {
-			below = []displayRow{m.introHints(w, t.intro.mono())}
-		}
 		continuation = true
 	}
-	if footerRows != 0 || continuation {
-		below = append(below, m.chromeRows(t, w)...)
-	}
+	below = append(below, chrome...)
 
 	editorRows, cursor := m.promptRows(t, w, slash)
-	var live []displayRow
 	var notice displayRow
 	free := m.height - 1 - len(editorRows) - len(below)
 	var attachments []displayRow
@@ -146,18 +134,7 @@ func (m *Model) View() tea.View {
 	if notice.text != "" {
 		noticeRows = 1
 	}
-	if free > overlayRoom {
-		ctx := m.renderContext(t, w, 1, true)
-		ctx.MaxBytes = min(ctx.MaxBytes, 4<<10)
-		ctx.Expanded = t.expanded
-		if t.liveOverride {
-			ctx.Expanded = t.liveExpanded
-		}
-		if content := m.liveActivity(ctx, t); len(content) > 0 {
-			live = m.layoutContent(ctx, renderKey{}, content)
-		}
-	}
-	room := max(0, free-max(1, overlayRoom)-len(live))
+	room := max(0, free-max(1, overlayRoom))
 	queued := t.queueRows(w, room)
 	room -= len(queued)
 	widgetAbove := m.widgetRows(t, w, x.AboveEditor, min(3, room))
@@ -165,7 +142,7 @@ func (m *Model) View() tea.View {
 		widgetBelow := m.widgetRows(t, w, x.BelowEditor, min(3, room-len(widgetAbove)))
 		below = append(widgetBelow, below...)
 	}
-	f.transcriptHeight = max(0, m.height-1-len(editorRows)-len(below)-len(widgetAbove)-len(live)-len(queued)-noticeRows-len(attachments))
+	f.transcriptHeight = max(0, m.height-1-len(editorRows)-len(below)-len(widgetAbove)-len(queued)-noticeRows-len(attachments))
 	rows := m.transcript(t, w, f.transcriptHeight)
 	origin := 0
 	// Keep short transcripts under their intro. Once the viewport fills,
@@ -213,19 +190,20 @@ func (m *Model) View() tea.View {
 				}
 			}
 		}
-		f.rows[y] = margin + fit(r.text, w)
+		line := fit(r.text, w)
+		if r.card {
+			line = surface(line, m.palette.softInk)
+		}
+		prefix := margin
 		if r.user {
-			if m.palette.soft != nil {
-				f.rows[y] = fill(f.rows[y]+" ", m.palette.soft)
-			} else {
-				f.rows[y] = paint(x.Muted, "│ ") + fit(r.text, w)
-			}
+			prefix = paint(x.Accent, "│") + " "
+		}
+		f.rows[y] = prefix + line
+		if r.tabBand {
+			f.rows[y] = surface(f.rows[y]+margin, m.palette.softInk)
 		}
 		if rail && y < f.transcriptHeight {
-			if !r.user || m.palette.soft == nil {
-				f.rows[y] += " "
-			}
-			f.rows[y] += m.scrollCell(&f, y)
+			f.rows[y] += " " + m.scrollCell(&f, y)
 		}
 		if len(r.hits) > 0 {
 			for _, hit := range r.hits {
@@ -281,10 +259,6 @@ func (m *Model) View() tea.View {
 		}
 	}
 	y := f.transcriptHeight
-	for _, row := range live {
-		add(y, row)
-		y++
-	}
 	for _, row := range widgetAbove {
 		add(y, row)
 		y++
@@ -297,20 +271,20 @@ func (m *Model) View() tea.View {
 		add(y, row)
 		y++
 	}
-	rule := ""
-	if !t.following && (t.intro == nil || t.intro.frozen || f.hasBelow || t.anchor != (rowAnchor{id: introEntry})) {
-		label := "scroll paused"
-		if f.hasBelow {
-			label = "output below"
-		}
-		rule = paint(x.Muted, "─ ") + m.control(label+" · "+shellKeys.follow.Help().Key+" resume") + " "
-	}
-	add(y, m.gitDiffRule(t, rule, w))
-	y++
 	for _, row := range attachments {
 		add(y, row)
 		y++
 	}
+	paused := ""
+	if !t.following && (t.intro == nil || t.intro.frozen || f.hasBelow || t.anchor != (rowAnchor{id: introEntry})) {
+		paused = "scroll paused"
+		if f.hasBelow {
+			paused = "output below"
+		}
+	}
+	f.ruleY = y
+	add(y, m.promptRule(t, w, paused, m.ruleHints(t, len(slash) > 0, filePicker)))
+	y++
 	if cursor != nil && m.focused {
 		cursor.Position.X += len(margin)
 		cursor.Position.Y += y
@@ -453,13 +427,10 @@ func (m *Model) slashSheet(matches []registeredAction, w int) []displayRow {
 }
 
 func (m *Model) promptRows(t *threadState, w int, slash []registeredAction) ([]displayRow, *tea.Cursor) {
-	label, tone := "you › ", x.Accent
+	label := "you › "
 	intro := t.intro != nil && !t.intro.frozen
 	if intro {
 		label = "main › "
-		if t.intro.mono() {
-			tone = x.Plain
-		}
 	}
 	if threadBusy(t) && m.focusedDialog() == nil && len(slash) == 0 {
 		label = "steer › "
@@ -495,29 +466,68 @@ func (m *Model) promptRows(t *threadState, w int, slash []registeredAction) ([]d
 				}
 			}
 		}
-		if i == 0 && len(output) == 1 {
-			right := m.promptChrome(t, len(slash) > 0)
-			left := strings.TrimRight(text, " ")
-			// Leave a cell for the cursor and a gap before the hints.
-			room := w - prefix - stringWidth(left) - 2
-			if room > 0 && len(right) > 0 {
-				for len(right) > 0 && stringWidth(strings.Join(right, "  ")) > room {
-					right = right[:len(right)-1]
-				}
-				tail := strings.Join(right, "  ")
-				if tail != "" {
-					text = fit(left, w-prefix-stringWidth(tail)) + tail
-				} else if len(slash) > 0 {
-					text = left
-				}
-			}
-		}
-		rows = append(rows, displayRow{text: paint(tone, fit(lead, prefix)) + text})
+		rows = append(rows, displayRow{text: m.control(fit(lead, prefix)) + text})
 	}
 	return rows, cursor
 }
 
-func (m *Model) promptChrome(t *threadState, slashes bool) []string {
+// The rule takes one row in every state. Its left side is live activity;
+// optional hints and the worktree action share the right without taking
+// space from the editor or wrapping the rule into the transcript.
+func (m *Model) promptRule(t *threadState, w int, paused string, hints []string) displayRow {
+	phase, tool, count := t.liveStatus()
+	var right displayRow
+	if paused != "" {
+		key := shellKeys.follow.Help().Key
+		resume := paused + " · " + key + " resume"
+		if phase != liveIdle && stringWidth(resume) > w/3 {
+			resume = key + " resume"
+			if w < 52 {
+				resume = key
+			}
+		}
+		right.text = m.control(resume)
+	}
+	const ruleSpace = 3 // a stroke and room on each side
+	liveWidth := w - ruleSpace - stringWidth(right.text)
+	if len(hints) > 0 && phase != liveFailed && w >= 56 {
+		first := stringWidth(hints[0]) + 2
+		if liveWidth-first >= 28 {
+			liveWidth -= first // keep the most important hint beside long commands
+		}
+	}
+	out := m.liveActivity(t, liveWidth, phase, tool, count)
+	leftWidth := stringWidth(out.text)
+	room := w - ruleSpace - leftWidth - stringWidth(right.text)
+	for _, hint := range hints {
+		n := stringWidth(hint)
+		if right.text != "" {
+			n += 2
+		}
+		if n > room {
+			break
+		}
+		mergeRow(&right, displayRow{text: hint}, "  ")
+		room -= n
+	}
+	if right.text != "" {
+		room -= 2
+	}
+	mergeRow(&right, m.gitDiffBadgeRow(t, room), "  ")
+	strokes := w - leftWidth - stringWidth(right.text)
+	if out.text != "" {
+		out.text += " "
+		strokes--
+	}
+	if right.text != "" {
+		strokes--
+	}
+	out.text += paint(x.Muted, strings.Repeat("─", max(0, strokes)))
+	mergeRow(&out, right, " ")
+	return out
+}
+
+func (m *Model) ruleHints(t *threadState, slashes, files bool) []string {
 	if m.focusedDialog() != nil {
 		return nil
 	}
@@ -534,11 +544,18 @@ func (m *Model) promptChrome(t *threadState, slashes bool) []string {
 	if slashes {
 		return []string{m.keyHint("enter", "run"), m.keyHint("tab", "complete"), m.keyHint("esc", "close")}
 	}
+	if files {
+		return []string{m.keyHint("esc", "close")}
+	}
 	if m.hover != "" {
 		return []string{m.control(oneLine(m.hover))}
 	}
 	if threadBusy(t) {
-		return []string{m.keyHint("enter", "steer"), m.keyHint("esc", "stop"), m.keyHint("alt+enter", "follow-up")}
+		hints := []string{m.keyHint("esc", "stop")}
+		if m.editor.value() != "" || len(t.attachments) != 0 {
+			hints = append(hints, m.keyHint("enter", "steer"), m.keyHint("alt+enter", "follow-up"))
+		}
+		return hints
 	}
 	if len(t.attachments) != 0 {
 		return []string{m.keyHint("enter", "send"), m.keyHint("ctrl+c", "clear")}
@@ -547,7 +564,7 @@ func (m *Model) promptChrome(t *threadState, slashes bool) []string {
 		return []string{m.keyHint("enter", "send")}
 	}
 	if t.intro != nil && !t.intro.frozen && len(m.tabs) < 2 {
-		return nil // shortcuts are on the line below the startup prompt
+		return []string{m.keyHint("/", "commands"), m.keyHint(m.actionBinding(m.host.actions[m.host.byID[switcherID]]), "threads"), m.keyHint("?", "all keys")}
 	}
 	return []string{m.keyHint("/", "commands"), m.keyHint("?", "all keys")}
 }

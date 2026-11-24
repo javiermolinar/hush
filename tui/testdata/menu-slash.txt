@@ -6,7 +6,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -16,7 +15,8 @@
   ── go  copy     ────────────────────────
     func main() { println(42) }
   ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────────────────
-  you › /fork                               enter run  tab complete  esc close
+  ───────────────────────────────────────── enter run  tab complete  esc close
+  you › /fork
 
   › /fork  Fork history                                                 ctrl+f
+  dir workspace

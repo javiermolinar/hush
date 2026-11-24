@@ -13,6 +13,6 @@
   │   ?  src/auth/fixture␛.png                                         — │
   │ enter open  esc close  tab range  u refresh                          │
   ╰──────────────────────────────────────────────────────────────────────╯
-  ───────────────────────────────────────────────── ± 4 files  +82 −18* ──
+  ◌ Working ────────────────────────────────────────── ± 4 files  +82 −18*
   you › keep this draft
-  ● workspace #1
+  dir workspace

@@ -16,6 +16,7 @@ import { assertFrame } from "../../protocol/v1/replay.mjs";
 import { dial } from "../../server/test/client.mjs";
 import { loadModels, startBackend } from "../../dist/hush-backend.mjs";
 import { parseConfig } from "../../dist/backend/src/config.js";
+import { displayTitle, topicTitle } from "../../dist/backend/src/thread-presentation.js";
 
 const bundle = new URL("../../dist/hush-backend.mjs", import.meta.url);
 const piDir = fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent", import.meta.url));
@@ -301,6 +302,15 @@ test("custom models and live auth lookup use the same Pi stores without exportin
   await ours.runtime.settleCredentialWrites();
 });
 
+test("local titles use the topic of the first exchange, not generic opening words", () => {
+  assert.equal(topicTitle("There is a bug where other threads cannot be clicked with the mouse just using the /threads menu",
+    "Fixed the tab-click bug: inactive threads now switch when clicked with the mouse."), "tab-click bug");
+  assert.equal(topicTitle("It seems to be a bug. 1. Start a new thread and global skills are not showing.",
+    "Fixed skills loading in new threads: global skills now appear."), "skills loading");
+  assert.equal(topicTitle("Fix the café picker with detai…"), "café picker");
+  assert.equal(displayTitle({ title: "My intentionally much longer title", topicTitle: "café picker" }), "My intentionally much longer title");
+});
+
 test("thread directory keeps friendly titles and pages by last committed message", { timeout: 15_000 }, async t => {
   const { config } = await layout(t, { idleMs: 10_000 });
   const app = await startBackend({ ...config, piEvents: true });
@@ -336,11 +346,11 @@ test("thread directory keeps friendly titles and pages by last committed message
     if (first.threads[0]?.lastMessageMs === stamp && !first.indexing) break;
     await setTimeout(20);
   }
-  assert.deepEqual(first.threads, [{ id: older, title: "Fix the café picker with details", lastMessageMs: stamp }]);
+  assert.deepEqual(first.threads, [{ id: older, title: "café picker", lastMessageMs: stamp }]);
   assert.ok(first.nextCursor);
   second = ok(await c.send(method, { limit: 10, cursor: first.nextCursor }));
   assert.equal(second.threads[0].id, newer);
-  assert.equal(second.threads[0].title, "Review terminal layout");
+  assert.equal(second.threads[0].title, "terminal layout");
   assert.deepEqual(second.threads.find(row => row.id === quiet), { id: quiet });
   assert.equal(second.nextCursor, null);
 
@@ -443,7 +453,7 @@ test("opted-in title model sees a bounded first exchange once, outside native tu
     res.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = (delta, finish_reason) => res.write("data: " + JSON.stringify({ id: "chatcmpl-title", object: "chat.completion.chunk",
       created: 1, model: body.model, choices: [{ index: 0, delta, finish_reason }] }) + "\n\n");
-    chunk({ content: title ? "  Cursor   review  " : "Follow the cursor after a committed entry." }, null);
+    chunk({ content: title ? "  Cursor   paging regression review extra words  " : "Follow the cursor after a committed entry." }, null);
     chunk({}, "stop");
     res.end("data: [DONE]\n\n");
   }).listen(0, "127.0.0.1");
@@ -473,14 +483,14 @@ test("opted-in title model sees a bounded first exchange once, outside native tu
   let row;
   for (let i = 0; i < 50; i++) {
     [row] = ok(await c.send("ext.threadDirectory.get", { threadIds: [id] })).threads;
-    if (row?.title === "Cursor review") break;
+    if (row?.title === "Cursor paging regression review") break;
     await setTimeout(20);
   }
-  assert.equal(row?.title, "Cursor review");
+  assert.equal(row?.title, "Cursor paging regression review");
   assert.equal(row.status, "done");
   assert.equal(titles.length, 1);
   const request = titles[0];
-  assert.match(request.messages[0].content, /at most six words/);
+  assert.match(request.messages[0].content, /2–4 word title/);
   assert.match(request.messages.at(-1).content, /"user":"Review paging/);
   assert.match(request.messages.at(-1).content, /"answer":"Follow the cursor/);
   assert.ok(request.messages.at(-1).content.length < 250);
@@ -491,9 +501,9 @@ test("opted-in title model sees a bounded first exchange once, outside native tu
   server = await startBackend(options);
   c = await peer();
   const list = () => c.send("ext.threadDirectory.list", { limit: 10 }).then(ok);
-  assert.equal((await list()).threads.find(row => row.id === id).title, "Cursor review");
+  assert.equal((await list()).threads.find(row => row.id === id).title, "Cursor paging regression review");
   await ask("Continue the review", "title-second");
-  assert.equal((await list()).threads.find(row => row.id === id).title, "Cursor review");
+  assert.equal((await list()).threads.find(row => row.id === id).title, "Cursor paging regression review");
   ok(await c.send("ext.intro.rename", { threadId: id, title: "Manual title wins" }));
   assert.equal((await list()).threads.find(row => row.id === id).title, "Manual title wins");
   assert.equal(titles.length, 1);
@@ -626,10 +636,10 @@ test("intro v2 names threads and scopes recovery to a settled failure", { timeou
   assert.equal((await ask("Fix the café picker\nwith details", "intro-v2-title")).status, "done");
   const outcome = await ask("!error", "intro-v2-error");
   assert.equal(outcome.reason, "model_error");
-  const first = await reportUntil(r => r.thread?.issue && r.attention[0]?.title === "Fix the café picker with details", scope);
+  const first = await reportUntil(r => r.thread?.issue && r.attention[0]?.title === "café picker", scope);
   const issue = first.thread.issue;
   assert.equal(first.thread.id, threadId);
-  assert.equal(first.thread.title, "Fix the café picker with details");
+  assert.equal(first.thread.title, "café picker");
   assert.equal(issue.reason, "model_error");
   assert.equal(issue.detail, "synthetic failure");
   assert.equal(issue.retry, true);

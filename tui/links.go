@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -23,7 +24,8 @@ type linkTarget struct {
 	codeID    string
 }
 
-var references = regexp.MustCompile(`https?://[^\s<>"'\x{2400}-\x{2426}]+|@[A-Za-z0-9_./-]+(?::[0-9]+)?|#[0-9]+`)
+// Bare paths need a line number to distinguish them from ordinary dotted words.
+var references = regexp.MustCompile(`https?://[^\s<>"'\x{2400}-\x{2426}]+|@[A-Za-z0-9_./-]+(?::[0-9]+)?|#[0-9]+|/?(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+:[1-9][0-9]*`)
 var pathLine = regexp.MustCompile(`^(.*?)(?::([1-9][0-9]*)|#L([1-9][0-9]*))$`)
 
 func hasControl(s string) bool {
@@ -113,7 +115,11 @@ func hyperlink(text, params, uri string) string {
 	if uri == "" || text == "" {
 		return text
 	}
-	return "\x1b[34m" + oscLink + params + ";" + uri + oscEnd + text + oscLink + ";" + oscEnd + "\x1b[39m"
+	ink := "\x1b[4m"
+	if strings.HasPrefix(uri, "file:") {
+		ink = "\x1b[4:4m" // dotted underline distinguishes paths from web links
+	}
+	return ink + oscLink + params + ";" + uri + oscEnd + text + oscLink + ";" + oscEnd + "\x1b[24m"
 }
 
 func (m *Model) linkify(text, workspace string) string {
@@ -137,7 +143,11 @@ func (m *Model) linkify(text, workspace string) string {
 				uri = safeURL(strings.TrimRight(m.options.RepositoryURL, "/") + "/pull/" + match[1:])
 			}
 		default:
-			uri = safeURL(match)
+			if strings.HasPrefix(match, "http://") || strings.HasPrefix(match, "https://") {
+				uri = safeURL(match)
+			} else if i == 0 || !strings.ContainsRune(":/", rune(text[i-1])) {
+				par, uri = fileTarget(workspacePath(workspace, match))
+			}
 		}
 		if uri == "" {
 			continue
@@ -228,25 +238,45 @@ func (m *Model) renderText(text string, width int, workspace string) []string {
 	return lines
 }
 
-// Wrap preserves OSC sequences, but a link can span several physical rows.
-// Close and reopen it at those boundaries so each row can be hit-tested on its own.
-func balanceRowLinks(lines []string) {
-	open := ""
+// Wrapping leaves SGR and OSC 8 in the text stream. Close and reopen at
+// physical row boundaries so a chip doesn't tint the margin or padding, and
+// a link remains independently hit-testable on a scrolled continuation row.
+func balanceRowMarkup(lines []string) {
+	var pen uv.Style
+	var link string
+	p := ansi.GetParser()
+	defer ansi.PutParser(p)
 	for i, line := range lines {
-		carried := open
-		if start := strings.LastIndex(line, oscLink); start >= 0 {
-			if seq, _, ok := strings.Cut(line[start:], oscEnd); ok {
-				open = seq + oscEnd
-				if open == oscLink+";"+oscEnd {
-					open = ""
-				}
+		prefix := link
+		if !pen.IsZero() {
+			prefix = pen.String() + prefix
+		}
+		for rest := line; ; {
+			at := strings.IndexByte(rest, '\x1b')
+			if at < 0 {
+				break
+			}
+			seq, _, n, _ := ansi.DecodeSequence(rest[at:], 0, p)
+			if n == 0 {
+				break
+			}
+			rest = rest[at+n:]
+			switch {
+			case ansi.HasCsiPrefix(seq) && p.Command() == 'm':
+				uv.ReadStyle(p.Params(), &pen)
+			case seq == oscLink+";"+oscEnd:
+				link = ""
+			case strings.HasPrefix(seq, oscLink):
+				link = seq
 			}
 		}
-		if carried != "" {
-			lines[i] = "\x1b[34m" + carried + line
+		suffix := ""
+		if link != "" {
+			suffix = oscLink + ";" + oscEnd
 		}
-		if open != "" {
-			lines[i] += oscLink + ";" + oscEnd + "\x1b[39m"
+		if !pen.IsZero() {
+			suffix += ansi.ResetStyle
 		}
+		lines[i] = prefix + line + suffix
 	}
 }

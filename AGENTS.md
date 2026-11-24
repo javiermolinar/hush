@@ -86,9 +86,10 @@ Bubble Tea calls `View` after every message, not once per frame, and draws at mo
   information, and the terminal's own background, queried with OSC 11 and asked again when it does not answer, is the
   base for every background. Never hardcode a color.
 - Soft backgrounds are one OKLab lightness step from the terminal's background, −0.03 on light themes and +0.045 on
-  dark ones, and 1.8 steps for key caps. They mark your messages, the tab band, and key caps.
+  dark ones, and 1.8 steps for key caps. They mark the tab band, inline code chips, expanded tool cards, and key caps.
+  A left bar marks your messages; agent prose uses the terminal foreground.
 - When that step is indistinguishable (contrast below 0.015), the background is unknown, or there is no truecolor,
-  drop the soft backgrounds: your messages get a left bar and keys become plain text. The layout never changes with
+  drop the soft backgrounds. Inline code uses emphasis and keys become plain text. The layout never changes with
   the theme.
 - A reported background is not always what shows: translucent or blended panes (Rex) show the window behind them,
   where every fill derived from the report reads as a dark slab. Fills are a setting (`auto|on|off`, off in Rex);
@@ -98,20 +99,22 @@ Bubble Tea calls `View` after every message, not once per frame, and draws at mo
   background, show state with color alone.
 - Check both themes in the shots (Catppuccin Latte and Mocha) before calling a color change done.
 - No `▕ ▏` bars as outlines: they look broken in Rex. Keys are key caps on a soft background.
-- Activity is unboxed; an active sleep is reported on the live line in amber. Quotes and tables are unboxed.
-  Code blocks have faint rules above and below, sized to the code.
-- Code takes ANSI magenta (keywords) and cyan (strings, numbers, inline code), which mark nothing else; comments are
-  faint. Red and green appear in code only on a diff's lines.
+- Folded activity is unboxed. Expanded results use a tinted card, with failures first. An active sleep is reported
+  on the input rule in amber. Quotes and tables are unboxed. Code blocks have faint rules above and below, sized to the code.
+- Code blocks take ANSI magenta (keywords) and cyan (strings and numbers); comments are faint. Red and green appear
+  in code only on a diff's lines. In the transcript and footer, blue foreground marks live activity and the user bar,
+  not hyperlinks, tab titles or input labels.
 
 ## Layout
 
 - The UI uses the full terminal width.
 - In production, prompt, status, user and assistant text, folded tool summaries, and live activity start two cells in.
-  User tint or a fallback bar extends left of that edge. Only expanded tool children indent.
-- One blank transcript row separates speakers. Tool results between pieces of assistant prose (or a new user
-  turn) form one summary. Count committed results and errors; put the timestamp at the right edge.
-- The live state is one separate line above the prompt, even when scrolled back. Merge thread name into the
-  status line with a single open thread; show the tab bar only when at least two are open.
+  The user bar extends left of that edge. Only expanded tool children indent.
+- One blank transcript row separates speakers and sets off bursts on both sides. Tool results between pieces of
+  assistant prose (or a new user turn) form one summary. Count committed results and errors; put the timestamp at the right edge.
+- Live state and hints share the rule immediately above the input, even when scrolled back. Below the input show
+  directory, branch, model, current context and spend when available; cumulative tokens are in usage details.
+  Merge a single thread's title into status; show the tab band only when at least two are open.
 - Wrap messages and detailed output. One-line summaries and chrome may ellipsize.
 - Hints show only the keys that apply now, most important first.
 - Lists open under the prompt (slash commands, `@` files, the switcher, the fork picker, models). The only floating
@@ -133,7 +136,7 @@ Bubble Tea calls `View` after every message, not once per frame, and draws at mo
 - The TUI captures the mouse, so it handles clicks itself: a tab opens, `+N` opens the switcher, a link opens, a
   middle click closes a tab, a click on an activity row expands it, a click on the line above a code block copies the
   block, and a drag selects and copies (OSC 52). The wheel scrolls.
-- What a click does shows before and after the click. Links use the accent and answer hover; folded activity
+- What a click does shows before and after the click. Links are underlined and answer hover; folded activity
   uses a muted disclosure marker rather than blue. Copy feedback shows where you clicked (`✓ copied`).
 - Live effects run on their own 20 fps `tea.Tick`, only while one is on screen. Reduced motion keeps effects
   still and refreshes elapsed labels once a second.
@@ -153,7 +156,8 @@ The binary also runs without the TUI, in Pi's print, JSON, and RPC modes, so oth
 
 ## Links
 
-- URLs, `@` references, PR numbers, and the paths in tool calls render as OSC 8 hyperlinks in the accent color.
+- URLs, `@` references, PR numbers, and the paths in tool calls render as OSC 8 hyperlinks: dotted underlines for
+  paths, solid underlines for web links.
 - Trailing punctuation is not part of a link, and `@` or `#` starts a reference only at the start of a word.
 - In answers, inline code that names a file in the thread's workspace links to it, and Markdown links become links
   only for `http`, `https`, `mailto`, and workspace paths. Any other scheme stays text.

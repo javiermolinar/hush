@@ -28,8 +28,8 @@ type activityProjection struct {
 }
 
 type callInfo struct {
-	args string
-	at   uint64
+	args, intent string
+	at           uint64
 }
 
 type toolChild struct {
@@ -146,6 +146,7 @@ func (t *threadState) projectRecord(p *activityProjection, r *record) bool {
 			p.burst.add(r, i, msg, call)
 			continue
 		}
+		intent := ""
 		for _, b := range msg.Blocks {
 			switch b.Type {
 			case "text":
@@ -153,9 +154,12 @@ func (t *threadState) projectRecord(p *activityProjection, r *record) bool {
 					continue
 				}
 				visible = true
-				if msg.Role == "assistant" && p.burst != nil {
-					r.afterBurst |= 1 << i
-					p.burst = nil
+				if msg.Role == "assistant" {
+					intent = progressIntent(b.Text)
+					if p.burst != nil {
+						r.afterBurst |= 1 << i
+						p.burst = nil
+					}
 				}
 			case "thinking":
 				r.readableThought = r.readableThought || strings.TrimSpace(b.Text) != ""
@@ -168,7 +172,7 @@ func (t *threadState) projectRecord(p *activityProjection, r *record) bool {
 					p.pending = make(map[string]callInfo)
 				}
 				if len(p.pending) < 1024 {
-					p.pending[b.ID] = callInfo{string(b.Arguments), msg.TimestampMS}
+					p.pending[b.ID] = callInfo{args: string(b.Arguments), intent: intent, at: msg.TimestampMS}
 				}
 			}
 		}
@@ -343,6 +347,7 @@ func (m *Model) burstContent(ctx x.RenderContext, t *threadState, b *toolBurst) 
 		return out
 	}
 	start, end := b.rangeFor(state.page)
+	cardWidth := max(1, ctx.Width-2)
 	for rank := start; rank < end; rank++ {
 		i := b.childIndex(rank)
 		child := b.children[i]
@@ -362,8 +367,8 @@ func (m *Model) burstContent(ctx x.RenderContext, t *threadState, b *toolBurst) 
 		if result.Failed {
 			meta = toolFailureLabel(msg)
 		}
-		line := x.Line{{Text: "   " + mark, Tone: tone}, {Text: label, Tone: x.Muted}}
-		out = append(out, activityRow(activityTarget(line, id+"/"+strconv.Itoa(i), "show tool result"), meta, ctx.Width))
+		line := x.Line{{Text: "  " + mark, Tone: tone}, {Text: label, Tone: x.Muted}}
+		out = append(out, activityRow(activityTarget(line, id+"/"+strconv.Itoa(i), "show tool result"), meta, cardWidth))
 		if state.detail == i+1 {
 			raw := toolResultText(msg)
 			result.ResultText = limitText(raw, toolPreviewBytes)
@@ -390,14 +395,14 @@ func (m *Model) burstContent(ctx x.RenderContext, t *threadState, b *toolBurst) 
 				if lines > toolPreviewLines {
 					label = fmt.Sprintf("     … %d more lines · view output", lines-toolPreviewLines)
 				}
-				out = append(out, activityOpenRow(label, x.Accent, target, "open retained tool output", ctx.Width))
+				out = append(out, activityOpenRow(label, x.Muted, target, "open retained tool output", cardWidth))
 			}
 		}
 	}
 	if n := len(b.children) - end; n > 0 {
-		out = append(out, activityOpenRow(fmt.Sprintf("   … %d more", n), x.Muted, id+"/more", "show more results", ctx.Width))
+		out = append(out, activityOpenRow(fmt.Sprintf("  … %d more", n), x.Muted, id+"/more", "show more results", cardWidth))
 	} else if state.page > 1 {
-		out = append(out, activityOpenRow("   ‹ first results", x.Muted, id+"/first", "show first results", ctx.Width))
+		out = append(out, activityOpenRow("  ‹ first results", x.Muted, id+"/first", "show first results", cardWidth))
 	}
 	return out
 }

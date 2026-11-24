@@ -507,8 +507,9 @@ type effectTick struct {
 func (m *Model) syncClock() tea.Cmd {
 	t := m.threads[m.active]
 	phase, _, _ := t.liveStatus()
-	timed := phase != liveIdle && phase != liveFailed && phase != liveSending && phase != liveStarting
-	animated := !m.options.ReducedMotion && (phase != liveIdle && phase != liveFailed || m.sheet == nil && m.connection == extension.Connecting && m.active != "" && (t.intro == nil || t.intro.frozen))
+	moving := phase != liveIdle && phase != liveFailed && phase != liveResponding && phase != liveWorking
+	timed := moving && phase != liveSending && phase != liveStarting
+	animated := !m.options.ReducedMotion && (moving || m.connection == extension.Connecting && m.active != "" && (t.intro == nil || t.intro.frozen))
 	visible := m.width >= 40 && m.height >= 12 && (animated || timed)
 	if !visible {
 		if m.clockPending != 0 {
@@ -793,6 +794,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	switch e.Op {
 	case openGitDiffOp:
 		return m.openGitDiff(r)
+	case openUsageOp:
+		return m.openUsage(r, t, budget)
 	case retryFailureOp, dismissFailureOp:
 		return m.recoverRun(r, e, budget)
 	case providerLoginOp:

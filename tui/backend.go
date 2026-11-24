@@ -179,7 +179,7 @@ func (m *Model) receiveFeed(msg feedMsg) tea.Cmd {
 		t.streamRevision++
 	}
 	oldTools := t.tools
-	t.tools = projectTools(s.Tools, s.Streaming, t.entries)
+	t.tools = projectTools(s.Tools, s.Streaming, t.entries, t.projected.pending)
 	m.now = time.Now()
 	m.applyActivity(t, s, m.now, newRows)
 	m.introFeed(t, true, false)
@@ -426,7 +426,7 @@ func optionalText(s string) *string {
 	return &s
 }
 
-func projectTools(values []sdk.Tool, stream *sdk.Streaming, entries map[sdk.ID]*record) []extension.Tool {
+func projectTools(values []sdk.Tool, stream *sdk.Streaming, entries map[sdk.ID]*record, pending map[string]callInfo) []extension.Tool {
 	args := make(map[string]string)
 	if stream != nil {
 		for _, b := range stream.Blocks {
@@ -437,8 +437,14 @@ func projectTools(values []sdk.Tool, stream *sdk.Streaming, entries map[sdk.ID]*
 	}
 	out := make([]extension.Tool, 0, min(64, len(values)))
 	for _, v := range values[:min(64, len(values))] {
+		arguments := args[v.CallID]
+		if call, ok := pending[v.CallID]; ok && call.args != "" {
+			// Durable can clear the generation stream while its tools are
+			// still running. Keep their committed arguments in the live slot.
+			arguments = limitText(call.args, 8192)
+		}
 		t := extension.Tool{CallID: v.CallID, Name: v.Name, Status: v.Status, TaskID: deref(v.TaskID), ResultEntryID: deref(v.ResultEntryID),
-			ArgumentsJSON: args[v.CallID], Output: limitText(deref(v.Output), 32768), DroppedBytes: deref(v.DroppedBytes), DroppedLines: deref(v.DroppedLines),
+			ArgumentsJSON: arguments, Output: limitText(deref(v.Output), 32768), DroppedBytes: deref(v.DroppedBytes), DroppedLines: deref(v.DroppedLines),
 			Live: v.Status == "running", Truncated: len(deref(v.Output)) > 32768}
 		if r := entries[t.ResultEntryID]; r != nil {
 			var text []string

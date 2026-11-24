@@ -17,7 +17,7 @@ func TestFooterGoldens(t *testing.T) {
 			return x.Line{{Text: "inbox 2", Tone: x.Accent}}
 		}}},
 	}}})
-	state.info.Status, state.info.Title, state.info.Branch, state.info.Mode = x.Running, "Working thread", "agent/1", "review"
+	state.info.Status, state.info.Title, state.info.Branch = x.Running, "Working thread", "agent/1"
 	state.info.Thinking = "high"
 	state.info.Model = sdk.Model{Provider: "test", ModelID: "model-v1"}
 	state.info.ContextUse = x.ContextUse{Known: true, Tokens: 6400, Window: 10000}
@@ -33,6 +33,7 @@ func TestFooterGoldens(t *testing.T) {
 	m.threads["4"].info.Status = x.Stopped
 	m.threads["5"].info.Status = x.Scheduled
 	m.Update(tea.WindowSizeMsg{Width: 108, Height: 18})
+	m.editor.set("Keep this draft")
 	golden(t, "footer-wide", m)
 	v := m.View()
 	if v.ProgressBar == nil || !strings.HasPrefix(v.WindowTitle, "(1)") || !strings.Contains(v.Content, "inbox 2") || !strings.Contains(v.Content, "80%") {
@@ -42,8 +43,10 @@ func TestFooterGoldens(t *testing.T) {
 	m.editor.set("first prompt line\nsecond prompt line\nthird prompt line")
 	golden(t, "footer-narrow", m)
 	rows := strings.Split(ansi.Strip(m.View().Content), "\n")
-	if !strings.Contains(rows[len(rows)-1], "Working thread") || !strings.Contains(rows[len(rows)-1], "+") || strings.Contains(strings.Join(rows[:len(rows)-2], "\n"), "enter send") {
-		t.Fatal("tabs/overflow or disappearing hints regression")
+	if !strings.Contains(rows[len(rows)-1], "Working thread") || !strings.Contains(rows[len(rows)-1], "+") ||
+		!strings.Contains(rows[m.frame.ruleY], "esc stop") || strings.Contains(rows[m.frame.ruleY], "alt+enter") ||
+		strings.Contains(strings.Join(rows[m.frame.ruleY+1:len(rows)-2], "\n"), "esc stop") {
+		t.Fatal("tabs/overflow or rule hints regression")
 	}
 	m.editor.set("")
 	m.Update(tea.WindowSizeMsg{Width: 88, Height: 15})
@@ -53,6 +56,54 @@ func TestFooterGoldens(t *testing.T) {
 	m.connection = x.Connecting
 	state.observed = true
 	golden(t, "footer-connection", m)
+}
+
+func TestFooterUsageDetails(t *testing.T) {
+	m, s := demo(t, Options{Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 21})
+	s.info.Workspace, s.info.Branch, s.info.Model.ModelID = "/work/hush", "main", "test-model"
+	s.info.ContextUse = x.ContextUse{Known: true, Tokens: 26_000, Window: 100_000}
+	s.info.Usage = sdk.Usage{TotalTokens: 16_000_000, CostUSD: 5.48}
+	m.editor.set("keep the draft")
+	assertFrame(t, m)
+	y := m.height - 1
+	line := ansi.Strip(m.frame.rows[y])
+	for _, want := range []string{"dir hush", "⎇ main", "test-model", "ctx ", "26%", "$5.48"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %q in status %q", want, line)
+		}
+	}
+	if strings.Contains(line, "tok") || strings.Contains(line, "16.0M") {
+		t.Fatalf("cumulative tokens should be in details, not the status: %q", line)
+	}
+	col := stringWidth(line[:strings.Index(line, "$5.48")])
+	m.Update(tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft, X: col, Y: y}))
+	frame := ansi.Strip(assertFrame(t, m))
+	for _, want := range []string{"Usage details", "Total tokens: 16000000", "Current context: 26000 of 100000 tokens", "keep the draft"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("missing %q:\n%s", want, frame)
+		}
+	}
+	press(m, tea.KeyEscape, 0)
+	if m.focusedDialog() != nil {
+		t.Fatal("usage dialog did not close")
+	}
+}
+
+func TestFitTitleAtWordBoundaries(t *testing.T) {
+	for _, c := range []struct {
+		text, want string
+		width      int
+	}{
+		{"tab-click bug fixes", "tab-click bug…", 16},
+		{"skills loading", "skills loading", 14},
+		{"界界界 tester", "界界界…", 7},
+		{"oneword", "…", 5},
+	} {
+		if got := fitTitle(c.text, c.width); got != c.want || stringWidth(got) > c.width {
+			t.Fatalf("fitTitle(%q, %d) = %q, want %q", c.text, c.width, got, c.want)
+		}
+	}
 }
 
 func TestMouseSwitchesTabs(t *testing.T) {
@@ -88,7 +139,7 @@ func TestMouseOpensTabOverflow(t *testing.T) {
 		m.openedTab(id)
 	}
 	m.switchThread("2")
-	m.Update(tea.WindowSizeMsg{Width: 91, Height: 43})
+	m.Update(tea.WindowSizeMsg{Width: 79, Height: 43})
 	m.View()
 	if row := ansi.Strip(m.frame.rows[m.height-1]); !strings.Contains(row, "+2") {
 		t.Fatalf("fixture did not overflow its tabs: %q", row)

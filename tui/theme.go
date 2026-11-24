@@ -28,7 +28,8 @@ type palette struct {
 	background, foreground color.Color
 	colors                 [16]color.Color
 	soft, key, control     color.Color
-	controlInk             string
+	controlInk, softInk    string
+	activeTab, parkedTab   string
 }
 
 func paint(t x.Tone, s string) string {
@@ -56,6 +57,20 @@ func fill(s string, c color.Color) string {
 		return s
 	}
 	return lipgloss.NewStyle().Background(c).Render(s)
+}
+
+const resetBackground = "\x1b[49m"
+
+// A row's surface resumes after its own nested fills (tabs, chips, diffs)
+// and after a full reset from a formatted block.
+func surface(s, ink string) string {
+	if ink == "" || s == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, resetBackground, ink)
+	s = strings.ReplaceAll(s, ansi.ResetStyle, ansi.ResetStyle+ink)
+	s = strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+ink)
+	return ink + s + resetBackground
 }
 
 // Controls need readable text even when the terminal has no measurable solid
@@ -135,7 +150,8 @@ func (m *Model) refreshTheme() {
 	bg := m.palette.background
 	m.theme.BackgroundKnown = bg != nil
 	m.theme.Fills = bg != nil && m.theme.TrueColor && m.options.Fills != FillOff
-	m.palette.soft, m.palette.key, m.palette.control, m.palette.controlInk = nil, nil, nil, ""
+	m.palette.soft, m.palette.key, m.palette.control = nil, nil, nil
+	m.palette.controlInk, m.palette.softInk, m.palette.activeTab, m.palette.parkedTab = "", "", "", ""
 	if bg == nil {
 		return
 	}
@@ -158,7 +174,16 @@ func (m *Model) refreshTheme() {
 	next, _, _ := oklab(soft)
 	if math.Abs(next-l) >= 0.015 {
 		m.palette.soft, m.palette.key = soft, fromLab(l+1.8*step, a, b)
+		m.palette.softInk = ansi.NewStyle().BackgroundColor(soft).String()
 	}
+	stateFill := func(index int, amount float64) string {
+		blend := blendPalette(bg, m.palette.colors[index], amount)
+		if blend == nil || m.palette.foreground != nil && contrastRatio(blend, m.palette.foreground) < 4.5 {
+			return ""
+		}
+		return ansi.NewStyle().BackgroundColor(blend).String()
+	}
+	m.palette.activeTab, m.palette.parkedTab = stateFill(4, .26), stateFill(3, .20)
 }
 
 func linearColor(x uint32) float64 {

@@ -8,9 +8,9 @@
   ── go  copy     ────────────────────
     func main() { println(42) }
   ────────────────────────────────────
-  ────────────────────────────────────
+  ◌ Working ──── esc stop  enter steer
   steer › first prompt line
           second prompt line
           third prompt line
-  worksp… · review · model-v1  ctx 80%
+  dir workspa… · model-v1      ctx 80%
    ● Working thread  +4

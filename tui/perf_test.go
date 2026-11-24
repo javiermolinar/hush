@@ -2,12 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
 )
@@ -64,6 +66,8 @@ func TestFrameBudget(t *testing.T) {
 				}
 				s.merge(rows)
 				if which == "expanded-tool-results" {
+					m.Update(tea.BackgroundColorMsg{Color: color.White})
+					m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
 					s.toggleBurst("3/0")
 					s.toggleBurst("3/0/more")
 				}
