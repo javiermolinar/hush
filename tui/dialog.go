@@ -38,6 +38,7 @@ type dialog struct {
 	review                      bool
 	modelSearch                 *modelSearchState
 	git                         *gitReview
+	workTrust                   *workspaceTrustDialog
 	result                      func(tea.Model) (any, bool)
 	done                        func(x.Context, any, bool) x.Outcome
 }
@@ -226,6 +227,9 @@ func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) te
 	if d.git != nil {
 		d.git.stop()
 	}
+	if d.workTrust != nil && d.workTrust.cancel != nil {
+		d.workTrust.cancel()
+	}
 	if !m.live(d.route) || d.done == nil {
 		return nil
 	}
@@ -394,6 +398,9 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	if key {
 		chord = normalizeChord(k.String())
 		if chord == "esc" {
+			if d.workTrust != nil {
+				return m.workspaceTrustKey(d, chord)
+			}
 			if d.git != nil && d.git.patch {
 				return m.gitDiffKey(d, chord)
 			}
@@ -408,6 +415,9 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	}
 	if d.git != nil {
 		return m.gitDiffKey(d, chord)
+	}
+	if d.workTrust != nil {
+		return m.workspaceTrustKey(d, chord)
 	}
 	if d.output != nil {
 		return m.outputKey(d, chord)
@@ -681,6 +691,9 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 		if d.git != nil {
 			return m.gitReviewRows(d, w, available)
 		}
+		if d.workTrust != nil {
+			return m.workspaceTrustRows(d.workTrust, w, available)
+		}
 		if d.output != nil {
 			return m.outputRows(d, w, available)
 		}
@@ -693,12 +706,12 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	var choices []int
 	if d.git != nil {
 		height := available - 2
-		if d.git.trust != nil {
-			height = min(12, height)
-		} else if !d.git.patch {
+		if !d.git.patch {
 			height = min(12, height-1) // keep some chat visible behind the popover
 		}
 		body, choices = m.gitReviewRows(d, w-4, height)
+	} else if d.workTrust != nil {
+		body, choices = m.workspaceTrustRows(d.workTrust, w-4, min(14, available-2))
 	} else if d.palette {
 		body, choices = m.paletteRows(d, w-4, min(paletteMaxHeight, available)-2)
 	} else if d.output != nil {

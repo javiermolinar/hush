@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -43,21 +43,9 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     assert.equal((await legacy.send("ext.gitDiff.summary", { threadId, range: "head" })).error.code, "unsupported_capability");
     const deny = async () => assert.deepEqual((await peer.send("ext.gitDiff.summary", { threadId, range: "head" })).error, needsTrust);
     await deny();
-    const unrelated = join(home, "unrelated"), alias = join(home, "workspace alias");
-    await git("init", "-q", unrelated);
-    await symlink(sub, alias);
-    const review = JSON.parse((await trust("review-git", alias)).stdout);
-    assert.equal(review.path, join(cwd, ".git"));
-    await deny(); // resolving the confirmation must not write a grant
-    const grant = () => trust("grant-reviewed-git", alias, `--expect=${review.expected}`);
-    await unlink(alias);
-    await symlink(unrelated, alias);
-    await assert.rejects(grant(), /Workspace changed/);
-    assert.equal(JSON.parse((await trust("status", unrelated, "--json")).stdout).trusted, false);
-    await deny();
-    await unlink(alias);
-    await symlink(sub, alias);
-    await grant();
+    await trust("grant", sub, "--scope=work");
+    await deny(); // an agent workspace grant does not grant Git inspection
+    await trust("grant");
     const clean = await summary();
     assert.deepEqual(clean.files, []);
     assert.equal(clean.branch, "main");

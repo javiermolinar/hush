@@ -3,7 +3,7 @@ import { appendFileSync, closeSync, fstatSync, realpathSync, writeSync } from "n
 import { chmod } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
 import type { CredentialStore } from "@earendil-works/pi-ai";
 import { registerBunOAuthFlows as registerBundledOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { ModelRegistry, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -27,7 +27,7 @@ import { GitDiffService } from "./git-diff.js";
 import { readStandaloneSettings, standaloneModelDefault } from "./standalone-settings.js";
 import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
-import { runWorkspaceTrustCommand, WorkspaceTrust } from "./workspace-trust.js";
+import { runWorkspaceTrustCommand, WorkspaceTrust, WorkspaceWorkTrust } from "./workspace-trust.js";
 import { ImageFitter } from "./images.js";
 import { BackendError, parseConfig, type BackendConfig } from "./config.js";
 import { fauxModel, fauxTools, makeFaux } from "./faux.js";
@@ -169,7 +169,10 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const { models: modelRegistry, runtime } = models = await loadModels(config);
     const sources = config.piEvents ? new PiSources(runtime) : undefined;
     const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral, sources?.tapTool, standalone);
-    const prompt = dirs.extension(() => h);
+    const workTrust = standalone && !config.ephemeral ? new WorkspaceWorkTrust(config.agentDir) : undefined;
+    const authorizeWork = workTrust && ((cwd: string | undefined, ctx: Context) =>
+      workTrust.require(dirs.directory(cwd), ctx.abortSignal));
+    const prompt = dirs.extension(() => h, !!workTrust);
     const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;
     const builtin = tap(standalone ? standaloneCoding : coding), fauxExtension = tap(fauxTools);
     if (standalone && config.dataDir && localSettings.codemode === true) codemode = await workspaceCodemode();
@@ -177,7 +180,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxExtension] : [])];
     const ordered = sources?.extensions(() => h!) ?? [];
     const trust = standalone && config.dataDir ? new WorkspaceTrust(config.agentDir) : undefined;
-    const schedules = standalone && config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs) : undefined;
+    const schedules = standalone && config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork) : undefined;
     const checkpoints = trust && config.dataDir ? new CheckpointService(() => h!, config.dataDir, trust) : undefined;
     for (const extension of [...base, ...ordered]) registry.install(extension);
     if (schedules) registry.install(schedules.extension);
@@ -251,7 +254,9 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       defaults, requireModel,
       validateSelection: standalone ? nativeSelectionValidator(runtime, requireModel) : undefined,
       async mayMutate(conv, ctx) { return !(await h!.snapshot(ProfileDoc, conv.id, ctx))?.id; },
-      async prepare({ cwd, text }) {
+      async prepare({ cwd, text }, ctx) {
+        // Native text, images, Continue and Retry share this admission path.
+        await authorizeWork?.(cwd, ctx);
         const project = await dirs.load(cwd);
         try {
           const expanded = !standalone && !config.ephemeral && text?.startsWith("/skill:") ? await dirs.expandSkill(project, text, true) : text;
@@ -268,10 +273,13 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     };
     const harness = h = await Harness.open(store, {
       models: sources?.modelAPI ?? runtime, registry, settings,
-      env: async ({ cwd }) => {
+      env: async ({ cwd }, ctx) => {
         const path = dirs.directory(cwd);
         const { settings } = await dirs.load(path);
-        return new LocalEnvironment(path, settings.getShellPath());
+        // Durable builds the env for every tool attempt, also after a wake or
+        // recovery that skips beforeTool. Do not hand a tool an unchecked cwd.
+        const authorized = authorizeWork ? await authorizeWork(cwd, ctx) : path;
+        return new LocalEnvironment(authorized, settings.getShellPath(), path);
       },
       onReport: report => {
         warn("harness_report");
@@ -337,6 +345,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff,
       hushProfile: standalone ? 1 : undefined, nativeStop: standalone ? 1 : undefined,
+      workspaceWorkTrust: workTrust ? 1 : undefined,
       clientEnvironment: standalone ? 1 : undefined, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });
     await server.listen(config.socket);

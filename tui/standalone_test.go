@@ -32,10 +32,9 @@ func startStandaloneFixture(t *testing.T, root, cwd string, args ...string) (con
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	t.Cleanup(cancel)
+	grantStandaloneFixture(t, root, cwd)
 	cmd := exec.CommandContext(ctx, "node", append([]string{bundle}, args...)...)
-	cmd.Dir = cwd
-	// Do not inherit provider credentials into a loopback fixture.
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "PI_CODING_AGENT_DIR=" + filepath.Join(root, "ignored-pi"), "NODE_NO_WARNINGS=1"}
+	cmd.Dir, cmd.Env = cwd, standaloneFixtureEnv(root)
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -59,6 +58,22 @@ func startStandaloneFixture(t *testing.T, root, cwd string, args ...string) (con
 		t.Fatalf("expected native host without Pi events: %+v %v", hello, err)
 	}
 	return ctx, client
+}
+
+func standaloneFixtureEnv(root string) []string {
+	// Do not inherit provider credentials into a loopback fixture.
+	return []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "PI_CODING_AGENT_DIR=" + filepath.Join(root, "ignored-pi"), "NODE_NO_WARNINGS=1"}
+}
+
+func grantStandaloneFixture(t *testing.T, root, cwd string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "node", os.Getenv("HUSH_TEST_BACKEND"), "trust", "grant", "--scope=work", "--cwd="+cwd)
+	cmd.Dir, cmd.Env = cwd, standaloneFixtureEnv(root)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fixture workspace grant: %v: %s", err, out)
+	}
 }
 
 func standaloneFixtureCapabilities() map[string][]uint64 {
@@ -1028,6 +1043,8 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 	}
 	oldStatusA, oldStatusB := git(inside, "status", "--porcelain"), git(outside, "status", "--porcelain")
 	ctx, client := startStandaloneFixture(t, root, inside, "--faux")
+	grantStandaloneFixture(t, root, sub)
+	grantStandaloneFixture(t, root, outside)
 	create := func(cwd string) sdk.ID {
 		t.Helper()
 		thread, err := client.NewThread(ctx, sdk.NewThread{CWD: cwd})

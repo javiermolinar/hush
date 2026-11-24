@@ -246,7 +246,8 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
     lines.close();
     return { ...host, socket };
   };
-  const trust = async (op, path = cwd) => value(await cli(t, cfg, ["--backend", bundle, "trust", op, "--cwd", path, "--json"]).exit);
+  const trust = async (op, path = cwd, scope = "git") => value(await cli(t, cfg,
+    ["--backend", bundle, "trust", op, "--scope", scope, "--cwd", path, "--json"]).exit);
   const common = join(cwd, ".git");
   assert.deepEqual(await trust("status"), { kind: "git", path: common, trusted: false });
   assert.deepEqual(await readdir(cfg.dir), ["agent", "project", "tmp"]); // No daemon or profile creates on status.
@@ -292,6 +293,14 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
   assert.equal(await readFile(join(created.checkout.cwd, "file"), "utf8"), "committed\n");
   await writeFile(join(created.checkout.cwd, "file"), "keep isolated edits\n");
   assert.equal((await trust("status", created.checkout.cwd)).trusted, true);
+  const prompt = (id, text) => cli(t, cfg, ["--socket", h.socket, "--thread", id, text]).exit;
+  await assert.rejects(lstat(join(cfg.dir, ".hush", "workspace-work-v1")), { code: "ENOENT" });
+  failed(await prompt(created.id, "Git-only is not tool trust"), /not trusted for tool execution/);
+  assert.equal((await trust("grant", alias, "work")).path, cwd);
+  failed(await prompt(created.id, "does not inherit the source grant"), /not trusted for tool execution/);
+  assert.deepEqual(await trust("grant", created.checkout.cwd, "work"), {
+    kind: "directory", path: await realpath(created.checkout.cwd), trusted: true, dismissed: false,
+  });
   assert.equal((await trust("revoke", created.checkout.cwd)).trusted, false);
   await deny(alias);
   await deny(created.checkout.cwd);
@@ -301,7 +310,9 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
   h = await boot();
   await deny();
   assert.equal((await trust("status", alias)).trusted, false);
-  success(await cli(t, cfg, ["--socket", h.socket, "--thread", created.id, "still usable"]).exit, "Faux: still usable\n");
+  success(await prompt(created.id, "still usable"), "Faux: still usable\n");
+  assert.equal((await trust("revoke", created.checkout.cwd, "work")).trusted, false);
+  failed(await prompt(created.id, "revoked"), /not trusted for tool execution/);
   value(await cli(t, cfg, ["--socket", h.socket, "thread", "archive", "--thread", created.id, "--json"]).exit);
   assert.deepEqual(await snapshot(), revoked);
   assert.deepEqual(await readFile(join(cwd, ".git", "index")), index);
@@ -315,6 +326,7 @@ test("schedule CLI shares durable state, preserves time and never prompts", { ti
   const cfg = await layout(t);
   delete cfg.env.PI_CODING_AGENT_DIR;
   cfg.env.HUSH_PROFILE = "hush";
+  assert.equal(value(await cli(t, cfg, ["--backend", bundle, "trust", "grant", "--scope", "work", "--json"]).exit).trusted, true);
   const host = launch(t, process.execPath, [bundle, "--faux", "--schedule-late-ms", "400"], cfg, null);
   const lines = createInterface({ input: host.child.stdout });
   const { socket } = JSON.parse(await nextLine(lines[Symbol.asyncIterator](), host.exit));
@@ -356,6 +368,7 @@ test("checkpoint CLI previews exact scope and known effects before a separate co
   const cfg = await layout(t);
   delete cfg.env.PI_CODING_AGENT_DIR;
   cfg.env.HUSH_PROFILE = "hush";
+  assert.equal(value(await cli(t, cfg, ["--backend", bundle, "trust", "grant", "--scope", "work", "--json"]).exit).trusted, true);
   const host = launch(t, process.execPath, [bundle, "--faux"], cfg, null);
   const lines = createInterface({ input: host.child.stdout });
   const { socket } = JSON.parse(await nextLine(lines[Symbol.asyncIterator](), host.exit));
@@ -916,6 +929,29 @@ test("hush stop is attach-only and the next command starts the replacement backe
   success(await cli(t, cfg, ["stop", "--quiet"]).exit, "");
 });
 
+test("managed work cannot fall back to a running host without tool trust", { timeout: 10_000 }, async t => {
+  const cfg = await layout(t);
+  delete cfg.env.HUSH_PROFILE;
+  const runtime = join(cfg.dir, ".hush", "runtime");
+  await mkdir(runtime, { recursive: true, mode: 0o700 });
+  const seen = [];
+  const legacy = unixServer(peer => {
+    peer.on("error", () => {});
+    createInterface({ input: peer }).on("line", line => {
+      const req = JSON.parse(line);
+      seen.push(req.method);
+      const result = req.method === "hello" ? { version: 1, epoch: "legacy-hush", capabilities: { hushProfile: 1, storeIdentity: 1 } }
+        : { storeId: "10000000-0000-4000-8000-000000000001", generation: "20000000-0000-4000-8000-000000000001" };
+      peer.write(JSON.stringify({ type: "response", id: req.id, method: req.method, ok: true, result }) + "\n");
+    });
+  });
+  legacy.listen(join(runtime, "hush.sock"));
+  await once(legacy, "listening");
+  t.after(() => new Promise(resolve => legacy.close(resolve)));
+  failed(await cli(t, cfg, ["--print", "no fallback"]).exit, /unsupported_capability.*workspaceWorkTrust/);
+  assert.deepEqual(seen, ["hello", "ext.storeIdentity.get"]);
+});
+
 test("the default standalone host ignores Pi profiles, shares its writer, and prints through native admission", { timeout: 20_000 }, async t => {
   for (const populated of [false, true]) {
     const cfg = await layout(t);
@@ -946,6 +982,7 @@ test("the default standalone host ignores Pi profiles, shares its writer, and pr
     success(await cli(t, cfg, ["--no-session", "-p", "!fast-tool"]).exit, "Faux: !fast-tool\n");
     assert.deepEqual(await readdir(cfg.tmp), []);
     await assert.rejects(lstat(hush), { code: "ENOENT" });
+    assert.equal(value(await cli(t, cfg, ["--backend", bundle, "trust", "grant", "--scope", "work", "--json"]).exit).trusted, true);
 
     const status = () => cli(t, cfg, ["status", "--json"]).exit;
     const [a, b, answer] = await Promise.all([status(), status(), cli(t, cfg, ["--print", "standalone", "answer"]).exit]);
@@ -1012,6 +1049,7 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
     writeFile(join(workspace, "AGENTS.md"), "repo-agents-sentinel\n"),
     writeFile(agents, "leaf-agents-original\n"),
   ]);
+  assert.equal(value(await cli(t, cfg, ["--backend", bundle, "trust", "grant", "--scope", "work", "--json"]).exit).trusted, true);
   const host = launch(t, process.execPath, [bundle, "--model", "hush-private/private-fixture"], cfg, null);
   const lines = createInterface({ input: host.child.stdout });
   assert.deepEqual(JSON.parse(await nextLine(lines[Symbol.asyncIterator](), host.exit)), {

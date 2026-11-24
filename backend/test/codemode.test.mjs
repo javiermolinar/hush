@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { assertFrame } from "../../protocol/v1/replay.mjs";
 import { dial } from "../../server/test/client.mjs";
+import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const bundle = new URL("../../dist/hush-backend.mjs", import.meta.url);
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
@@ -32,6 +33,8 @@ async function setup(t) {
   for (const dir of [cwd, tmp, agent, pi, join(cwd, ".hush"), join(cwd, ".pi")])
     await mkdir(dir, { mode: 0o700, recursive: true });
   await copyFile(bundle, entry);
+  const trust = new WorkspaceWorkTrust(agent);
+  await trust.change(cwd, "grant", AbortSignal.timeout(5000));
   const save = (path, data) => writeFile(path, data, { mode: 0o600 });
   async function settings(value, dir = agent) { await save(join(dir, "settings.json"), JSON.stringify({ codemode: value })); }
   const storage = join(agent, "runtime");
@@ -59,7 +62,7 @@ async function setup(t) {
     }
     return { wire, hello, stop, stdout };
   }
-  return { root, cwd, tmp, storage, boot, save, settings, pi };
+  return { root, cwd, tmp, storage, boot, save, settings, pi, trust };
 }
 
 async function thread(wire, cwd) { return ok(await wire.send("thread.new", cwd ? { cwd } : {})).id; }
@@ -118,7 +121,7 @@ test("host-only opt-in, private and Pi unchanged, and standalone workspace batch
 });
 
 test("Codemode only inspects bounded, regular workspace text files", { timeout: 15_000 }, async t => {
-  const { root, cwd, boot, save, settings } = await setup(t);
+  const { root, cwd, boot, save, settings, trust } = await setup(t);
   const outside = join(root, "outside"), sentinel = "outside-not-for-codemode";
   await mkdir(outside);
   await Promise.all([save(join(outside, "secret"), sentinel), save(join(cwd, "valid"), "safe"),
@@ -149,6 +152,8 @@ test("Codemode only inspects bounded, regular workspace text files", { timeout: 
   assert.doesNotMatch(inspected.text, new RegExp(sentinel));
   // The inspection root is the thread cwd, not the backend's startup cwd.
   await mkdir(join(cwd, "sub"));
+  await trust.change(join(cwd, "sub"), "grant", AbortSignal.timeout(5000));
+  await trust.change(outside, "grant", AbortSignal.timeout(5000));
   await save(join(cwd, "sub", "valid"), "thread-root");
   const other = await script(wire, await thread(wire, join(cwd, "sub")), `return await tools.inspect_file({path: 'valid'});`);
   assert.match(other.text, /thread-root/);
@@ -200,8 +205,8 @@ test("Codemode caps output and wall time, cancels spinning code, and admits the 
   assert.match(next.text, /inspection-done/);
 });
 
-test("SIGKILL replay reuses a committed nested inspection instead of reopening its file", { timeout: 20_000 }, async t => {
-  const { root, cwd, storage, boot, save, settings } = await setup(t);
+async function codemodeRecovery(t, revokeTrust) {
+  const { root, cwd, storage, boot, save, settings, trust } = await setup(t);
   await settings(true);
   const original = join(cwd, "record.txt"), second = join(cwd, "second.txt"), preload = join(root, "stall.mjs");
   await save(original, "before-restart-marker");
@@ -238,6 +243,7 @@ test("SIGKILL replay reuses a committed nested inspection instead of reopening i
     await first.stop("SIGKILL");
   } finally { db.close(); }
   await save(original, "must-not-read-again");
+  if (revokeTrust) await trust.change(cwd, "revoke", AbortSignal.timeout(5000));
   const after = await boot();
   assert.notEqual(after.hello.epoch, first.hello.epoch);
   assert.equal((await settle(after.wire, id, submissionId)).status, "done");
@@ -246,7 +252,18 @@ test("SIGKILL replay reuses a committed nested inspection instead of reopening i
   const results = entries.filter(e => e.kind === "pi.tool-result");
   assert.equal(results.length, 1);
   const result = results[0].messages[0];
-  assert.equal(result.isError, false, JSON.stringify(result));
-  assert.match(JSON.stringify(result), /before-restart-marker.*after-replay-marker/);
+  assert.equal(result.isError, revokeTrust, JSON.stringify(result));
+  if (revokeTrust) {
+    assert.match(JSON.stringify(result), /not trusted for tool execution/);
+    assert.doesNotMatch(JSON.stringify(result), /before-restart-marker|after-replay-marker/);
+  } else {
+    assert.match(JSON.stringify(result), /before-restart-marker.*after-replay-marker/);
+  }
   assert.doesNotMatch(JSON.stringify(result), /must-not-read-again/);
-});
+}
+
+test("SIGKILL replay reuses a committed nested inspection instead of reopening its file", { timeout: 20_000 },
+  t => codemodeRecovery(t, false));
+
+test("revoked workspace trust blocks Codemode replay even after execution intent", { timeout: 20_000 },
+  t => codemodeRecovery(t, true));

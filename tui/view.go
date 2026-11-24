@@ -701,6 +701,14 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 						d.selected = target
 						return m.acceptChoice(d)
 					}
+					if d.workTrust != nil {
+						switch target {
+						case workspaceTrustGrantTarget:
+							return m.workspaceTrustKey(d, "t")
+						case workspaceTrustDismissTarget:
+							return m.workspaceTrustKey(d, "n")
+						}
+					}
 					if target == outputCopyTarget && d.output != nil {
 						left := f.dialogX
 						if f.dialogFramed {

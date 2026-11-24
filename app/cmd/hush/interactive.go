@@ -53,7 +53,7 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		environment = detectClientEnvironment(ctx)
 	}
 	client, err := backendstart.NewClient(ctx,
-		backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, Profile: profile}, sdk.ClientOptions{Capabilities: caps})
+		backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, Profile: profile, RequireWorkTrust: true}, sdk.ClientOptions{Capabilities: caps})
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,7 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		Fills: tui.FillMode(o.Fills), Images: tui.ImageMode(o.Images), ReducedMotion: !o.Motion, CustomModels: true,
 		Extensions:        []extension.Registration{inbox.New()},
 		ProviderLogin:     localProviderLogin(o),
-		PrepareGitTrust:   localGitTrust(o),
+		WorkspaceTrust:    workspaceTrustOptions(o),
 		Intro:             &tui.IntroOptions{StatePath: introStatePath()},
 		ClientEnvironment: environment,
 	})

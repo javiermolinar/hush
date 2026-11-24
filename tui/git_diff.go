@@ -35,7 +35,7 @@ func gitDiffSnapshot(summary sdk.GitDiffSummary, err error) gitDiffState {
 	if err != nil {
 		badge := "± unavailable"
 		if sdk.GitDiffNeedsTrust(err) {
-			badge = "± needs trust"
+			badge = "± needs Git trust"
 		}
 		return gitDiffState{err: err, badge: badge}
 	}
@@ -96,7 +96,6 @@ type gitDiffSummaryMsg struct {
 	lease, dialog, request uint64
 	value                  sdk.GitDiffSummary
 	err                    error
-	afterGrant             bool
 }
 type gitDiffPatchMsg struct {
 	dialog, request uint64
@@ -167,16 +166,8 @@ func (m *Model) receiveGitSummary(msg gitDiffSummaryMsg) tea.Cmd {
 		if d := m.receivingGitDialog(msg.dialog, msg.request); d != nil {
 			d.git.stop()
 			d.git.apply(msg.value, msg.err)
-			if msg.afterGrant && msg.err == nil && d.git.rangeName == sdk.GitDiffHead {
-				m.threads[d.route.owner].gitDiff = gitDiffSnapshot(msg.value, nil)
-				if m.gitDiffFeed.pending {
-					// An older poll may still carry the pre-grant denial.
-					m.stopGitDiff()
-					return m.syncGitDiff()
-				}
-			}
-			if !msg.afterGrant && sdk.GitDiffNeedsTrust(msg.err) {
-				return m.offerGitTrust(d)
+			if d.git.rangeName == sdk.GitDiffHead {
+				m.threads[d.route.owner].gitDiff = gitDiffSnapshot(msg.value, msg.err)
 			}
 		}
 		return nil
@@ -188,14 +179,8 @@ func (m *Model) receiveGitSummary(msg gitDiffSummaryMsg) tea.Cmd {
 	m.gitDiffFeed.pending = false
 	t := m.threads[f.owner]
 	t.gitDiff = gitDiffSnapshot(msg.value, msg.err)
-	var offer tea.Cmd
-	if d := m.focusedDialog(); d != nil && d.git != nil && !d.git.patch && d.git.rangeName == sdk.GitDiffHead && d.git.cancel == nil && d.git.trust == nil {
-		newlyDenied := sdk.GitDiffNeedsTrust(msg.err) && !sdk.GitDiffNeedsTrust(d.git.err)
+	if d := m.focusedDialog(); d != nil && d.git != nil && !d.git.patch && d.git.rangeName == sdk.GitDiffHead && d.git.cancel == nil {
 		d.git.apply(msg.value, msg.err)
-		// Only prompt inside the open review, and not again after a denied retry.
-		if newlyDenied {
-			offer = m.offerGitTrust(d)
-		}
 	}
 	interval := 10 * time.Second
 	if msg.err == nil && threadBusy(t) {
@@ -203,7 +188,7 @@ func (m *Model) receiveGitSummary(msg gitDiffSummaryMsg) tea.Cmd {
 	}
 	tick := m.token()
 	m.gitDiffFeed.tick = tick
-	return tea.Batch(offer, tea.Tick(interval, func(time.Time) tea.Msg { return gitDiffTick(tick) }))
+	return tea.Tick(interval, func(time.Time) tea.Msg { return gitDiffTick(tick) })
 }
 
 type gitReview struct {
@@ -213,7 +198,6 @@ type gitReview struct {
 	patch     bool
 	view      *gitPatchView
 	err       error
-	trust     *gitTrustReview
 	request   uint64
 	cancel    context.CancelFunc
 }
@@ -255,8 +239,8 @@ func (m *Model) openGitDiff(r ownerRoute) tea.Cmd {
 		return open
 	}
 	if sdk.GitDiffNeedsTrust(state.err) {
-		// The operator may have granted trust since the last poll.
-		return m.fetchGitSummary(d, false)
+		// The operator may have granted Git trust since the last poll.
+		return m.fetchGitSummary(d)
 	}
 	if m.gitDiffFeed.token == 0 {
 		return m.syncGitDiff()
@@ -272,18 +256,18 @@ func (m *Model) gitReviewRequest(d *dialog, timeout time.Duration) (context.Cont
 	return ctx, cancel, req
 }
 
-func (m *Model) fetchGitSummary(d *dialog, afterGrant bool) tea.Cmd {
+func (m *Model) fetchGitSummary(d *dialog) tea.Cmd {
 	backend, ok := m.backend.(gitDiffBackend)
 	if !ok {
 		return nil
 	}
-	d.git.err, d.git.trust = nil, nil
+	d.git.err = nil
 	ctx, cancel, req := m.gitReviewRequest(d, gitDiffTimeout)
 	token, owner, rangeName := d.token, d.route.owner, d.git.rangeName
 	return func() tea.Msg {
 		defer cancel()
 		v, err := backend.GitDiffSummary(ctx, owner, rangeName)
-		return gitDiffSummaryMsg{dialog: token, request: req, value: v, err: err, afterGrant: afterGrant}
+		return gitDiffSummaryMsg{dialog: token, request: req, value: v, err: err}
 	}
 }
 
@@ -314,9 +298,6 @@ func (m *Model) receiveGitPatch(msg gitDiffPatchMsg) tea.Cmd {
 	g.stop()
 	if msg.err != nil {
 		g.err = msg.err
-		if sdk.GitDiffNeedsTrust(msg.err) {
-			return m.offerGitTrust(d)
-		}
 		if sdk.IsCode(msg.err, "invalid_cursor") {
 			g.err = errors.New("File changed or list expired · esc back, u refresh")
 		}
@@ -328,9 +309,6 @@ func (m *Model) receiveGitPatch(msg gitDiffPatchMsg) tea.Cmd {
 
 func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 	g := d.git
-	if g.trust != nil {
-		return m.gitTrustKey(d, chord)
-	}
 	if chord == "esc" && g.patch {
 		g.stop()
 		g.patch, g.view, g.err = false, nil, nil
@@ -343,7 +321,7 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 		return nil
 	}
 	if chord == "u" && !g.patch {
-		return m.fetchGitSummary(d, false)
+		return m.fetchGitSummary(d)
 	}
 	if chord == "tab" && !g.patch && (g.list.Checkpoint || g.rangeName == sdk.GitDiffCheckpoint) {
 		if g.rangeName == sdk.GitDiffHead {
@@ -351,7 +329,7 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 		} else {
 			g.rangeName = sdk.GitDiffHead
 		}
-		return m.fetchGitSummary(d, false)
+		return m.fetchGitSummary(d)
 	}
 	if g.patch {
 		switch chord {
@@ -402,9 +380,6 @@ func (m *Model) gitDiffMouse(d *dialog, msg tea.Msg, row int) tea.Cmd {
 			return nil
 		}
 		target := m.frame.dialogChoices[row]
-		if target == gitTrustTarget {
-			return m.gitTrustKey(d, "t")
-		}
 		if target == gitRangeTarget {
 			return m.gitDiffKey(d, "tab")
 		}
@@ -413,9 +388,6 @@ func (m *Model) gitDiffMouse(d *dialog, msg tea.Msg, row int) tea.Cmd {
 			return m.gitDiffKey(d, "enter")
 		}
 	case tea.MouseWheelMsg:
-		if d.git.trust != nil {
-			return nil
-		}
 		if v.Button == tea.MouseWheelUp {
 			m.scrollGitDiff(d, -3)
 		} else if v.Button == tea.MouseWheelDown {
@@ -482,9 +454,6 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 		return nil, nil
 	}
 	g := d.git
-	if g.trust != nil {
-		return m.gitTrustRows(d, w, h)
-	}
 	var rows []string
 	var targets []int
 	add := func(s string, target int) {
@@ -528,7 +497,13 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 		case g.cancel != nil || !g.patch && g.err == nil && g.list.Revision == "":
 			add(m.control("Loading…"), -1)
 		case sdk.GitDiffNeedsTrust(g.err):
-			add(paint(x.Warning, "Workspace trust required"), -1)
+			add(paint(x.Warning, "Git trust required for review"), -1)
+			if body >= 3 {
+				add(m.control("On the backend host, run:"), -1)
+			}
+			if body >= 2 {
+				add(m.control("hush trust grant --cwd PATH"), -1)
+			}
 		case g.err != nil:
 			add(paint(x.Warning, oneLine(g.err.Error())), -1)
 		case g.patch && g.view != nil:

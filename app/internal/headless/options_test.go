@@ -445,6 +445,9 @@ func TestCodexAuthLoopback(t *testing.T) {
 		}
 		return b
 	}
+	if out, err := command(binary, "trust", "grant", "--scope=work").CombinedOutput(); err != nil {
+		t.Fatalf("fixture workspace grant: %v: %s", err, out)
+	}
 	call, stop := boot()
 	hello := func() any {
 		reply := result(call("hello", `{"versions":[1],"capabilities":{"hushProfile":[1],"intro":[2],"modelCatalog":[1]}}`))

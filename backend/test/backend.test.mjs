@@ -18,6 +18,8 @@ import { loadModels, startBackend } from "../../dist/hush-backend.mjs";
 import { parseConfig } from "../../dist/backend/src/config.js";
 import { displayTitle, topicTitle } from "../../dist/backend/src/thread-presentation.js";
 
+import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
+
 const bundle = new URL("../../dist/hush-backend.mjs", import.meta.url);
 const piDir = fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent", import.meta.url));
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
@@ -108,6 +110,7 @@ test("managed format-1 compatibility is opt-in and preserves identity and histor
   const { dir, config } = await layout(t, { idleMs: 10_000 });
   const agentDir = join(dir, ".hush"), dataDir = join(agentDir, "runtime"), socket = join(dataDir, "hush.sock");
   const options = { ...config, profile: "hush", agentDir, dataDir, socket };
+  await new WorkspaceWorkTrust(agentDir).change(config.cwd, "grant", AbortSignal.timeout(5000));
   let app = await startBackend(options);
   t.after(() => app.close());
   let connection = await dial(socket);

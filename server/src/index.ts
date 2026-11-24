@@ -35,6 +35,7 @@ export type HostCapabilities = Readonly<{
   piEvents?: PiEventsHost; intro?: IntroHost; threadDirectory?: ThreadDirectoryHost; images?: ImagesHost;
   hushProfile?: 1; nativeStop?: 1; modelCatalog?: ModelCatalogHost; storeIdentity?: StoreIdentity; clientEnvironment?: 1;
   runtime?: RuntimeHost;
+  workspaceWorkTrust?: 1;
   schedules?: SchedulesHost;
   checkpoints?: CheckpointsHost;
   gitDiff?: GitDiffHost;
@@ -395,6 +396,9 @@ class Peer {
         const capabilities: Record<string, number> = {};
         if (this.capabilities?.hushProfile === 1 && req.params.capabilities?.hushProfile?.includes(1)) {
           capabilities.hushProfile = 1;
+        }
+        if (this.capabilities?.workspaceWorkTrust === 1 && req.params.capabilities?.workspaceWorkTrust?.includes(1)) {
+          capabilities.workspaceWorkTrust = 1;
         }
         if (this.capabilities?.storeIdentity && req.params.capabilities?.storeIdentity?.includes(storeIdentityVersion)) {
           capabilities.storeIdentity = storeIdentityVersion;

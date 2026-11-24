@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { defineDoc, defineDocFamily, defineExtension, defineSignal, defineTask, SubmissionSettled,
+import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
+import { AgentDoc, defineDoc, defineDocFamily, defineExtension, defineSignal, defineTask, SubmissionSettled,
   type ConversationId, type Harness, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { defaultLateMs, scheduleLimit, scheduleReportKind, type ScheduleItem, type SchedulePrerequisite, type ScheduleRequest,
   type SchedulesHost } from "../../server/src/scheduling.js";
@@ -66,7 +66,8 @@ export class Scheduling implements SchedulesHost {
   readonly extension;
   readonly #task;
 
-  constructor(private readonly harness: () => Harness, private readonly lateMs = defaultLateMs) {
+  constructor(private readonly harness: () => Harness, private readonly lateMs = defaultLateMs,
+      authorizeWork?: (cwd: string | undefined, ctx: Context) => Promise<string>) {
     this.#task = defineTask<{ threadId: string; occurrence: string }, typeof phase, null>({
       name: "hush.scheduled-occurrence", version: 1, initial: () => phase,
       phases: { wake: async (task, runtime, ctx) => {
@@ -77,6 +78,12 @@ export class Scheduling implements SchedulesHost {
         const targetId = current?.row ? id(current.row.targetThreadId) : undefined;
         const target = targetId === undefined || current?.row?.submissionId || current?.row && terminal(current.row)
           ? undefined : await h.conversation(targetId, ctx);
+        const reviewed = target && authorizeWork && current?.row?.state === "pending" && current.row.dueMs <= runtime.now()
+          ? { cwd: (await h.snapshot(AgentDoc, target.id, ctx))?.cwd, allowed: false } : undefined;
+        if (reviewed && authorizeWork) {
+          try { await authorizeWork(reviewed.cwd, ctx); reviewed.allowed = true; }
+          catch { ctx.abortSignal?.throwIfAborted(); } // No untrusted work is admitted.
+        }
         await runtime.commit(async tx => {
           const record = await tx.doc(Schedule, owner, task.input.occurrence, null);
           const row = record.row;
@@ -127,6 +134,14 @@ export class Scheduling implements SchedulesHost {
           if (!record.force && !row.allowLate) {
             if (row.eligibleMs === undefined) return park("settlement_time_unknown");
             if (now - row.eligibleMs > this.lateMs) return park("late");
+          }
+          if (authorizeWork) {
+            // No filesystem I/O in this commit. If the time or target cwd
+            // changed, take a fresh observation before attempting admission.
+            if (!reviewed || reviewed.cwd !== (await tx.doc(AgentDoc, targetId)).cwd) {
+              return { status: "sleeping", checkpoint: phase, until: now + 1 };
+            }
+            if (!reviewed.allowed) return park("target_untrusted");
           }
           if (!record.requestId || !record.text) throw new Error("Incomplete occurrence");
           const submission = await target.submit(tx, { type: "input", whenBusy: "followUp",

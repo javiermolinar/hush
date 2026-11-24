@@ -22,6 +22,9 @@ func runTrust(ctx context.Context, o options, out, stderr *os.File) (result erro
 	}
 	defer func() { result = errors.Join(result, cleanup()) }()
 	args := []string{entry, "trust", o.trustAction}
+	if o.trustScope != "" {
+		args = append(args, "--scope="+o.trustScope)
+	}
 	if o.create.CWD != "" {
 		args = append(args, "--cwd="+o.create.CWD)
 	}

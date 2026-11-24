@@ -1,4 +1,5 @@
 import { inspectWorkspaceText, workspaceFileError } from "./workspace-file.js";
+import { LocalEnvironment } from "./resources.js";
 import { CodemodeSandbox, type CodemodeRunOptions } from "@earendil-works/pi-codemode";
 import { parseCodemodeSource } from "@earendil-works/pi-codemode/source";
 import { defineTool, type Agent, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -27,8 +28,11 @@ const inspectFile = defineTool({
   async execute(args, api, ctx) {
     try {
       const { path } = args as { path: string };
-      if (!api.env?.cwd) throw new Error(workspaceFileError);
-      const text = await inspectWorkspaceText(api.env.cwd, path, ctx.abortSignal);
+      // General tool trust resolves aliases, but Codemode still requires a
+      // physical cwd as well as a no-link path within it.
+      const env = api.env;
+      if (!(env instanceof LocalEnvironment) || env.requestedCwd !== env.cwd) throw new Error(workspaceFileError);
+      const text = await inspectWorkspaceText(env.cwd, path, ctx.abortSignal);
       return { output: [], structuredOutput: text };
     } catch {
       ctx.abortSignal?.throwIfAborted();

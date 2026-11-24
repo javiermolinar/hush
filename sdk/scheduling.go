@@ -115,7 +115,8 @@ func (r ScheduleItem) valid() bool {
 		return r.SubmissionID == "" && r.ReportEntryID == "" && r.Reason == ""
 	case "needs_attention":
 		return r.SubmissionID == "" && r.ReportEntryID == "" &&
-			(r.Reason == "late" || r.Reason == "settlement_time_unknown" || r.Reason == "target_missing" || r.Reason == "target_archived")
+			(r.Reason == "late" || r.Reason == "settlement_time_unknown" || r.Reason == "target_missing" ||
+				r.Reason == "target_archived" || r.Reason == "target_untrusted")
 	case "admitted":
 		return r.SubmissionID.Valid() && r.ReportEntryID == "" && r.Reason == ""
 	case "done":

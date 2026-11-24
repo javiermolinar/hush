@@ -11,6 +11,9 @@ This is the native contract for the Go SDK, TUI, and native headless CLI. [The s
 - First send `hello` with `versions:[1]` (or a list containing 1). Reply `{ "version":1, "epoch":"…", "capabilities":{} }`. The epoch is a fresh token per server start over one Harness, not the storage identity. Until a successful `hello`, other commands return `not_negotiated` with no work; no common major gives `unsupported_version`. A second successful negotiation on the same connection is prohibited (`already_negotiated`).
 - The reference backend selects `hushProfile:1` only on the standalone Hush profile, if offered.
   It marks a runtime profile, not a boot or store identity, and has no operations.
+- `workspaceWorkTrust:1`, if offered, identifies a persistent Hush host that enforces
+  [workspace tool trust](../../backend/README.md#workspace-tool-trust). Enforcement
+  does not depend on negotiation. The capability has no socket operations.
 - [`storeIdentity:1`](store-identity.md) optionally verifies persistent store and restore-generation continuity; it does not change the core hello shape.
 - [`runtime:1`](runtime.md) optionally requests an orderly backend shutdown; it is not a run abort or proof of settlement.
 - `hello.params.capabilities`, when present, maps extension name to offered positive versions. An extension is usable only when the client offered it and the server selected its supported version. The baseline selects **none**, even if the client offers `piEvents`. `ext.<capability>.<operation>` without the capability returns `unsupported_capability` with the capability name and no work. This namespacing is not an extension payload schema. Each extension supplies its own versioned operations and schemas; it cannot alter unnegotiated v1 frames. Incompatible core changes require another wire major.

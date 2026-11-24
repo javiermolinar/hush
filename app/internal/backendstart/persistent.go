@@ -54,6 +54,9 @@ type Options struct {
 	Socket     string // requested external Unix socket, if any
 	Bundle     string // trusted local Node entry point to use only on a cold start
 	AttachOnly bool   // resolve the path without sending hello or starting a process (raw relay)
+	// RequireWorkTrust keeps a new work-capable client off a running older
+	// managed Hush daemon. Status, stop, and explicit attach stay compatible.
+	RequireWorkTrust bool
 }
 
 type target struct {

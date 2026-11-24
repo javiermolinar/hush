@@ -31,8 +31,10 @@ States: `pending`, `needs_attention`, `admitted`, `done`, `failed`, `cancelled`.
 Eligibility starts at the later of the due instant and the prerequisite's
 committed success. A background Durable task parks late occurrences after the
 configured window (15 minutes by default), unless late admission was explicit.
-An archived or unavailable target also parks. A manual run is for a parked item:
-it bypasses lateness, not ownership, target availability or prerequisite checks.
+An archived or unavailable target also parks. A target without workspace tool
+trust parks with reason `target_untrusted` and no submission. A manual run is for
+a parked item: it bypasses lateness, not ownership, target availability,
+workspace trust or prerequisite checks.
 Reschedule changes only time and zone. Neither operation replays admitted work.
 Once admitted, cancel returns the existing receipt and does not withdraw/stop it.
 The admission and receipt are one Durable commit. IDs remain fixed across restart.

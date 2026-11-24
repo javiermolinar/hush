@@ -12,7 +12,7 @@ import (
 const coreID = "hush/core"
 const paletteID x.ActionID = coreID + ".palette"
 
-func builtins() x.Registration {
+func builtins(workspaceTrust bool) x.Registration {
 	local := func(id, title, direct, leader, slash string, op x.LocalOp) x.Action {
 		a := x.Action{ID: x.ActionID(coreID + "." + id), Title: title, Binding: x.Binding{Direct: direct, Leader: leader},
 			Run: func(x.Context, x.Invocation) x.Outcome { return x.Outcome{x.Local{Op: op}} }}
@@ -36,6 +36,9 @@ func builtins() x.Registration {
 		}},
 		local("quit", "Quit", "", "d", "quit", x.Quit),
 	}}
+	if workspaceTrust {
+		r.Actions = append(r.Actions, local("trust", "Workspace tool trust", "", "i t", "trust", openWorkspaceTrustOp))
+	}
 	if runtime.GOOS == "darwin" {
 		r.Actions = append(r.Actions, local("paste-image", "Paste clipboard image", "ctrl+v", "i p", "", pasteImageOp))
 	}

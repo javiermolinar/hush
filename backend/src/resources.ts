@@ -73,9 +73,9 @@ async function workspaceContext(cwd: string) {
   if (files.length) return `## Workspace context\n\n${files.join("\n\n")}`;
 }
 
-async function standalonePromptSections(profileDir: string, cwd: string): Promise<Record<string, string>> {
+async function standalonePromptSections(profileDir: string, cwd: string, includeWorkspace: boolean): Promise<Record<string, string>> {
   const [personal, workspace] = await Promise.all([
-    readSupplement(join(profileDir, "APPEND_SYSTEM.md"), promptFileLimit), workspaceContext(cwd),
+    readSupplement(join(profileDir, "APPEND_SYSTEM.md"), promptFileLimit), includeWorkspace && workspaceContext(cwd),
   ]);
   return {
     preamble: HUSH_SYSTEM_PROMPT.trimEnd(),
@@ -86,7 +86,7 @@ async function standalonePromptSections(profileDir: string, cwd: string): Promis
 }
 
 export class LocalEnvironment extends NodeExecutionEnv {
-  constructor(cwd: string, shellPath?: string) { super({ cwd, shellPath }); }
+  constructor(cwd: string, shellPath?: string, readonly requestedCwd = cwd) { super({ cwd, shellPath }); }
 
   override exec(command: string | readonly string[], options: ShellExecOptions | undefined, ctx: typeof context) {
     return super.exec(command, { ...options, inheritEnv: false, env: { ...safeEnv, ...options?.env } }, ctx);
@@ -314,8 +314,8 @@ export class ProjectResources {
   }
 
   async promptSections(loaded: Loaded, cwd: string, selectedTools: string[],
-      overrides?: { systemPrompt?: string; appendSystemPrompt?: string }): Promise<Record<string, string>> {
-    if (this.#standalone) return standalonePromptSections(this.agentDir, cwd);
+      overrides?: { systemPrompt?: string; appendSystemPrompt?: string }, includeWorkspace = true): Promise<Record<string, string>> {
+    if (this.#standalone) return standalonePromptSections(this.agentDir, cwd, includeWorkspace);
     const loader = loaded.loader;
     if (!loader) return {};
     const hasOverrides = overrides?.systemPrompt !== undefined || overrides?.appendSystemPrompt !== undefined;
@@ -337,14 +337,16 @@ export class ProjectResources {
     return prompt;
   }
 
-  extension(getHarness: () => Harness | undefined) {
+  extension(getHarness: () => Harness | undefined, requireWorkspaceEnv = false) {
     type Input = Parameters<PromptSection["render"]>[0];
     const prepared = new WeakMap<Input, Promise<Record<string, string>>>();
     const render = async (input: Input, ctx: Context) => {
-      const cwd = this.directory(input.agent.cwd);
+      const cwd = requireWorkspaceEnv && input.env?.cwd || this.directory(input.agent.cwd);
       const loaded = await this.load(cwd);
       const overrides = loaded.loader ? await input.read.snapshot(ProfileDoc, input.conversationId, ctx) : undefined;
-      return this.promptSections(loaded, cwd, input.agent.tools.map(t => t.name), overrides);
+      // Generation can continue without an env after revocation, but must not
+      // read fresh workspace instructions on that path.
+      return this.promptSections(loaded, cwd, input.agent.tools.map(t => t.name), overrides, !requireWorkspaceEnv || !!input.env);
     };
     return defineExtension({
       name: this.#standalone ? "hush-standalone-prompt" : "hush-pi-prompt",

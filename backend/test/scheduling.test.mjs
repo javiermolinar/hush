@@ -8,12 +8,15 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { dial } from "../../server/test/client.mjs";
+import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
 
 test("durable occurrence: deadlines, exact prerequisite, user decisions, and atomic receipts/reports", { timeout: 35_000 }, async () => {
   const home = await mkdtemp("/tmp/hush-schedule-test-");
+  const trust = new WorkspaceWorkTrust(join(home, ".hush"));
+  const work = action => trust.change(home, action, AbortSignal.timeout(5000));
   let host, exit, peer, other, stderr, socket;
   const offer = () => ({ versions: [1], capabilities: { schedules: [1], threadDirectory: [2] } });
   const boot = async () => {
@@ -78,6 +81,7 @@ test("durable occurrence: deadlines, exact prerequisite, user decisions, and ato
     assert.equal(msgs[0].id, (await row(item.id)).reportEntryId);
   };
   try {
+    await work("grant");
     await boot();
     threadId = await newThread(); targetThreadId = await newThread(); depThread = await newThread();
     // Ordinary target idleness is not a substitute for the named prerequisite.
@@ -139,6 +143,18 @@ test("durable occurrence: deadlines, exact prerequisite, user decisions, and ato
     await status(move, "done");
     const permitted = await add("allows late admission", Date.now() - 10_000, { allowLate: true });
     await status(permitted, "done");
+
+    const untrusted = await add("requires a fresh workspace grant", Date.now() + 500, { allowLate: true });
+    await work("revoke");
+    assert.equal((await status(untrusted, "needs_attention")).reason, "target_untrusted");
+    assert.equal((await row(untrusted.id)).submissionId, undefined);
+    await change("run", untrusted.id);
+    assert.equal((await status(untrusted, "needs_attention")).reason, "target_untrusted");
+    await work("grant");
+    assert.equal((await row(untrusted.id)).state, "needs_attention", "grant is not a schedule-run instruction");
+    await change("run", untrusted.id);
+    await status(untrusted, "done");
+    await verify(untrusted, "requires a fresh workspace grant");
 
     const busy = await submit(targetThreadId, "!sleep 4000", "unrelated-target-input");
     // Kill at a committed sleep, not while an unsafe tool is still entering

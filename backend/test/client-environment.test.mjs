@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dial } from "../../server/test/client.mjs";
+import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const extension = "ext.clientEnvironment.submit";
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
@@ -76,6 +77,7 @@ test("standalone environment follows durable placement, not the socket or conver
     await rm(root, { recursive: true, force: true });
   });
   await Promise.all([mkdir(profile, { mode: 0o700 }), mkdir(cwd, { mode: 0o700 })]);
+  await new WorkspaceWorkTrust(profile).change(cwd, "grant", AbortSignal.timeout(5000));
   await writeFile(join(profile, "auth.json"), JSON.stringify({ fixture: { type: "api_key", key: "not-a-real-secret" } }), { mode: 0o600 });
   await writeFile(join(profile, "models.json"), JSON.stringify({ providers: { fixture: {
     baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, api: "openai-completions",

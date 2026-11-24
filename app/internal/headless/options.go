@@ -20,7 +20,7 @@ const usage = `Usage:
   hush status [--thread ID] [--json]
   hush stop [--socket PATH] [--json | -q]
   hush auth login|status|logout [--backend BUNDLE]
-  hush trust status|grant|revoke [--cwd PATH] [--json]
+  hush trust status|grant|revoke [--scope git|work] [--cwd PATH] [--json]
   hush store inspect|activate|rollback [--backend BUNDLE]
   hush store prepare --from PINNED-HUSH [--backend BUNDLE]
   hush wait --thread ID [--json]
@@ -100,6 +100,7 @@ type options struct {
 	fileArgs                []string
 	modelFilter             string
 	authAction, trustAction string
+	trustScope              string
 	storeAction, storeFrom  string
 	schedule                scheduleOptions
 	checkpoint              checkpointOptions
@@ -130,6 +131,7 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.ui.Profile, "profile", "", "")
 	f.StringVar(&thread, "thread", "", "")
 	f.StringVar(&o.create.CWD, "cwd", "", "")
+	f.StringVar(&o.trustScope, "scope", "", "")
 	f.StringVar(&o.create.Title, "title", "", "")
 	f.BoolVar(&o.create.Worktree, "worktree", false, "")
 	f.IntVar(&o.directory.Limit, "limit", 50, "")
@@ -191,14 +193,20 @@ func parse(args []string) (options, error) {
 		}
 		var invalid bool
 		f.Visit(func(v *pflag.Flag) {
-			invalid = invalid || !slices.Contains([]string{"backend", "profile", "cwd", "json"}, v.Name)
+			invalid = invalid || !slices.Contains([]string{"backend", "profile", "cwd", "json", "scope"}, v.Name)
 		})
 		if invalid || f.Changed("backend") && o.bundle == "" ||
 			f.Changed("profile") && o.ui.Profile != "hush" || f.Changed("cwd") && o.create.CWD == "" {
-			return o, errors.New("trust is local to the Hush backend host and accepts only --backend, --profile hush, --cwd and --json")
+			return o, errors.New("trust is local to the Hush backend host and accepts only --backend, --profile hush, --cwd, --json and --scope")
+		}
+		if f.Changed("scope") && o.trustScope != "git" && o.trustScope != "work" {
+			return o, errors.New("use --scope git or --scope work for trust")
 		}
 		o.command, o.trustAction = localTrust, rest[1]
 		return o, nil
+	}
+	if f.Changed("scope") {
+		return o, errors.New("--scope is for trust")
 	}
 	if len(rest) != 0 && rest[0] == "store" && f.ArgsLenAtDash() != 0 {
 		if len(rest) != 2 || !slices.Contains([]string{"inspect", "prepare", "activate", "rollback"}, rest[1]) {

@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { dial } from "../../server/test/client.mjs";
 import { startBackend } from "../../dist/hush-backend.mjs";
+import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const run = promisify(execFile);
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
@@ -26,13 +27,16 @@ async function fixture(t) {
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
   const git = async (dir, ...args) => (await run("git", args, { cwd: dir, env })).stdout.trim();
   const trust = op => run(process.execPath, [bundle, "trust", op, "--cwd", cwd, "--json"], { cwd, env });
+  const work = new WorkspaceWorkTrust(agentDir);
+  const grantWork = path => work.change(path, "grant", AbortSignal.timeout(5000));
+  await grantWork(cwd);
   const commit = msg => git(cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", msg);
   await git(cwd, "init", "-q");
   await writeFile(join(cwd, "main"), "at checkpoint\n");
   await writeFile(join(cwd, ".gitignore"), "private\n");
   await git(cwd, "add", "main", ".gitignore");
   await commit("seed");
-  return { home, agentDir, dataDir, cwd, git, trust, commit, env, socket: join(dataDir, "hush.sock") };
+  return { home, agentDir, dataDir, cwd, git, trust, grantWork, commit, env, socket: join(dataDir, "hush.sock") };
 }
 
 async function view(f) {
@@ -167,6 +171,7 @@ test("checkpoint restore forks two shared dirty threads into an isolated committ
     const plain = join(f.home, "plain");
     await mkdir(plain);
     const nonGit = await w.newThread(plain);
+    await f.grantWork(plain);
     const plainEntry = await w.seed(nonGit, "non-git");
     const plainRecord = await w.peer.send("ext.checkpoints.record", { threadId: nonGit, kind: "files", atEntryId: plainEntry });
     assert.match(plainRecord.error.message, /requires a Git working tree/);

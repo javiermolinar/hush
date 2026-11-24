@@ -35,9 +35,8 @@ type Options struct {
 	CustomModels    bool
 	// ProviderLogin enables /login for a host that can authenticate locally.
 	ProviderLogin *ProviderLoginOptions
-	// PrepareGitTrust resolves a repository for local operator confirmation.
-	// Leave unset when attaching to a backend, even with WorkspaceLocal set.
-	PrepareGitTrust func(context.Context, string) (GitTrustPreview, error)
+	// WorkspaceTrust enables the workspace-level tool permission dialog.
+	WorkspaceTrust *WorkspaceTrustOptions
 	// Intro enables a local startup block in the initial thread.
 	Intro *IntroOptions
 	// ClientEnvironment describes this invocation, only for user-entered input.
@@ -71,6 +70,7 @@ type Model struct {
 	reportFeed                feedLease
 	directoryFeed             feedLease
 	gitDiffFeed               gitDiffPoll
+	workspaceTrust            workspaceTrustProbe
 	directoryIDs              []sdk.ID
 	directoryEnabled          bool
 	tabs                      []sdk.ID
@@ -135,6 +135,10 @@ func New(ctx context.Context, backend Backend, options Options) (*Model, error) 
 		copy := *login
 		copy.Providers = slices.Clone(login.Providers[:min(len(login.Providers), maxChoices)])
 		options.ProviderLogin = &copy
+	}
+	if options.WorkspaceTrust != nil {
+		copy := *options.WorkspaceTrust
+		options.WorkspaceTrust = &copy
 	}
 	reg, err := makeRegistry(options)
 	if err != nil {
@@ -203,7 +207,7 @@ func (m *Model) Init() tea.Cmd {
 	for i, out := range initial {
 		commands = append(commands, m.admit(m.route(owner, m.host.registrations[i].ID), out, &budget))
 	}
-	return tea.Batch(append(commands, m.syncClock())...)
+	return tea.Batch(append(commands, m.syncClock(), m.syncWorkspaceTrust())...)
 }
 
 // Close cancels local work and tears down initialized extensions. It does not
@@ -312,8 +316,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.receiveGitSummary(v)
 	case gitDiffPatchMsg:
 		cmd = m.receiveGitPatch(v)
-	case gitTrustMsg:
-		cmd = m.receiveGitTrust(v)
+	case workspaceTrustMsg:
+		cmd = m.receiveWorkspaceTrust(v)
 	case directoryFeedMsg:
 		cmd = m.receiveDirectory(v)
 	case tea.FocusMsg:
@@ -405,7 +409,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if scanImages {
 		cmd = tea.Batch(cmd, m.scheduleImageScan())
 	}
-	return m, tea.Batch(cmd, m.syncClock(), m.syncIntroClock())
+	return m, tea.Batch(cmd, m.syncClock(), m.syncIntroClock(), m.syncWorkspaceTrust())
 }
 
 func (m *Model) ensureThread(id sdk.ID) *threadState {
@@ -799,6 +803,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	switch e.Op {
 	case openGitDiffOp:
 		return m.openGitDiff(r)
+	case openWorkspaceTrustOp:
+		return m.openWorkspaceTrust(r)
 	case openUsageOp:
 		return m.openUsage(r, t, budget)
 	case retryFailureOp, dismissFailureOp:

@@ -70,11 +70,16 @@ def wait_for(text):
                 return body
     raise AssertionError('Did not observe ' + repr(text) + ': ' + repr(ansi.sub(b'', output)[-1000:]))
 try:
-    wait_for(previous)
-    print('pty_attach_ms=' + str(round((time.monotonic() - start) * 1000, 2)))
-    os.write(master, ('/' + action).encode())
-    time.sleep(.12)
-    os.write(master, b'\r')
+    if action == 'trust':
+        wait_for('Allow Hush to run tools in:')
+        os.write(master, b't')
+        wait_for('Workspace trusted for tools')
+    else:
+        wait_for(previous)
+        print('pty_attach_ms=' + str(round((time.monotonic() - start) * 1000, 2)))
+        os.write(master, ('/' + action).encode())
+        time.sleep(.12)
+        os.write(master, b'\r')
     if action == 'login':
         wait_for('Sign in to a provider')
         os.write(master, b'\r')
@@ -85,7 +90,7 @@ try:
         assert not termios.tcgetattr(slave)[3] & termios.ECHO
         os.write(master, b'fixture-code\n')
         assert b'fixture-code' not in wait_for('Signed in to OpenAI Codex')
-    else:
+    elif action == 'model':
         model, = args
         wait_for('Select model')
         time.sleep(.2)
@@ -391,6 +396,10 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
     medianMs: +((samples[9] + samples[10]) / 2).toFixed(2), p95Ms: +p95.toFixed(2), targetMs: 100 }));
   assert.ok(p95 < 100, 'warm attach p95 exceeds 100 ms');
   const id = JSON.parse(await good(['thread', 'new', '--json'])).id;
+  await bad(['--print', '--thread', id, 'release-denied'], /not trusted for tool execution/);
+  const trust = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, '', 'trust'], { cwd, env });
+  assert.equal(trust.code, 0, trust.stdout + trust.stderr);
+  assert.equal(JSON.parse(await good(['trust', 'status', '--scope', 'work', '--json'])).trusted, true);
   await good(['--print', '--thread', id, 'release-first-durable'], /^Loopback Codex reply\n$/);
   assert.equal(seen[1].model, 'gpt-6-sol');
   const directTools = ['read', 'bash', 'edit', 'write'];

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -37,29 +36,31 @@ func TestProviderLoginOnlyOnManagedHushHost(t *testing.T) {
 	}
 }
 
-func TestLocalGitTrustOnlyOnManagedHushHost(t *testing.T) {
+func TestLocalWorkspaceTrustOnlyOnManagedHushHost(t *testing.T) {
 	t.Setenv("HUSH_SOCKET", "")
 	local, remote := true, false
+	if workspaceTrustOptions(headless.InteractiveOptions{Profile: "pi"}) != nil {
+		t.Fatal("native trust advertised for the Pi profile")
+	}
 	for _, o := range []headless.InteractiveOptions{
-		{Profile: "pi"},
 		{Profile: "hush", Socket: "/remote.sock", Local: &local},
 		{Profile: "hush", Local: &remote},
 	} {
-		if localGitTrust(o) != nil {
-			t.Fatal("trust grant offered outside the managed local Hush profile")
+		if opt := workspaceTrustOptions(o); opt == nil || opt.Review != nil {
+			t.Fatal("attached client should get instructions, not a trust helper")
 		}
 	}
 	o := headless.InteractiveOptions{Profile: "hush"}
-	if localGitTrust(o) == nil {
+	if opt := workspaceTrustOptions(o); opt == nil || opt.Review == nil {
 		t.Fatal("no host-local trust helper")
 	}
 	t.Setenv("HUSH_SOCKET", "/remote.sock")
-	if localGitTrust(o) != nil {
+	if opt := workspaceTrustOptions(o); opt == nil || opt.Review != nil {
 		t.Fatal("explicit environment socket allowed a local grant")
 	}
 }
 
-func TestLocalGitTrustHelper(t *testing.T) {
+func TestLocalWorkspaceTrustHelper(t *testing.T) {
 	bundle := os.Getenv("HUSH_TEST_BACKEND")
 	if bundle == "" {
 		t.Skip("set HUSH_TEST_BACKEND to the built backend bundle")
@@ -68,23 +69,47 @@ func TestLocalGitTrustHelper(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("HUSH_SOCKET", "")
 	t.Setenv("HUSH_PROFILE", "pi") // the explicit Hush profile takes precedence
-	cwd := filepath.Join(home, "checkout 'with quotes'")
-	if out, err := exec.CommandContext(t.Context(), "git", "init", "-q", cwd).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v %s", err, out)
+	cwd := filepath.Join(home, "plain folder 'with quotes'")
+	if err := os.Mkdir(cwd, 0700); err != nil {
+		t.Fatal(err)
 	}
-	prepare := localGitTrust(headless.InteractiveOptions{Profile: "hush", Bundle: bundle})
+	prepare := workspaceTrustOptions(headless.InteractiveOptions{Profile: "hush", Bundle: bundle}).Review
 	review, err := prepare(t.Context(), cwd)
-	want, _ := filepath.EvalSymlinks(filepath.Join(cwd, ".git"))
-	if err != nil || review.Grant == nil || review.GitDirectory != want {
-		t.Fatalf("Git trust review = %q, want %q (%v)", review.GitDirectory, want, err)
+	want, _ := filepath.EvalSymlinks(cwd)
+	if err != nil || review.Decide == nil || review.Path != want || review.Trusted || review.Dismissed {
+		t.Fatalf("workspace trust review = %+v, want fresh %q (%v)", review, want, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".hush")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("preparing a prompt must not write the profile: %v", err)
 	}
-	if err := review.Grant(t.Context()); err != nil {
+	if err := review.Decide(t.Context(), false); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runGitTrust(t.Context(), bundle, "status", "--cwd="+cwd, "--json")
+	review, err = prepare(t.Context(), cwd)
+	if err != nil || review.Trusted || !review.Dismissed {
+		t.Fatalf("dismissal was not saved separately: %+v (%v)", review, err)
+	}
+	alias := filepath.Join(home, "alias")
+	if err := os.Symlink(cwd, alias); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := prepare(t.Context(), alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(home, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := bound.Decide(t.Context(), true); err == nil {
+		t.Fatal("changed alias granted trust without a new review")
+	}
+	if err := review.Decide(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runWorkspaceTrust(t.Context(), bundle, "status", "--scope=work", "--cwd="+cwd, "--json")
 	var status struct{ Trusted bool }
 	if err != nil || json.Unmarshal(out, &status) != nil || !status.Trusted {
 		t.Fatalf("host grant not visible: %s (%v)", out, err)

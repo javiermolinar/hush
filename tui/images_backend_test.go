@@ -69,6 +69,7 @@ func TestImageFromDropToModelAndFork(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	grantStandaloneFixture(t, dir, dir)
 	socket := filepath.Join(profile, "runtime", "hush.sock")
 	boot := func() func() {
 		t.Helper()

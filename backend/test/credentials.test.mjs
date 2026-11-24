@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dial } from "../../server/test/client.mjs";
+import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
 
@@ -39,6 +40,7 @@ test("keyring unavailable fails closed; a live host does not switch stores", { t
     assert.doesNotMatch(stderr, /synthetic-file|\[1\] Browser|password:/);
   }
   assert.equal(await readFile(auth, "utf8"), old);
+  await new WorkspaceWorkTrust(profile).change(root, "grant", AbortSignal.timeout(5000));
   const child = spawn(process.execPath, [bundle, "--cwd", root], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   const exit = once(child, "exit");
   stop.push(async () => { child.kill("SIGTERM"); await exit; });

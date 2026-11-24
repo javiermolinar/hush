@@ -146,16 +146,22 @@ func TestReleaseFrames(t *testing.T) {
 				t.Fatal("Git review did not show its workspace and branch")
 			}
 			press(m, tea.KeyEscape, 0)
-			setupGitTrustFixture(m, s)
-			m.options.PrepareGitTrust = gitTrustPreviewFixture("/work/project/.git")
-			openGitTrustFixture(t, m)
-			if body := shot("git-trust-confirm"); !strings.Contains(body, "Trust this repository?") {
-				t.Fatal("no local trust confirmation")
+			m.backend = deniedGitDiffFixture{}
+			s.gitDiff = gitDiffSnapshot(sdk.GitDiffSummary{}, gitTrustDenied)
+			workspaceTrustStep(t, m, m.openGitDiff(m.route(m.active, coreID)))
+			if body := shot("git-diff-denied"); !strings.Contains(body, "Git trust required for review") {
+				t.Fatal("Git denial did not explain why review is unavailable")
 			}
 			press(m, tea.KeyEscape, 0)
-			m.options.PrepareGitTrust = nil
-			openGitTrustFixture(t, m)
-			if body := shot("git-trust-attached"); !strings.Contains(body, "hush trust grant --cwd PATH") {
+			m.options.WorkspaceTrust = workspaceTrustFixture("/work/project/src")
+			openWorkspaceTrustFixture(t, m)
+			if body := shot("workspace-trust-confirm"); !strings.Contains(body, "Allow Hush to run tools in:") {
+				t.Fatal("no local workspace trust confirmation")
+			}
+			workspaceTrustStep(t, m, press(m, tea.KeyEscape, 0))
+			m.options.WorkspaceTrust = &WorkspaceTrustOptions{}
+			m.openWorkspaceTrust(m.route(m.active, coreID))
+			if body := shot("workspace-trust-attached"); !strings.Contains(body, "hush trust grant --scope work --cwd PATH") {
 				t.Fatal("no backend-host instructions")
 			}
 		})

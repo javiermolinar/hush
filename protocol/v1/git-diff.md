@@ -12,7 +12,8 @@ or Pi compatibility. A peer without the selected capability cannot call it.
 The backend resolves the repository from the stored working directory of the
 specified ownerless conversation. It compares at that checkout's Git root,
 not at the client's path or the repository's primary checkout. Both operations
-require current Hush workspace trust; a grant does not isolate shared checkouts.
+require current Hush Git-operation trust, distinct from permission to run agent
+tools. A Git grant does not isolate shared checkouts.
 A missing grant is reported as `invalid_request` with the fixed message
 `Workspace is not trusted by Hush. Run 'hush trust grant --cwd PATH' on the backend host.`
 Clients may use that denial to offer local operator guidance; this extension has

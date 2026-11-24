@@ -369,6 +369,11 @@ func TestBackendStoreRetryAcrossProcessLoss(t *testing.T) {
 	for _, mode := range []string{"same-store", "replacement", "restore"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newStoreFixture(t)
+			grant := exec.CommandContext(f.ctx, f.node, f.bundle, "trust", "grant", "--scope=work", "--cwd="+f.root)
+			grant.Env = append(RuntimeEnv(Hush), "HOME="+f.root, "HUSH_PROFILE=hush")
+			if out, err := grant.CombinedOutput(); err != nil {
+				t.Fatalf("fixture workspace grant: %v: %s", err, out)
+			}
 			active, stage := filepath.Join(f.root, "active"), filepath.Join(f.root, "stage")
 			path := filepath.Join(active, "hush.sock")
 			thread := f.seed(t, active)

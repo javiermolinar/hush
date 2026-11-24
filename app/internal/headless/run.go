@@ -79,7 +79,8 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 	// Keep explicitly native options on the original submission/receipt path.
 	plain := o.command == printAnswer && !o.noWait && o.key == "" && o.thread == ""
 	preferPi := profile == backendstart.Pi && plain && (!o.ephemeral || o.textMode || o.forcePrint || len(o.prompt) > 1)
-	target := backendstart.Options{Socket: o.socket, Bundle: o.bundle, Profile: profile}
+	target := backendstart.Options{Socket: o.socket, Bundle: o.bundle, Profile: profile,
+		RequireWorkTrust: o.command == printAnswer || o.command == scheduleCommand}
 	if o.command == rawProtocol {
 		target.AttachOnly = true
 		socket, err := backendstart.Resolve(ctx, target)

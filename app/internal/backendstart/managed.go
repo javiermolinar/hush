@@ -26,6 +26,9 @@ func NewClient(life context.Context, opts Options, clientOpts sdk.ClientOptions)
 		m := &managedSocket{life: life, start: func(ctx context.Context) error { return t.ensure(ctx, opts.Bundle) }}
 		clientOpts.DialUnix = m.dial
 		clientOpts = t.clientOptions(clientOpts)
+		if t.profile == Hush && opts.RequireWorkTrust {
+			clientOpts.RequiredCapabilities["workspaceWorkTrust"] = 1
+		}
 	}
 	return sdk.NewClient(t.socket, clientOpts), nil
 }

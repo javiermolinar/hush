@@ -196,6 +196,7 @@ test("real standalone keyring: OAuth, refresh, concurrent logout, and no plainte
   const neighbor = record(0);
   await helper("set", otherScope, neighbor);
   await run(["status", "--json"]); // Go-managed daemon is already running before login.
+  await run(["trust", "grant", "--scope", "work"]);
   assert.match(await run(["--print", "before sign in"], 1), /hush auth login/);
   const login = async () => {
     const r = await invoke("/usr/bin/env", ["python3", "-c", pty, binary]);
