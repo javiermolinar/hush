@@ -1,0 +1,22 @@
+  ██      ██  ██      ██    ████████  ██      ██  ▄
+  ██      ██  ██      ██  ██          ██      ██  █  ▂
+  ██████████  ██      ██    ██████    ██████████  █▄▂█
+  ██      ██  ██      ██          ██  ██      ██  █████▂▆▇▁▇▁  ▆      ▁
+  ██      ██    ██████    ████████    ██      ██  ████████████▇█▇▆█▇█▅█▅▆▂▃▅▄▅▄▂
+
+  ⎇ main  /work/hush                                      ● attached · up 3h 12m
+  ·····
+
+  sessions    6 open · 2 running · 2 quiet
+  run status  ✗ Fix auth tests   rate limited (429) · 14m ago
+              retry · switch model · dismiss
+              /threads to review
+  skills      9 loaded
+  context     ▰▱▱▱▱▱▱▱▱▱▱▱ 8.4k of 400k (estimate)
+
+
+
+  ──────────────────────────────────────────────────────────────────────────────
+  main › ask anything
+  / commands  ·  ctrl+t threads  ·  ? actions
+  ◌ thread 1

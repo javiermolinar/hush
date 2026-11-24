@@ -1,0 +1,2072 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hush:protocol:core:1",
+  "title": "hush native protocol v1",
+  "description": "Baseline frames only. Extension requests can be rejected but no extension is advertised in this schema.",
+  "$ref": "#/$defs/frame",
+  "$defs": {
+    "durableId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,15}$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,160}$"
+    },
+    "cursor": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,512}$"
+    },
+    "rev": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "capName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "thread": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/durableId"
+        },
+        "parent": {
+          "type": "object",
+          "properties": {
+            "threadId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "atEntryId": {
+              "$ref": "#/$defs/durableId"
+            }
+          },
+          "required": [
+            "threadId",
+            "atEntryId"
+          ],
+          "additionalProperties": false
+        },
+        "owner": {
+          "type": "object",
+          "properties": {
+            "threadId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/durableId"
+            }
+          },
+          "required": [
+            "threadId",
+            "taskId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "modelId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "provider",
+        "modelId"
+      ],
+      "additionalProperties": false
+    },
+    "thinking": {
+      "enum": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/model"
+        },
+        "thinkingLevel": {
+          "$ref": "#/$defs/thinking"
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "compactionEnabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "configure": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/model"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "thinkingLevel": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/thinking"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "compactionEnabled": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "outputTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cacheReadTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cacheWriteTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "totalTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "costUsd": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "totalTokens",
+        "costUsd"
+      ],
+      "additionalProperties": false
+    },
+    "text": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "thinkingBlock": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "thinking"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "toolCall": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "toolCall"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "arguments": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "arguments"
+      ],
+      "additionalProperties": false
+    },
+    "omitted": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "omitted"
+        },
+        "kind": {
+          "enum": [
+            "image",
+            "redactedThinking",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "message": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "system"
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "blocks": {
+              "type": "array",
+              "maxItems": 0
+            }
+          },
+          "required": [
+            "role",
+            "timestampMs",
+            "blocks"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "user"
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "$ref": "#/$defs/omitted"
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "role",
+            "timestampMs",
+            "blocks"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "assistant"
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "$ref": "#/$defs/thinkingBlock"
+                  },
+                  {
+                    "$ref": "#/$defs/toolCall"
+                  },
+                  {
+                    "$ref": "#/$defs/omitted"
+                  }
+                ]
+              }
+            },
+            "stopReason": {
+              "enum": [
+                "pending",
+                "stop",
+                "length",
+                "toolUse",
+                "error",
+                "aborted",
+                "deferred"
+              ]
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "timestampMs",
+            "blocks",
+            "stopReason"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "toolResult"
+            },
+            "timestampMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "$ref": "#/$defs/omitted"
+                  }
+                ]
+              }
+            },
+            "callId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "isError": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "role",
+            "timestampMs",
+            "blocks",
+            "callId",
+            "name",
+            "isError"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/durableId"
+        },
+        "threadId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        },
+        "headEntryId": {
+          "$ref": "#/$defs/durableId"
+        }
+      },
+      "required": [
+        "id",
+        "threadId",
+        "kind",
+        "messages"
+      ],
+      "additionalProperties": false
+    },
+    "tool": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "sleeping",
+            "waiting",
+            "done"
+          ]
+        },
+        "taskId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "resultEntryId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "output": {
+          "type": "string"
+        },
+        "droppedBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "droppedLines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "callId",
+        "name",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "queueItem": {
+      "type": "object",
+      "properties": {
+        "submissionId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "mode": {
+          "enum": [
+            "steer",
+            "followUp"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "submissionId",
+        "mode",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "submissionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/durableId"
+          }
+        }
+      },
+      "required": [
+        "taskId",
+        "submissionIds"
+      ],
+      "additionalProperties": false
+    },
+    "failure": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "reason": {
+          "enum": [
+            "model_error",
+            "no_model",
+            "aborted",
+            "reset",
+            "faulted",
+            "orphaned",
+            "interrupted",
+            "restart_limit",
+            "nothing_to_answer",
+            "turn_limit"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "compaction": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "reason": {
+          "enum": [
+            "manual",
+            "threshold",
+            "overflow"
+          ]
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "taskId",
+        "reason",
+        "blocking",
+        "attempt"
+      ],
+      "additionalProperties": false
+    },
+    "compactionFailure": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "reason": {
+          "enum": [
+            "manual",
+            "threshold",
+            "overflow"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "reason",
+        "detail"
+      ],
+      "additionalProperties": false
+    },
+    "streaming": {
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/text"
+              },
+              {
+                "$ref": "#/$defs/thinkingBlock"
+              },
+              {
+                "$ref": "#/$defs/toolCall"
+              },
+              {
+                "$ref": "#/$defs/omitted"
+              }
+            ]
+          }
+        },
+        "retry": {
+          "type": "object",
+          "properties": {
+            "atMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "atMs",
+            "detail"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "attempt",
+        "blocks"
+      ],
+      "additionalProperties": false
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/thread"
+        },
+        "agent": {
+          "$ref": "#/$defs/agent"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "window": {
+          "type": "object",
+          "properties": {
+            "beforeEntryId": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/durableId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastEntryId": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/durableId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/entry"
+              },
+              "maxItems": 100
+            }
+          },
+          "required": [
+            "beforeEntryId",
+            "lastEntryId",
+            "entries"
+          ],
+          "additionalProperties": false
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool"
+          }
+        },
+        "queue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/queueItem"
+          }
+        },
+        "compactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/compaction"
+          }
+        },
+        "compactionFailure": {
+          "$ref": "#/$defs/compactionFailure"
+        },
+        "run": {
+          "$ref": "#/$defs/run"
+        },
+        "failure": {
+          "$ref": "#/$defs/failure"
+        },
+        "streaming": {
+          "$ref": "#/$defs/streaming"
+        }
+      },
+      "required": [
+        "thread",
+        "agent",
+        "usage",
+        "window",
+        "tools",
+        "queue",
+        "compactions"
+      ],
+      "additionalProperties": false
+    },
+    "subscription": {
+      "type": "object",
+      "properties": {
+        "subscriptionId": {
+          "$ref": "#/$defs/token"
+        },
+        "epoch": {
+          "$ref": "#/$defs/token"
+        },
+        "rev": {
+          "$ref": "#/$defs/rev"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "epoch",
+        "rev",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "history": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "$ref": "#/$defs/durableId"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          },
+          "maxItems": 100
+        },
+        "nextCursor": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "threadId",
+        "entries",
+        "nextCursor"
+      ],
+      "additionalProperties": false
+    },
+    "historyRange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "after"
+            },
+            "afterEntryId": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/durableId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "throughEntryId": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/durableId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "afterEntryId",
+            "throughEntryId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "before"
+            },
+            "beforeEntryId": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/durableId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "beforeEntryId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "cursor"
+            },
+            "cursor": {
+              "$ref": "#/$defs/cursor"
+            }
+          },
+          "required": [
+            "kind",
+            "cursor"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "properties": {
+        "submissionId": {
+          "$ref": "#/$defs/durableId"
+        }
+      },
+      "required": [
+        "submissionId"
+      ],
+      "additionalProperties": false
+    },
+    "submission": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "threadId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "submissionId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "status": {
+              "const": "queued"
+            }
+          },
+          "required": [
+            "threadId",
+            "submissionId",
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "threadId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "submissionId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "status": {
+              "const": "placed"
+            },
+            "entryId": {
+              "$ref": "#/$defs/durableId"
+            }
+          },
+          "required": [
+            "threadId",
+            "submissionId",
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "threadId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "submissionId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "status": {
+              "const": "done"
+            },
+            "entryId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "answerEntryId": {
+              "$ref": "#/$defs/durableId"
+            }
+          },
+          "required": [
+            "threadId",
+            "submissionId",
+            "status",
+            "answerEntryId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "threadId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "submissionId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "status": {
+              "const": "unanswered"
+            },
+            "entryId": {
+              "$ref": "#/$defs/durableId"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "threadId",
+            "submissionId",
+            "status",
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "opPath": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "not": {
+              "enum": [
+                "__proto__",
+                "constructor",
+                "prototype"
+              ]
+            }
+          },
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        ]
+      },
+      "maxItems": 32,
+      "minItems": 1
+    },
+    "op": {
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "r"
+            },
+            {
+              "$ref": "#/$defs/state"
+            }
+          ],
+          "items": false,
+          "minItems": 2
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "s"
+            },
+            {
+              "$ref": "#/$defs/opPath"
+            },
+            true
+          ],
+          "items": false,
+          "minItems": 3
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "d"
+            },
+            {
+              "$ref": "#/$defs/opPath"
+            }
+          ],
+          "items": false,
+          "minItems": 2
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "a"
+            },
+            {
+              "$ref": "#/$defs/opPath"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "items": false,
+          "minItems": 3
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "t"
+            },
+            {
+              "$ref": "#/$defs/opPath"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          ],
+          "items": false,
+          "minItems": 3
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "p"
+            },
+            {
+              "$ref": "#/$defs/opPath"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "array",
+              "items": true
+            }
+          ],
+          "items": false,
+          "minItems": 5
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "m"
+            },
+            {
+              "$ref": "#/$defs/opPath"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "uniqueItems": true
+            }
+          ],
+          "items": false,
+          "minItems": 3
+        }
+      ]
+    },
+    "patch": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "patch"
+        },
+        "epoch": {
+          "$ref": "#/$defs/token"
+        },
+        "subscriptionId": {
+          "$ref": "#/$defs/token"
+        },
+        "baseRev": {
+          "$ref": "#/$defs/rev"
+        },
+        "nextRev": {
+          "$ref": "#/$defs/rev"
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/op"
+          },
+          "maxItems": 4096,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "type",
+        "epoch",
+        "subscriptionId",
+        "baseRev",
+        "nextRev",
+        "ops"
+      ],
+      "additionalProperties": false
+    },
+    "stateEnd": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "state_end"
+        },
+        "epoch": {
+          "$ref": "#/$defs/token"
+        },
+        "subscriptionId": {
+          "$ref": "#/$defs/token"
+        },
+        "reason": {
+          "enum": [
+            "overflow",
+            "source_failed"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "epoch",
+        "subscriptionId",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": [
+            "invalid_request",
+            "not_negotiated",
+            "unsupported_version",
+            "already_negotiated",
+            "unsupported_capability",
+            "unknown_method",
+            "not_found",
+            "invalid_cursor",
+            "busy",
+            "idle",
+            "limit",
+            "internal"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "capability": {
+          "$ref": "#/$defs/capName"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "unsupported_capability"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "capability": {
+                "$ref": "#/$defs/capName"
+              }
+            },
+            "required": [
+              "capability"
+            ]
+          }
+        }
+      ]
+    },
+    "extensionMethod": {
+      "type": "string",
+      "pattern": "^ext\\.[A-Za-z][A-Za-z0-9_-]{0,63}\\.[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "$ref": "#/$defs/token"
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "method": {
+              "const": "hello"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "versions": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "maxItems": 16,
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "capabilities": {
+                  "type": "object",
+                  "propertyNames": {
+                    "$ref": "#/$defs/capName"
+                  },
+                  "maxProperties": 32,
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "maxItems": 16,
+                    "minItems": 1,
+                    "uniqueItems": true
+                  }
+                }
+              },
+              "required": [
+                "versions"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "subscribe"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "window": {
+                  "type": "object",
+                  "properties": {
+                    "min": {
+                      "$ref": "#/$defs/limit"
+                    },
+                    "max": {
+                      "$ref": "#/$defs/limit"
+                    }
+                  },
+                  "required": [
+                    "min",
+                    "max"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "threadId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "history"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "range": {
+                  "$ref": "#/$defs/historyRange"
+                },
+                "limit": {
+                  "$ref": "#/$defs/limit"
+                }
+              },
+              "required": [
+                "threadId",
+                "range",
+                "limit"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.list"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "limit": {
+                  "$ref": "#/$defs/limit"
+                },
+                "cursor": {
+                  "$ref": "#/$defs/cursor"
+                }
+              },
+              "required": [
+                "limit"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.new"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "cwd": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "model": {
+                  "$ref": "#/$defs/model"
+                }
+              },
+              "required": [],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.fork"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "atEntryId": {
+                  "$ref": "#/$defs/durableId"
+                }
+              },
+              "required": [
+                "threadId",
+                "atEntryId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.configure"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "change": {
+                  "$ref": "#/$defs/configure",
+                  "type": "object",
+                  "minProperties": 1
+                }
+              },
+              "required": [
+                "threadId",
+                "change"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.abort"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                }
+              },
+              "required": [
+                "threadId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.wait"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                }
+              },
+              "required": [
+                "threadId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.compact"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "instructions": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "threadId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.reset"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "handoff": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "threadId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "submit"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "requestId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "whenBusy": {
+                  "enum": [
+                    "steer",
+                    "followUp",
+                    "reject"
+                  ]
+                }
+              },
+              "required": [
+                "threadId",
+                "requestId",
+                "text",
+                "whenBusy"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "continue"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                }
+              },
+              "required": [
+                "threadId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "submission.get"
+            },
+            "params": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "threadId": {
+                      "$ref": "#/$defs/durableId"
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  },
+                  "required": [
+                    "threadId",
+                    "requestId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "threadId": {
+                      "$ref": "#/$defs/durableId"
+                    },
+                    "submissionId": {
+                      "$ref": "#/$defs/durableId"
+                    }
+                  },
+                  "required": [
+                    "threadId",
+                    "submissionId"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "submission.wait"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "$ref": "#/$defs/durableId"
+                },
+                "submissionId": {
+                  "$ref": "#/$defs/durableId"
+                }
+              },
+              "required": [
+                "threadId",
+                "submissionId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "$ref": "#/$defs/extensionMethod"
+            }
+          }
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "response"
+        },
+        "id": {
+          "$ref": "#/$defs/token"
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "ok": {
+          "const": true
+        },
+        "result": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "method",
+        "ok",
+        "result"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "method": {
+              "const": "hello"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "const": 1
+                },
+                "epoch": {
+                  "$ref": "#/$defs/token"
+                },
+                "capabilities": {
+                  "type": "object",
+                  "propertyNames": {
+                    "$ref": "#/$defs/capName"
+                  },
+                  "maxProperties": 32,
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "epoch",
+                "capabilities"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "subscribe"
+            },
+            "result": {
+              "$ref": "#/$defs/subscription"
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "history"
+            },
+            "result": {
+              "$ref": "#/$defs/history"
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.list"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "threads": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/thread"
+                  },
+                  "maxItems": 100
+                },
+                "nextCursor": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/cursor"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "threads",
+                "nextCursor"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.new"
+            },
+            "result": {
+              "$ref": "#/$defs/thread"
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.fork"
+            },
+            "result": {
+              "$ref": "#/$defs/thread"
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.configure"
+            },
+            "result": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.abort"
+            },
+            "result": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.wait"
+            },
+            "result": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.compact"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "taskId": {
+                  "$ref": "#/$defs/durableId"
+                }
+              },
+              "required": [
+                "taskId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "thread.reset"
+            },
+            "result": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "submit"
+            },
+            "result": {
+              "$ref": "#/$defs/receipt"
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "continue"
+            },
+            "result": {
+              "$ref": "#/$defs/receipt"
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "submission.get"
+            },
+            "result": {
+              "$ref": "#/$defs/submission"
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "submission.wait"
+            },
+            "result": {
+              "$ref": "#/$defs/submission"
+            }
+          }
+        }
+      ]
+    },
+    "failureReply": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "response"
+        },
+        "id": {
+          "$ref": "#/$defs/token"
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "method",
+        "ok",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "frame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/request"
+        },
+        {
+          "$ref": "#/$defs/success"
+        },
+        {
+          "$ref": "#/$defs/failureReply"
+        },
+        {
+          "$ref": "#/$defs/patch"
+        },
+        {
+          "$ref": "#/$defs/stateEnd"
+        }
+      ]
+    }
+  }
+}

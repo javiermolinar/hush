@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────────
+  you › check @src/                                                 enter send
+  Workspace files
+  › src/app.go

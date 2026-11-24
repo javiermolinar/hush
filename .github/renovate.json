@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices", "schedule:weekly"],
+  "automerge": false,
+  "prConcurrentLimit": 5,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github\\/workflows\\/.*\\.yml$/"],
+      "matchStrings": ["version: (?<currentValue>\\d{4}\\.\\d+\\.\\d+) # renovate: jdx/mise"],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Review majors before opening a PR",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Coordinate Go toolchain bumps with go.work, module directives and docs",
+      "matchManagers": ["mise"],
+      "matchDepNames": ["go", "golang/go"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "The release verifier must keep using the documented minimum Node",
+      "matchManagers": ["mise"],
+      "matchDepTypes": ["task-release-tools"],
+      "enabled": false
+    },
+    {
+      "description": "The npm Node engine is the minimum runtime contract, not a tool pin",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["engines"],
+      "matchDepNames": ["node"],
+      "enabled": false
+    },
+    {
+      "description": "Pi libraries, wire fixtures and pinned references move together",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@earendil-works/pi-*", "@earendil-works/chord"],
+      "groupName": "Pi and Pi Durable",
+      "separateMajorMinor": false,
+      "dependencyDashboardApproval": true
+    }
+  ]
+}

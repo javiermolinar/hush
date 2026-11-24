@@ -1,0 +1,18 @@
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────
+  steer ›                                                       enter steer  esc stop  alt+enter follow-up
+  workspace · inbox 2 · ⎇ agent/1 · review · model-v1 high              ctx ▰▰▰▰▰▱ 80% · 45.0k tok · $1.23
+   ● Working thread   ◐ ⑂ thread 2   ✓ thread 3   ◌ thread 4   ◷ thread 5

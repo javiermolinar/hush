@@ -1,0 +1,900 @@
+package tui
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/javiermolinar/hush/sdk"
+	x "github.com/javiermolinar/hush/tui/extension"
+)
+
+const menusID = "hush/menus"
+const newThreadID x.ActionID = menusID + ".new"
+const renameID x.ActionID = menusID + ".name"
+const modelPickerID x.ActionID = menusID + ".model"
+const filePickID x.ActionID = menusID + ".file"
+const pageChoice = "more"
+const menuTimeout = 3 * time.Second
+
+// MenuServices supplies optional host operations not defined by native v1.
+// Nil callbacks keep their menus unavailable. Callbacks run off the UI loop;
+// they must enforce all workspace, authorization and thread-scope rules.
+type MenuServices struct {
+	Models  func(context.Context) ([]x.CatalogModel, error)
+	Files   func(context.Context, x.ListFiles) ([]x.File, string, error)
+	Rename  func(context.Context, x.SetTitle) error
+	Archive func(context.Context, x.SetArchived) error
+	Modes   func(context.Context, x.ListModes) ([]x.Choice, error)
+	SetMode func(context.Context, x.SetMode) error
+}
+
+type helloBackend interface {
+	Hello(context.Context) (sdk.Hello, error)
+}
+type piCatalogBackend interface {
+	helloBackend
+	PiCatalog(context.Context) ([]json.RawMessage, error)
+}
+
+type modelCatalogBackend interface {
+	helloBackend
+	ModelCatalog(context.Context, sdk.ID) (sdk.ModelCatalog, error)
+	ConfigureCatalogThread(context.Context, sdk.ID, *sdk.Model, string) error
+}
+
+type modelCatalogSearchBackend interface {
+	SearchModelCatalog(context.Context, sdk.ID, string) (sdk.ModelCatalog, error)
+}
+
+type modelCatalogDraftBackend interface {
+	NewCatalogThread(context.Context, string, sdk.Model, string) (sdk.Thread, error)
+}
+
+type menuCapabilities struct {
+	features  x.Features
+	directory bool
+}
+
+func (m *Model) menuProbe() tea.Cmd {
+	backend, ok := m.backend.(helloBackend)
+	_, catalog := m.backend.(piCatalogBackend)
+	_, intro := m.backend.(introBackend)
+	_, titles := m.backend.(renameBackend)
+	_, directory := m.backend.(directoryWatchBackend)
+	_, worktrees := m.backend.(worktreeBackend)
+	_, archive := m.backend.(archiveBackend)
+	_, schedules := m.backend.(scheduleBackend)
+	_, checkpoints := m.backend.(checkpointBackend)
+	_, native := m.backend.(modelCatalogBackend)
+	_, search := m.backend.(modelCatalogSearchBackend)
+	_, draft := m.backend.(modelCatalogDraftBackend)
+	catalog = catalog && m.options.Services.Models == nil
+	native = native && m.options.Services.Models == nil
+	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive && !schedules && !checkpoints {
+		return nil
+	}
+	ctx := m.ctx
+	return func() tea.Msg {
+		call, cancel := context.WithTimeout(ctx, menuTimeout)
+		defer cancel()
+		hello, err := backend.Hello(call)
+		if err != nil {
+			return nil
+		}
+		var f x.Features
+		catalogVersion := hello.Capabilities["modelCatalog"]
+		if native && (catalogVersion == sdk.ModelCatalogVersion || catalogVersion == sdk.ModelCatalogSearchVersion || catalogVersion == sdk.ModelCatalogDraftVersion) {
+			f |= x.Catalog | x.NativeCatalog
+			if search && catalogVersion >= sdk.ModelCatalogSearchVersion {
+				f |= x.NativeCatalogSearch
+				if draft && catalogVersion == sdk.ModelCatalogDraftVersion {
+					f |= x.NativeCatalogDraft
+				}
+			}
+		}
+		if catalog && hello.Capabilities["piEvents"] == sdk.PiEventsVersion {
+			f |= x.Catalog
+		}
+		version := hello.Capabilities["intro"]
+		if intro && (version == sdk.IntroVersion || version == sdk.IntroActionsVersion) {
+			f |= x.Skills
+		}
+		if titles && version == sdk.IntroActionsVersion {
+			f |= x.Titles
+		}
+		managed := hello.Capabilities["threadDirectory"] == sdk.ThreadManagementVersion
+		if managed && worktrees {
+			f |= x.Worktrees
+		}
+		if managed && archive {
+			f |= x.Archive
+		}
+		if schedules && hello.Capabilities["schedules"] == sdk.SchedulesVersion {
+			f |= x.Schedules
+		}
+		if checkpoints && hello.Capabilities["checkpoints"] == sdk.CheckpointsVersion {
+			f |= x.Checkpoints
+		}
+		return menuCapabilities{features: f, directory: managed && directory}
+	}
+}
+
+func (m *Model) menuFeatures() x.Features {
+	s := m.options.Services
+	f := m.menuFeaturesFromBackend
+	if s.Models != nil {
+		f |= x.Catalog
+	}
+	if s.Files != nil {
+		f |= x.Files
+	}
+	if s.Rename != nil {
+		f |= x.Titles
+	}
+	if s.Archive != nil {
+		f |= x.Archive
+	}
+	if s.Modes != nil && s.SetMode != nil {
+		f |= x.Mode
+	}
+	return f
+}
+
+var levels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+func modelsFromPi(ctx context.Context, backend piCatalogBackend) ([]x.CatalogModel, error) {
+	data, err := backend.PiCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]x.CatalogModel, 0, len(data))
+	for _, raw := range data {
+		var model struct {
+			Provider, ID, Name string
+			ContextWindow      uint64
+		}
+		if json.Unmarshal(raw, &model) != nil || model.Provider == "" || model.ID == "" {
+			continue
+		}
+		// The public Pi catalog does not include each model's thinking-level
+		// map. Offer the portable 'off' setting here; do not infer provider tiers.
+		out = append(out, x.CatalogModel{Model: sdk.Model{Provider: model.Provider, ModelID: model.ID}, Label: model.Name,
+			ContextWindow: model.ContextWindow, ThinkingLevels: []string{"off"}})
+	}
+	return out, nil
+}
+
+func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Context) x.ClientResult, bool) {
+	services := m.options.Services
+	features := m.menuFeatures()
+	target := func(id sdk.ID) sdk.ID {
+		if id == "" {
+			return r.owner
+		}
+		return id
+	}
+	switch op := operation.(type) {
+	case x.ManageCheckpoint:
+		if backend, ok := m.backend.(checkpointBackend); ok && features.Has(x.Checkpoints) {
+			return checkpointJob(backend, target(op.ThreadID), op), true
+		}
+	case x.ManageSchedule:
+		if backend, ok := m.backend.(scheduleBackend); ok && features.Has(x.Schedules) {
+			return scheduleJob(backend, target(op.ThreadID), op), true
+		}
+	case x.ListSkills:
+		if backend, ok := m.backend.(introBackend); ok && features.Has(x.Skills) {
+			scope := m.introScope(target(op.ThreadID))
+			return func(ctx context.Context) x.ClientResult {
+				call, cancel := context.WithTimeout(ctx, menuTimeout)
+				defer cancel()
+				report, err := backend.Intro(call, scope)
+				return x.ClientResult{Skills: report.Skills, MoreSkills: report.MoreSkills, Err: err}
+			}, true
+		}
+	case x.ConfigureCatalog:
+		if backend, ok := m.backend.(modelCatalogBackend); ok && features.Has(x.NativeCatalog) {
+			return func(ctx context.Context) x.ClientResult {
+				call, cancel := context.WithTimeout(ctx, menuTimeout+3*time.Second)
+				defer cancel()
+				var ref *sdk.Model
+				if op.Model != (sdk.Model{}) {
+					ref = &op.Model
+				}
+				return x.ClientResult{Err: backend.ConfigureCatalogThread(call, target(op.ThreadID), ref, op.ThinkingLevel)}
+			}, true
+		}
+	case x.ListModels:
+		hook := services.Models
+		if backend, ok := m.backend.(modelCatalogBackend); hook == nil && ok && features.Has(x.NativeCatalog) {
+			return func(ctx context.Context) x.ClientResult {
+				call, cancel := context.WithTimeout(ctx, menuTimeout)
+				defer cancel()
+				catalog, err := backend.ModelCatalog(call, target(op.ThreadID))
+				if err != nil {
+					return x.ClientResult{Err: err}
+				}
+				return nativeModels(catalog, op)
+			}, true
+		}
+		if backend, ok := m.backend.(piCatalogBackend); hook == nil && ok && features.Has(x.Catalog) {
+			hook = func(ctx context.Context) ([]x.CatalogModel, error) { return modelsFromPi(ctx, backend) }
+		}
+		if hook != nil {
+			return func(ctx context.Context) x.ClientResult {
+				data, err := hook(ctx)
+				if err != nil {
+					return x.ClientResult{Err: err}
+				}
+				data = append([]x.CatalogModel(nil), data[:min(maxChoices, len(data))]...)
+				slices.SortStableFunc(data, func(a, b x.CatalogModel) int {
+					if a.Model.Provider != b.Model.Provider {
+						return cmp.Compare(a.Model.Provider, b.Model.Provider)
+					}
+					return cmp.Compare(a.Model.ModelID, b.Model.ModelID)
+				})
+				result := x.ClientResult{}
+				start, _ := strconv.Atoi(op.Cursor)
+				start = max(0, start)
+				seen := map[sdk.Model]bool{}
+				n := 0
+				for _, item := range data {
+					if item.Model.Provider == "" || item.Model.ModelID == "" || seen[item.Model] || !fuzzyMatch(item.Model.Provider+"/"+item.Model.ModelID+" "+item.Label, op.Query) {
+						continue
+					}
+					seen[item.Model] = true
+					if n < start {
+						n++
+						continue
+					}
+					if len(result.Models) >= pageLimit(op.Limit) {
+						result.Cursor = strconv.Itoa(n)
+						break
+					}
+					item.ThinkingLevels = append([]string(nil), item.ThinkingLevels[:min(8, len(item.ThinkingLevels))]...)
+					result.Models = append(result.Models, item)
+					n++
+				}
+				return result
+			}, true
+		}
+	case x.ListFiles:
+		if services.Files != nil {
+			op.ThreadID, op.Limit = target(op.ThreadID), pageLimit(op.Limit)
+			return func(ctx context.Context) x.ClientResult {
+				if !op.ThreadID.Valid() {
+					return x.ClientResult{Err: sdk.ErrProtocol}
+				}
+				v, cursor, err := services.Files(ctx, op)
+				return x.ClientResult{Files: append([]x.File(nil), v[:min(len(v), op.Limit)]...), Cursor: cursor, Err: err}
+			}, true
+		}
+	case x.SetTitle:
+		if services.Rename != nil {
+			op.ThreadID = target(op.ThreadID)
+			return func(ctx context.Context) x.ClientResult {
+				if !op.ThreadID.Valid() {
+					return x.ClientResult{Err: sdk.ErrProtocol}
+				}
+				return x.ClientResult{Err: services.Rename(ctx, op), ThreadID: op.ThreadID, Title: op.Title}
+			}, true
+		}
+		if backend, ok := m.backend.(renameBackend); ok && features.Has(x.Titles) {
+			op.ThreadID = target(op.ThreadID)
+			return func(ctx context.Context) x.ClientResult {
+				title, err := backend.RenameThread(ctx, op.ThreadID, op.Title)
+				return x.ClientResult{Err: err, ThreadID: op.ThreadID, Title: title}
+			}, true
+		}
+	case x.SetArchived:
+		archive := services.Archive
+		if backend, ok := m.backend.(archiveBackend); archive == nil && ok && features.Has(x.Archive) {
+			archive = func(ctx context.Context, op x.SetArchived) error {
+				return backend.SetThreadArchived(ctx, op.ThreadID, op.Archived)
+			}
+		}
+		if archive != nil {
+			op.ThreadID = target(op.ThreadID)
+			return func(ctx context.Context) x.ClientResult {
+				if !op.ThreadID.Valid() {
+					return x.ClientResult{Err: sdk.ErrProtocol}
+				}
+				return x.ClientResult{Err: archive(ctx, op), ThreadID: op.ThreadID}
+			}, true
+		}
+	case x.NewWorktree:
+		if backend, ok := m.backend.(worktreeBackend); ok && features.Has(x.Worktrees) {
+			if op.Workspace == "" && m.options.WorkspaceLocal {
+				op.Workspace = m.options.NewThread.CWD
+			}
+			return func(ctx context.Context) x.ClientResult {
+				row, err := backend.CreateThread(ctx, sdk.ThreadCreation{CWD: op.Workspace, Title: op.Title, Worktree: true})
+				return x.ClientResult{Err: err, ThreadID: row.ID}
+			}, true
+		}
+	case x.ListModes:
+		if features.Has(x.Mode) {
+			op.ThreadID = target(op.ThreadID)
+			return func(ctx context.Context) x.ClientResult {
+				if !op.ThreadID.Valid() {
+					return x.ClientResult{Err: sdk.ErrProtocol}
+				}
+				modes, err := services.Modes(ctx, op)
+				return x.ClientResult{Modes: append([]x.Choice(nil), modes[:min(len(modes), maxChoices)]...), Err: err}
+			}, true
+		}
+	case x.SetMode:
+		if features.Has(x.Mode) {
+			op.ThreadID = target(op.ThreadID)
+			return func(ctx context.Context) x.ClientResult {
+				if !op.ThreadID.Valid() {
+					return x.ClientResult{Err: sdk.ErrProtocol}
+				}
+				return x.ClientResult{Err: services.SetMode(ctx, op), ThreadID: op.ThreadID}
+			}, true
+		}
+	}
+	return nil, false
+}
+
+// applyMenuResult runs on the loop and merges host acknowledgements without
+// letting command goroutines read the shell. Unknown thread metadata stays empty.
+func (m *Model) applyMenuResult(op x.Operation, result *x.ClientResult) {
+	if result.Err != nil {
+		return
+	}
+	switch v := op.(type) {
+	case x.ListThreads:
+		out := result.Threads[:0]
+		matches := result.WorkspaceMatches[:0]
+		for i, row := range result.Threads {
+			if t := m.threads[row.ID]; t != nil {
+				managed := result.Directory && row.Status != ""
+				if t.info.Archived && (!managed || m.options.Services.Archive != nil) {
+					continue
+				}
+				info := t.info
+				info.Forked, info.ParentID = row.Forked, row.ParentID
+				if info.Title == "" || managed && m.options.ProjectThread == nil && m.options.Services.Rename == nil {
+					info.Title = row.Title
+				}
+				if managed && m.options.ProjectThread == nil {
+					info.Branch = row.Branch
+					if !t.activeRun || row.Status == x.Running || row.Status == x.Parked {
+						info.Status = row.Status
+					}
+				}
+				if info.Workspace == "" {
+					info.Workspace = row.Workspace
+				}
+				info.LastMessageAt = row.LastMessageAt
+				info.Preview = limitText(oneLine(t.lastAnswer), 100)
+				row = info
+			}
+			out = append(out, row)
+			if i < len(result.WorkspaceMatches) {
+				matches = append(matches, result.WorkspaceMatches[i])
+			}
+		}
+		result.Threads, result.WorkspaceMatches = out, matches
+	case x.SetTitle:
+		if t := m.threads[result.ThreadID]; t != nil && (result.ThreadID != m.active || t.presentation == nil || m.options.Services.Rename != nil) {
+			// The active v2 watch is authoritative; a late command reply must
+			// not overwrite a title it already observed another client change.
+			t.info.Title = limitText(result.Title, 384)
+			t.revision++
+			m.emit(result.ThreadID, x.Event{Kind: x.StatusChanged})
+		}
+	case x.SetArchived:
+		if t := m.threads[result.ThreadID]; t != nil && (t.directory == nil || m.options.Services.Archive != nil) {
+			t.info.Archived = v.Archived
+			t.revision++
+			m.emit(result.ThreadID, x.Event{Kind: x.StatusChanged})
+		}
+	case x.SetMode:
+		if t := m.threads[result.ThreadID]; t != nil {
+			t.info.Mode = limitText(v.Mode, 64)
+			t.revision++
+			m.emit(result.ThreadID, x.Event{Kind: x.StatusChanged})
+		}
+	}
+}
+
+func menusRegistration(login *ProviderLoginOptions) x.Registration {
+	da := func(id, title, direct, leader, slash string, requires x.Features, run func(x.Context, x.Invocation) x.Outcome) x.Action {
+		a := x.Action{ID: x.ActionID(menusID + "." + id), Title: title, Binding: x.Binding{Direct: direct, Leader: leader}, Run: run, Requires: requires}
+		if slash != "" {
+			a.Slash = &x.Slash{Name: slash}
+		}
+		return a
+	}
+	r := x.Registration{ID: menusID, APIVersion: x.APIVersion, Actions: []x.Action{
+		da("switch", "Switch threads", "ctrl+t", "s", "threads", 0, func(c x.Context, _ x.Invocation) x.Outcome { return switcher(c, "") }),
+		da("switch-all", "Browse all workspaces", "", "shift+s", "threads-all", 0, func(_ x.Context, _ x.Invocation) x.Outcome { return workspaceSwitcher("", true) }),
+		da("new", "New thread", "ctrl+n", "n", "new", 0, func(c x.Context, _ x.Invocation) x.Outcome {
+			return x.Outcome{x.Client{Op: x.NewThread{Workspace: c.Thread.Workspace}, Done: switchResult}}
+		}),
+		da("schedule", "Scheduled occurrences", "", "i s", "schedule", x.Schedules, scheduleMenu),
+		da("checkpoint", "Record checkpoint", "", "i c", "checkpoint", x.Checkpoints, checkpointMenu),
+		da("rewind", "Preview rewind", "", "i r", "rewind", x.Checkpoints, rewindMenu),
+		da("worktree", "New thread in a worktree", "", "g", "worktree", x.Worktrees, func(c x.Context, v x.Invocation) x.Outcome {
+			return x.Outcome{x.Client{Op: x.NewWorktree{Workspace: c.Thread.Workspace, Title: strings.TrimSpace(v.Args)}, Done: switchResult}}
+		}),
+		da("fork", "Fork history", "ctrl+f", "f", "fork", 0, func(c x.Context, v x.Invocation) x.Outcome {
+			id := actionThread(c, v)
+			if !id.Valid() {
+				return showNote("No thread to fork", x.Warning)
+			}
+			return forkMenu(id, "")
+		}),
+		da("skills", "List loaded skills", "", "l", "skills", x.Skills, func(_ x.Context, _ x.Invocation) x.Outcome {
+			return x.Outcome{x.Client{Op: x.ListSkills{}, Done: showSkills}}
+		}),
+		da("model", "Select model", "ctrl+l", "m", "model", x.Catalog, func(c x.Context, v x.Invocation) x.Outcome {
+			id := actionThread(c, v)
+			if !id.Valid() && !(id == "" && c.Features.Has(x.NativeCatalogDraft)) {
+				return showNote("Use /new to open a thread before selecting a model", x.Warning)
+			}
+			if c.Features.Has(x.NativeCatalogSearch) {
+				return x.Outcome{x.Local{Op: modelSearchOp, ThreadID: id, Text: v.Args}}
+			}
+			return modelMenu(id, "")
+		}),
+		da("thinking", "Select thinking level", "shift+tab", "t", "thinking", 0, func(c x.Context, _ x.Invocation) x.Outcome {
+			if c.Thread.ID == "" {
+				if c.Features.Has(x.NativeCatalogDraft) {
+					return showNote("Use /model to choose the model and thinking level for the first prompt", x.Warning)
+				}
+				return showNote("Open a thread before setting thinking level", x.Warning)
+			}
+			if c.Features.Has(x.NativeCatalog) {
+				return nativeThinkingMenu(c.Thread.ID)
+			}
+			if !c.Features.Has(x.Catalog) {
+				return showNote("Thinking levels unavailable on this host", x.Warning)
+			}
+			return thinkingMenu(c.Thread.ID, levels, sdk.Model{}, x.Sheet)
+		}),
+		da("name", "Rename thread", "ctrl+r", "r", "name", x.Titles, renameMenu),
+		da("retry", "Retry failed run", "", "b", "retry", 0, runRecovery(retryFailureOp)),
+		da("dismiss", "Dismiss run failure", "", "x", "dismiss", 0, runRecovery(dismissFailureOp)),
+		da("mode", "Permission mode", "", "u", "mode", x.Mode, modeMenu),
+		da("archive", "Archive thread", "", "v", "archive", x.Archive, archiveMenu),
+		da("compact", "Compact the context", "", "j", "compact", 0, func(c x.Context, _ x.Invocation) x.Outcome {
+			return confirmNative(c, "Compact context?", "The backend will summarize the current context.", x.Compact{}, "Compaction requested")
+		}),
+		da("reset", "Reset the context", "", "z", "reset", 0, func(c x.Context, _ x.Invocation) x.Outcome {
+			return confirmNative(c, "Reset context?", "Start fresh without deleting transcript history.", x.Reset{}, "Context reset")
+		}),
+		da("file", "Complete @ file", "", "@", "", x.Files, func(_ x.Context, v x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: x.CompleteFile, Text: v.Target}}
+		}),
+	}}
+	if login != nil && login.Command != nil && len(login.Providers) != 0 {
+		r.Actions = append(r.Actions, da("login", "Sign in to a provider", "", "i l", "login", 0, providerLoginMenu(login.Providers)))
+	}
+	return r
+}
+
+func showSkills(_ x.Context, result x.ClientResult) x.Outcome {
+	if result.Err != nil {
+		return clientNote(result, "")
+	}
+	if len(result.Skills) == 0 {
+		return showNote("No skills are loaded for this workspace", x.Muted)
+	}
+	choices := make([]x.Choice, 0, min(maxChoices, len(result.Skills)))
+	for _, name := range result.Skills[:min(maxChoices, len(result.Skills))] {
+		choices = append(choices, x.Choice{ID: name, Label: name})
+	}
+	title := "Loaded skills · Enter inserts command"
+	if n := len(result.Skills) - len(choices) + result.MoreSkills; n > 0 {
+		title += fmt.Sprintf(" · +%d not listed", n)
+	}
+	return x.Outcome{x.SelectDialog{Title: title, Placement: x.Sheet, Choices: choices, Done: func(_ x.Context, r x.Reply[string]) x.Outcome {
+		if r.Accepted {
+			return x.Outcome{x.Local{Op: x.ReplacePrompt, Text: "/skill:" + r.Value + " "}}
+		}
+		return nil
+	}}}
+}
+
+func showNote(s string, tone x.Tone) x.Outcome { return x.Outcome{x.Notice{Text: s, Tone: tone}} }
+func clientNote(result x.ClientResult, ok string) x.Outcome {
+	if result.Err != nil {
+		return showNote(result.Err.Error(), x.Danger)
+	}
+	if ok == "" {
+		return nil
+	}
+	return showNote(ok, x.Good)
+}
+func switchResult(_ x.Context, result x.ClientResult) x.Outcome {
+	if result.Err != nil {
+		return clientNote(result, "")
+	}
+	return x.Outcome{x.Client{Op: x.Switch{ThreadID: result.ThreadID}}}
+}
+func actionThread(c x.Context, v x.Invocation) sdk.ID {
+	id := sdk.ID(v.Target)
+	if id.Valid() {
+		return id
+	}
+	return c.Thread.ID
+}
+
+func switcher(_ x.Context, cursor string) x.Outcome { return workspaceSwitcher(cursor, false) }
+
+func workspaceSwitcher(cursor string, all bool) x.Outcome {
+	return x.Outcome{x.Client{Op: x.ListThreads{Limit: 50, Cursor: cursor, LaunchScope: true, BrowseAll: all}, Done: func(ctx x.Context, r x.ClientResult) x.Outcome {
+		if r.Err != nil {
+			return clientNote(r, "")
+		}
+		newThread := x.Choice{ID: "new", Label: "+ New thread"}
+		var choices []x.Choice
+		if !r.Directory {
+			choices = append(choices, newThread) // legacy order from thread.list
+		}
+		for i, t := range r.Threads {
+			glyph, _ := tabStatus(t.Status)
+			label := glyph + " " + threadTitle(t)
+			if t.Forked {
+				label = "  ⑂ " + label
+			}
+			if t.ID == ctx.ActiveThreadID {
+				label += " · current"
+			}
+			detail := string(t.Status)
+			if r.Directory {
+				parts := make([]string, 0, 4)
+				if !t.LastMessageAt.IsZero() {
+					parts = append(parts, t.LastMessageAt.Format("2006-01-02"))
+				}
+				if t.Title != "" {
+					parts = append(parts, "#"+string(t.ID))
+				}
+				if t.Status != "" {
+					parts = append(parts, string(t.Status))
+				}
+				if t.ParentID != "" {
+					parts = append(parts, "fork of #"+string(t.ParentID))
+				}
+				if t.Branch != "" {
+					parts = append(parts, "⎇ "+t.Branch)
+				}
+				if t.Preview != "" {
+					parts = append(parts, t.Preview)
+				}
+				detail = strings.Join(parts, " · ")
+			} else {
+				if t.ParentID != "" {
+					detail = fmt.Sprintf("from #%s · %s", t.ParentID, detail)
+				}
+				if t.Preview != "" {
+					detail = strings.TrimSpace(detail + " · " + t.Preview)
+				}
+			}
+			match := "unknown"
+			if i < len(r.WorkspaceMatches) {
+				match = r.WorkspaceMatches[i]
+			}
+			switch match {
+			case "outside":
+				label = "outside launch workspace · " + label
+			case "unknown":
+				label = "workspace unknown · " + label
+			}
+			choices = append(choices, x.Choice{ID: string(t.ID), Label: label, Description: detail})
+		}
+		if r.Directory {
+			choices = append(choices, newThread)
+		}
+		title := "Switch thread · workspace unverified"
+		switch {
+		case r.ScopeUnavailable:
+			title = "Switch thread · launch workspace scope unavailable"
+		case r.WorkspaceScoped:
+			title = "Switch thread · launch workspace"
+		case all:
+			title = "Switch thread · all workspaces"
+		}
+		if r.Indexing {
+			title += " · indexing"
+			choices = append(choices, x.Choice{ID: "refresh", Label: "Refresh thread list…"})
+		} else if r.Cursor != "" {
+			label := "More threads…"
+			if r.Directory {
+				label = "Older threads…"
+			}
+			choices = append(choices, x.Choice{ID: pageChoice, Label: label})
+		}
+		if !all && (r.WorkspaceScoped || r.ScopeUnavailable) {
+			choices = append(choices, x.Choice{ID: "all-workspaces", Label: "Browse all workspaces…"})
+		}
+		return x.Outcome{x.SelectDialog{Title: title, Placement: x.Sheet, Choices: choices,
+			Actions: []x.ActionID{newThreadID, forkPickerID, coreID + ".close", renameID}, Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
+				if !reply.Accepted {
+					return nil
+				}
+				switch reply.Value {
+				case "new":
+					return x.Outcome{x.Dispatch{Action: x.ActionRef{ID: newThreadID}}}
+				case pageChoice:
+					return workspaceSwitcher(r.Cursor, all)
+				case "refresh":
+					return workspaceSwitcher("", all)
+				case "all-workspaces":
+					return workspaceSwitcher("", true)
+				default:
+					return x.Outcome{x.Client{Op: x.Switch{ThreadID: sdk.ID(reply.Value)}}}
+				}
+			}}}
+	}}}
+}
+
+func forkMenu(id, before sdk.ID) x.Outcome {
+	return x.Outcome{x.Client{Op: x.History{ThreadID: id, BeforeEntryID: before, Limit: 80}, Done: func(_ x.Context, r x.ClientResult) x.Outcome {
+		if r.Err != nil {
+			return clientNote(r, "")
+		}
+		var choices []x.Choice
+		var oldest sdk.ID
+		for i := len(r.Entries) - 1; i >= 0; i-- {
+			e := r.Entries[i].Record
+			oldest = e.ID
+			body := ""
+			for _, msg := range e.Messages {
+				for _, b := range msg.Blocks {
+					if b.Type == "text" && body == "" {
+						body = oneLine(limitText(b.Text, 100))
+					}
+				}
+			}
+			label := string(e.ID) + " · " + e.Kind
+			if body != "" {
+				label = string(e.ID) + " · " + body
+			}
+			choices = append(choices, x.Choice{ID: string(e.ID), Label: label, Description: "transcript fork"})
+		}
+		if len(choices) == 0 {
+			return showNote("No history entries to fork", x.Warning)
+		}
+		if oldest != "" && r.Cursor != "" {
+			choices = append(choices, x.Choice{ID: pageChoice, Label: "Older entries…"})
+		}
+		return x.Outcome{x.SelectDialog{Title: "Fork transcript at an entry · files unchanged", Placement: x.Sheet, Choices: choices, Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
+			if !reply.Accepted {
+				return nil
+			}
+			if reply.Value == pageChoice {
+				return forkMenu(id, oldest)
+			}
+			return x.Outcome{x.Client{Op: x.Fork{ThreadID: id, AtEntryID: sdk.ID(reply.Value)}, Done: switchResult}}
+		}}}
+	}}}
+}
+
+func nativeModels(catalog sdk.ModelCatalog, op x.ListModels) x.ClientResult {
+	out := x.ClientResult{NativeModels: true}
+	limit := pageLimit(op.Limit)
+	if len(catalog.Models) > maxChoices {
+		limit = min(limit, maxChoices-1) // Leave room for the existing More row.
+	}
+	start, _ := strconv.Atoi(op.Cursor)
+	n := 0
+	for _, row := range catalog.Models {
+		current := catalog.Current != nil && *catalog.Current == row.Model
+		if !current && !fuzzyMatch(row.Provider+"/"+row.ModelID+" "+row.Label, op.Query) {
+			continue
+		}
+		if n < start {
+			n++
+			continue
+		}
+		if len(out.Models) >= limit {
+			out.Cursor = strconv.Itoa(n)
+			break
+		}
+		item := x.CatalogModel{Model: row.Model, Label: row.Label, ThinkingLevels: row.ThinkingLevels, Current: current}
+		if !row.Available {
+			item.Unavailable = "Model unavailable. Configure provider credentials on the backend host or pick another model."
+			switch deref(row.Reason) {
+			case "missing_model":
+				item.Unavailable = "Model not installed. Restore it on the backend host or pick another model."
+			case "availability_unknown":
+				item.Unavailable = "Could not check model availability. Reopen /model to retry or pick another model."
+			case "credentials_required":
+				if row.Provider == "openai-codex" {
+					item.Unavailable = "Model unavailable. Run hush auth login on the backend host or pick another model."
+				}
+			}
+		}
+		out.Models = append(out.Models, item)
+		n++
+	}
+	return out
+}
+
+func nativeThinkingMenu(id sdk.ID) x.Outcome {
+	return x.Outcome{x.Client{Op: x.ListModels{ThreadID: id, Limit: sdk.ModelCatalogLimit}, Done: func(_ x.Context, r x.ClientResult) x.Outcome {
+		if r.Err != nil {
+			return clientNote(r, "")
+		}
+		for _, row := range r.Models {
+			if row.Current {
+				if row.Unavailable != "" {
+					return showNote(row.Unavailable, x.Warning)
+				}
+				return modelThinkingMenu(id, row.ThinkingLevels, sdk.Model{}, x.Sheet, true)
+			}
+		}
+		return showNote("No model selected. Choose one with /model first.", x.Warning)
+	}}}
+}
+
+func modelMenu(id sdk.ID, cursor string) x.Outcome {
+	return x.Outcome{x.Client{Op: x.ListModels{ThreadID: id, Limit: 100, Cursor: cursor}, Done: func(_ x.Context, r x.ClientResult) x.Outcome {
+		if r.Err != nil {
+			return clientNote(r, "")
+		}
+		choices, models := modelPickerChoices(r.Models)
+		if len(choices) == 0 {
+			return showNote("No available models", x.Warning)
+		}
+		if r.Cursor != "" {
+			choices = append(choices, x.Choice{ID: pageChoice, Label: "More models…"})
+		}
+		return x.Outcome{x.SelectDialog{Title: "Select model", Placement: x.Sheet, Choices: choices, Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
+			if !reply.Accepted {
+				return nil
+			}
+			if reply.Value == pageChoice {
+				return modelMenu(id, r.Cursor)
+			}
+			return modelPickerSelection(id, models, reply.Value, r.NativeModels)
+		}}}
+	}}}
+}
+
+func modelPickerChoices(models []x.CatalogModel) ([]x.Choice, map[string]x.CatalogModel) {
+	byChoice := make(map[string]x.CatalogModel, len(models))
+	choices := make([]x.Choice, 0, len(models))
+	for i, model := range models {
+		key := strconv.Itoa(i)
+		byChoice[key] = model
+		ref := model.Model.Provider + "/" + model.Model.ModelID
+		label, detail := ref, model.Label
+		if model.Current {
+			label = "Current · " + ref
+		}
+		if model.Unavailable != "" {
+			if model.Current {
+				label = "Current (unavailable) · " + ref
+			} else {
+				label = "Unavailable · " + ref
+			}
+			detail = model.Unavailable + " · " + detail
+		}
+		choices = append(choices, x.Choice{ID: key, Label: limitText(label, 512), Description: limitText(detail, 1024)})
+	}
+	return choices, byChoice
+}
+
+func modelPickerSelection(id sdk.ID, models map[string]x.CatalogModel, key string, native bool) x.Outcome {
+	v, ok := models[key]
+	if !ok {
+		return nil
+	}
+	if v.Unavailable != "" {
+		return showNote(v.Unavailable, x.Warning)
+	}
+	if len(v.ThinkingLevels) > 0 || native {
+		return modelThinkingMenu(id, v.ThinkingLevels, v.Model, x.Sheet, native)
+	}
+	return x.Outcome{x.Client{Op: x.Configure{ThreadID: id, Change: sdk.Configure{Model: sdk.Set(v.Model)}},
+		Done: func(_ x.Context, r x.ClientResult) x.Outcome { return clientNote(r, "Model updated") }}}
+}
+
+func thinkingMenu(id sdk.ID, available []string, model sdk.Model, place x.Placement) x.Outcome {
+	return modelThinkingMenu(id, available, model, place, false)
+}
+
+func modelThinkingMenu(id sdk.ID, available []string, model sdk.Model, place x.Placement, native bool) x.Outcome {
+	var rows []x.Choice
+	for _, v := range available {
+		if slices.Contains(levels, v) {
+			rows = append(rows, x.Choice{ID: v, Label: v})
+		}
+	}
+	if len(rows) == 0 {
+		return showNote("No thinking levels available", x.Warning)
+	}
+	return x.Outcome{x.SelectDialog{Title: "Thinking level", Placement: place, Choices: rows, Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
+		if !reply.Accepted {
+			return nil
+		}
+		if native {
+			note := "Thinking level updated"
+			if id == "" {
+				note = "Model selected for the first prompt"
+			} else if model != (sdk.Model{}) {
+				note = "Model updated"
+			}
+			return x.Outcome{x.Client{Op: x.ConfigureCatalog{ThreadID: id, Model: model, ThinkingLevel: reply.Value}, Done: func(_ x.Context, r x.ClientResult) x.Outcome { return clientNote(r, note) }}}
+		}
+		change := sdk.Configure{ThinkingLevel: sdk.Set(reply.Value)}
+		if model != (sdk.Model{}) {
+			change.Model = sdk.Set(model)
+		}
+		return x.Outcome{x.Client{Op: x.Configure{ThreadID: id, Change: change}, Done: func(_ x.Context, r x.ClientResult) x.Outcome { return clientNote(r, "Thinking level updated") }}}
+	}}}
+}
+
+func renameMenu(c x.Context, v x.Invocation) x.Outcome {
+	id := actionThread(c, v)
+	if !id.Valid() {
+		return showNote("No thread to rename", x.Warning)
+	}
+	change := func(title string) x.Outcome {
+		return x.Outcome{x.Client{Op: x.SetTitle{ThreadID: id, Title: strings.TrimSpace(title)}, Done: func(_ x.Context, r x.ClientResult) x.Outcome { return clientNote(r, "Thread renamed") }}}
+	}
+	if strings.TrimSpace(v.Args) != "" {
+		return change(v.Args)
+	}
+	old := ""
+	if c.Thread.ID == id {
+		old = c.Thread.Title
+	}
+	return x.Outcome{x.InputDialog{Title: "Rename thread", Initial: old, Placeholder: "Thread title", Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
+		if !reply.Accepted {
+			return nil
+		}
+		return change(reply.Value)
+	}}}
+}
+
+func modeMenu(c x.Context, _ x.Invocation) x.Outcome {
+	if !c.Thread.ID.Valid() {
+		return showNote("No thread to configure", x.Warning)
+	}
+	return x.Outcome{x.Client{Op: x.ListModes{}, Done: func(_ x.Context, r x.ClientResult) x.Outcome {
+		if r.Err != nil {
+			return clientNote(r, "")
+		}
+		return x.Outcome{x.SelectDialog{Title: "Permission mode", Placement: x.Sheet, Choices: r.Modes, Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
+			if !reply.Accepted {
+				return nil
+			}
+			return x.Outcome{x.Client{Op: x.SetMode{Mode: reply.Value}, Done: func(_ x.Context, r x.ClientResult) x.Outcome { return clientNote(r, "Permission mode updated") }}}
+		}}}
+	}}}
+}
+
+func archiveMenu(c x.Context, _ x.Invocation) x.Outcome {
+	if !c.Thread.ID.Valid() {
+		return showNote("No thread to archive", x.Warning)
+	}
+	if c.Thread.Archived {
+		return confirmNative(c, "Unarchive thread?", "Show the thread in the switcher again.", x.SetArchived{Archived: false}, "Thread unarchived")
+	}
+	return confirmNative(c, "Archive thread?", "Hide the thread without deleting its history or files.", x.SetArchived{Archived: true}, "Thread archived")
+}
+
+func confirmNative(c x.Context, title, message string, op x.Operation, ok string) x.Outcome {
+	if !c.Thread.ID.Valid() {
+		return showNote("No thread selected", x.Warning)
+	}
+	return x.Outcome{x.ConfirmDialog{Placement: x.Sheet, Title: title, Message: message, Done: func(_ x.Context, reply x.Reply[bool]) x.Outcome {
+		if !reply.Accepted || !reply.Value {
+			return nil
+		}
+		return x.Outcome{x.Client{Op: op, Done: func(_ x.Context, r x.ClientResult) x.Outcome { return clientNote(r, ok) }}}
+	}}}
+}

@@ -1,0 +1,22 @@
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  Switch thread · workspace unverified
+  › Type to filter
+  › + New thread
+    workspace unknown · ◌ workspace #1  idle · # Answer  See [the docs](https:
+    workspace unknown ·   ⑂ ◌ thread 14  from #1 ·
+  enter choose  ↑↓ move  esc close

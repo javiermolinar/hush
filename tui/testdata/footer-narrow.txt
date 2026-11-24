@@ -1,0 +1,16 @@
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────
+  ────────────────────────────────────
+  steer › first prompt line
+          second prompt line
+          third prompt line
+  worksp… · review · model-v1  ctx 80%
+   ● Working thread  +4

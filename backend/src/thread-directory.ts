@@ -1,0 +1,446 @@
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { setImmediate as yieldTurn, setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
+import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
+import type { Message } from "@earendil-works/pi-ai";
+import { AgentDoc, LiveDoc, type ConversationId, type ConversationRecord, type Cursor, type EntryRecord, type Harness } from "@earendil-works/pi-durable";
+import { Cursors } from "../../server/src/cursor.js";
+import type { NativeHost } from "../../server/src/durable.js";
+import type { ManagedThreadRow, ThreadArchive, ThreadCreation, ThreadDirectoryHost, ThreadDirectoryPage, ThreadDirectoryQuery,
+  ThreadDirectoryReport, ThreadDirectoryRow, ThreadDirectoryVersion, ThreadLookup, ThreadStatus, WorkspaceMatch } from "../../server/src/thread-directory.js";
+import { WireError } from "../../server/src/wire.js";
+import { ProfileDoc } from "./pi/projection.js";
+import { actionableFailure, displayTitle, threadActivity, ThreadPresentationDoc, threadLabel } from "./thread-presentation.js";
+import type { GenerateThreadTitle } from "./thread-title-model.js";
+import { existingDirectory, type ThreadWorktrees } from "./worktrees.js";
+
+const historyBatch = 16;
+const inventoryBatch = 32;
+const git = promisify(execFile);
+
+// Only committed, visible chat text counts; tool results, thinking and
+// administrative records must not move a conversation up the list.
+function chatRole(message: Message) {
+  return message.role === "user" || message.role === "assistant";
+}
+
+function chatText(message: Message) {
+  if (!chatRole(message)) return "";
+  const describe = (value: string) => {
+    if (message.role === "user" && value.startsWith("<skill name=")) {
+      const skill = /^<skill name="([^"\r\n]{1,96})" location=/.exec(value)?.[1];
+      return skill ? threadLabel("/skill:" + skill, 72) : "Skill invocation";
+    }
+    return threadLabel(value, 72);
+  };
+  if (typeof message.content === "string") return describe(message.content);
+  for (const part of message.content) {
+    if (part.type !== "text") continue;
+    const text = describe(part.text);
+    if (text) return text;
+  }
+  return "";
+}
+
+function firstPrompt(entry: EntryRecord) {
+  for (const message of entry.model ?? []) {
+    if (message.role !== "user") continue;
+    const text = chatText(message);
+    if (text) return text;
+  }
+  return "";
+}
+
+function lastMessage(entry: EntryRecord) {
+  const messages = entry.model ?? [];
+  for (let n = messages.length - 1; n >= 0; n--) {
+    const msg = messages[n]!;
+    if (Number.isSafeInteger(msg.timestamp) && msg.timestamp > 0 && chatText(msg)) return msg.timestamp;
+  }
+  return 0;
+}
+
+function answerExcerpt(entry: EntryRecord) {
+  for (const message of entry.model ?? []) {
+    if (message.role === "assistant" && (message.stopReason === "stop" || message.stopReason === "length")) {
+      const text = chatText(message);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function lastOutcome(entry: EntryRecord): "idle" | "done" | undefined {
+  if (entry.kind === "pi.reset") return "idle";
+  for (let n = (entry.model?.length ?? 0) - 1; n >= 0; n--) {
+    const msg = entry.model![n]!;
+    if (msg.role === "user") return "idle";
+    if (msg.role === "assistant" && (msg.stopReason === "stop" || msg.stopReason === "length")) return "done";
+  }
+  return undefined;
+}
+
+type DirectoryRow = { id: ConversationId; parent: number | null; title: string; last: number;
+  archived: 0 | 1; status: ThreadStatus; cwd: string; branch: string; workspace: string };
+type Fence = { last: number; id: number };
+const ownerless = { kind: "ownerless" } as const;
+const liveFields = new Set(["run", "runFailure", "compactions", "compactionFailure"]);
+
+// The ordering index is disposable. A cooperative worker also saves the
+// first prompt's title in Hush's presentation document, including for legacy
+// threads. Queries read bounded pages without opening conversation watches.
+export class ThreadDirectory implements ThreadDirectoryHost {
+  readonly workspace = true as const;
+  readonly #life = new AbortController();
+  readonly #db = new DatabaseSync(":memory:");
+  readonly #pending = new Set<ConversationId>();
+  readonly #cursors = new Cursors();
+  readonly #detach: () => void;
+  readonly #ctx: Context;
+  readonly #waiters = new Set<() => void>();
+  readonly #mutating = new Set<Promise<unknown>>();
+  readonly #titleCandidates = new Set<ConversationId>();
+  #titlesGenerating = 0;
+  readonly #graph: Promise<void>;
+  #activity: ReadonlyMap<ConversationId, ThreadStatus> = new Map();
+  #task?: Promise<void>;
+  #revision = 1;
+  #indexing = true;
+  #failed = false;
+
+  constructor(private readonly h: Harness, private readonly cwd: string, private readonly defaults: NonNullable<NativeHost["defaults"]>,
+      private readonly worktrees: ThreadWorktrees, private readonly generateTitle?: GenerateThreadTitle) {
+    this.#ctx = withAbortSignal(this.#life.signal, BACKGROUND_CONTEXT);
+    this.#db.exec(`
+      CREATE TABLE directory (id INTEGER PRIMARY KEY, parent INTEGER, title TEXT NOT NULL, last INTEGER NOT NULL,
+        archived INTEGER NOT NULL, status TEXT NOT NULL, cwd TEXT NOT NULL, branch TEXT NOT NULL, workspace TEXT NOT NULL);
+      CREATE INDEX directory_recent ON directory(last DESC, id DESC);
+      CREATE INDEX directory_visible ON directory(last DESC, id DESC) WHERE archived = 0;
+      CREATE INDEX directory_checkout ON directory(cwd);
+      CREATE INDEX directory_workspace ON directory(workspace, last DESC, id DESC);
+      CREATE INDEX directory_workspace_visible ON directory(workspace, last DESC, id DESC) WHERE archived = 0;
+    `);
+    this.#detach = h.observeCommits({
+      advance: ({ changes }) => {
+        // The observer only coalesces owners and schedules work; no SQL,
+        // history projection or filesystem I/O on the commit line.
+        for (const c of changes) {
+          if (c.type === "conversation") this.#pending.add(c.value.id);
+          else if (c.type === "entry" && (c.value.kind === "pi.reset" || c.value.model?.some(chatRole))) {
+            const id = c.value.conversationId;
+            this.#pending.add(id);
+            if (this.generateTitle && this.#titleCandidates.size < 64 && c.value.model?.some(m => m.role === "assistant" && m.stopReason === "stop")) {
+              this.#titleCandidates.add(id);
+            }
+          }
+          else if ((c.type === "document" || c.type === "document.copy") && c.conversationId !== undefined) {
+            const kind = c.record.kind;
+            if (kind === ProfileDoc.definition.kind || kind === ThreadPresentationDoc.definition.kind || kind === AgentDoc.definition.kind ||
+                kind === LiveDoc.definition.kind && (c.type !== "document" || c.kind !== "change" ||
+                  c.ops.some(op => op[0] === "r" || Array.isArray(op[1]) && liveFields.has(String(op[1][0]))))) {
+              this.#pending.add(c.conversationId);
+            }
+          }
+        }
+        if (this.#pending.size) this.#schedule();
+      },
+      end: () => this.#fail(),
+    }).detach;
+    this.#graph = this.h.watchTaskGraph(this.#ctx).then(watch => {
+      this.#updateActivity(threadActivity(watch.value));
+      watch.start(async call => { if (call.kind === "value") this.#updateActivity(threadActivity(call.value)); });
+      void watch.closed.then(() => this.#fail());
+    }).catch(() => this.#fail());
+    this.#schedule();
+  }
+
+  readonly management = {
+    get: (query: ThreadLookup, peer: AbortSignal) => this.#get(query, peer),
+    create: (query: ThreadCreation, peer: AbortSignal) => this.#track(this.#create(query, this.#signal(peer))),
+    archive: (query: ThreadArchive, peer: AbortSignal) => this.#track(this.#archive(query, this.#signal(peer))),
+  };
+
+  #signal(peer: AbortSignal) { return AbortSignal.any([peer, this.#life.signal]); }
+
+  #track<T>(op: Promise<T>): Promise<T> {
+    this.#mutating.add(op);
+    return op.finally(() => { this.#mutating.delete(op); });
+  }
+
+  #advance() { this.#revision++; for (const wake of this.#waiters) wake(); }
+
+  #fail() { if (!this.#life.signal.aborted) { this.#failed = true; this.#advance(); } }
+
+  #updateActivity(next: ReadonlyMap<ConversationId, ThreadStatus>) {
+    const changed = next.size !== this.#activity.size || [...next].some(([id, status]) => this.#activity.get(id) !== status);
+    this.#activity = next;
+    if (changed) this.#advance();
+  }
+
+  #schedule() {
+    if (this.#task || this.#failed || this.#life.signal.aborted) return;
+    const signal = this.#life.signal;
+    this.#task = yieldTurn(undefined, { signal }).then(async () => {
+      if (this.#indexing) await this.#bootstrap();
+      while (this.#pending.size) {
+        let count = 0;
+        for (const id of this.#pending) {
+          if (++count > inventoryBatch) break;
+          this.#pending.delete(id);
+          const candidate = this.#titleCandidates.delete(id);
+          const record = await this.h.commit(tx => tx.conversation(id), this.#ctx);
+          if (record && !record.owner) await this.#refresh(record, candidate);
+          await yieldTurn(undefined, { signal });
+        }
+      }
+    }).catch(() => this.#fail()).finally(() => {
+      this.#task = undefined;
+      if (this.#pending.size) this.#schedule();
+    });
+  }
+
+  async #bootstrap() {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await this.h.commit(tx => tx.scanConversations({ order: "descending" }, inventoryBatch, cursor), this.#ctx);
+      for (const record of page.items) {
+        if (!record.owner) await this.#refresh(record);
+        await yieldTurn(undefined, { signal: this.#life.signal });
+      }
+      cursor = page.next;
+    } while (cursor);
+    this.#indexing = false;
+    this.#advance();
+  }
+
+  async #find<T>(id: ConversationId, order: "ascending" | "descending", match: (entry: EntryRecord) => T): Promise<T | undefined> {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await this.h.commit(tx => tx.scanEntries({ conversationId: id, order }, historyBatch, cursor), this.#ctx);
+      for (const entry of page.items) {
+        const value = match(entry);
+        if (value) return value;
+      }
+      cursor = page.next;
+      if (cursor) await yieldTurn(undefined, { signal: this.#life.signal });
+    } while (cursor);
+    return undefined;
+  }
+
+  async #refresh(record: ConversationRecord, candidate = false) {
+    const { id } = record;
+    const [profile, presentation, agent, live] = await Promise.all([
+      this.h.snapshot(ProfileDoc, id, this.#ctx), this.h.snapshot(ThreadPresentationDoc, id, this.#ctx),
+      this.h.snapshot(AgentDoc, id, this.#ctx), this.h.snapshot(LiveDoc, id, this.#ctx),
+    ]);
+    let title = displayTitle(presentation, profile?.name);
+    if (!title) {
+      const prompt = await this.#find(id, "ascending", firstPrompt);
+      if (prompt) title = await this.h.commit(async tx => {
+        const doc = await tx.doc(ThreadPresentationDoc, id);
+        doc.autoTitle ??= prompt;
+        return displayTitle(doc, profile?.name);
+      }, this.#ctx);
+    }
+    let last = 0;
+    let outcome: "idle" | "done" | undefined;
+    await this.#find(id, "descending", entry => {
+      last ||= lastMessage(entry);
+      outcome ??= lastOutcome(entry);
+      return last !== 0 && outcome !== undefined;
+    });
+    const failure = live?.runFailure;
+    const status = live?.run || live?.compactions?.length ? "running"
+      : live?.compactionFailure ? "failed"
+      : failure?.taskId !== undefined && failure.taskId === presentation?.dismissedFailure ? "idle"
+      : failure?.reason === "aborted" ? "stopped" : failure && actionableFailure(failure.reason) ? "failed" : outcome ?? "idle";
+    const cwd = wireCwd(agent?.cwd);
+    const branch = cwd && cwd === presentation?.checkout?.cwd ? presentation.checkout.branch : "";
+    const indexed = this.#db.prepare("SELECT workspace FROM directory WHERE id = ? AND cwd = ?").get(id, cwd) as Pick<DirectoryRow, "workspace"> | undefined;
+    // A stable stored cwd keeps its identity for this index lifetime. A
+    // missing/unresolvable cwd never falls into another workspace's scope.
+    const workspace = indexed?.workspace || (cwd ? await workspaceIdentity(resolve(this.cwd, cwd), this.#life.signal).catch(() => "") : "");
+    this.#life.signal.throwIfAborted();
+    const update = this.#db.prepare(`INSERT INTO directory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET parent=excluded.parent, title=excluded.title, last=excluded.last, archived=excluded.archived,
+        status=excluded.status, cwd=excluded.cwd, branch=excluded.branch, workspace=excluded.workspace
+      WHERE (parent, title, last, archived, status, cwd, branch, workspace) IS NOT
+        (excluded.parent, excluded.title, excluded.last, excluded.archived, excluded.status, excluded.cwd, excluded.branch, excluded.workspace)`)
+      .run(id, record.parent?.conversationId ?? null, title ?? "", last, presentation?.archived ? 1 : 0, status, cwd, branch, workspace);
+    if (update.changes) this.#advance();
+    if (candidate && !record.parent && !profile?.id && !profile?.name && !presentation?.title && !presentation?.archived &&
+        !presentation?.titleAttempted && outcome === "done" && this.#titlesGenerating < 2) {
+      this.#titlesGenerating++;
+      void this.#track(this.#generate(id)).catch(() => {}).finally(() => { this.#titlesGenerating--; });
+    }
+  }
+
+  async #generate(id: ConversationId) {
+    const [user, answer] = await Promise.all([
+      this.#find(id, "ascending", firstPrompt), this.#find(id, "ascending", answerExcerpt),
+    ]);
+    if (!user || !answer) return;
+    const claimed = await this.h.commit(async tx => {
+      const doc = await tx.doc(ThreadPresentationDoc, id);
+      if (doc.title || doc.archived || doc.titleAttempted) return false;
+      doc.titleAttempted = true;
+      return true;
+    }, this.#ctx);
+    if (!claimed) return;
+    const title = await this.generateTitle!(user, answer, this.#life.signal);
+    if (!title) return;
+    await this.h.commit(async tx => {
+      const doc = await tx.doc(ThreadPresentationDoc, id);
+      if (!doc.title && !doc.archived) doc.generatedTitle = title;
+    }, this.#ctx);
+  }
+
+  #legacy(row: DirectoryRow): ThreadDirectoryRow {
+    return { id: String(row.id), ...(row.parent === null ? {} : { parentId: String(row.parent) }),
+      ...(row.title ? { title: row.title } : {}), ...(row.last ? { lastMessageMs: row.last } : {}) };
+  }
+
+  #view(row: DirectoryRow): ManagedThreadRow {
+    const { cwd, branch } = row;
+    const shared = !branch || this.#indexing || this.#db.prepare("SELECT 1 FROM directory WHERE cwd = ? AND id != ? LIMIT 1").get(cwd, row.id);
+    return { ...this.#legacy(row), status: this.#activity.get(row.id) ?? row.status, archived: row.archived === 1,
+      checkout: shared ? { kind: "shared", ...(cwd && { cwd }) } : { kind: "managed", cwd, branch } };
+  }
+
+  async #get(query: ThreadLookup, peer: AbortSignal): Promise<ThreadDirectoryReport> {
+    const signal = this.#signal(peer);
+    await this.#graph;
+    signal.throwIfAborted();
+    if (query.after !== undefined && query.after > this.#revision) throw new WireError("invalid_request");
+    if (!this.#failed && query.after === this.#revision) await this.#wait(signal);
+    signal.throwIfAborted();
+    if (this.#failed) throw new WireError("internal");
+    const read = this.#db.prepare("SELECT * FROM directory WHERE id = ?");
+    const threads = query.threadIds.flatMap(id => {
+      const row = read.get(Number(id)) as DirectoryRow | undefined;
+      return row ? [this.#view(row)] : [];
+    });
+    return { revision: this.#revision, threads };
+  }
+
+  #wait(signal: AbortSignal) {
+    signal.throwIfAborted();
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => { this.#waiters.delete(wake); signal.removeEventListener("abort", abort); };
+      const wake = () => { cleanup(); resolve(); };
+      const abort = () => { cleanup(); reject(signal.reason); };
+      this.#waiters.add(wake);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+
+  async #create(query: ThreadCreation, signal: AbortSignal): Promise<ManagedThreadRow> {
+    signal.throwIfAborted();
+    const title = query.title === undefined ? "" : threadLabel(query.title, 96);
+    if (query.title !== undefined && !title) throw new WireError("invalid_request");
+    const workspace = await existingDirectory(resolve(this.cwd, query.cwd ?? "."));
+    const managed = query.worktree ? await this.worktrees.create(workspace, signal) : undefined;
+    const cwd = managed?.cwd ?? workspace;
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const agent = await this.defaults(cwd, ctx);
+    const thread = await this.h.createConversation({ ownership: ownerless, agent: { ...agent, cwd }, init: async (tx, id) => {
+      if (title || managed) {
+        const doc = await tx.doc(ThreadPresentationDoc, id);
+        if (title) doc.title = title;
+        if (managed) doc.checkout = managed;
+      }
+    } }, ctx);
+    return { id: String(thread.id), ...(title && { title }), status: "idle", archived: false,
+      checkout: managed ? { kind: "managed", cwd, branch: managed.branch } : { kind: "shared", cwd } };
+  }
+
+  async #archive(query: ThreadArchive, signal: AbortSignal) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const id = Number(query.threadId) as ConversationId;
+    await this.h.commit(async tx => {
+      const row = await tx.conversation(id);
+      if (!row || row.owner) throw new WireError("not_found");
+      if (query.archived) {
+        const live = await tx.doc(LiveDoc, id);
+        if (live.run || live.compactions?.length) throw new WireError("busy");
+      }
+      const doc = await tx.doc(ThreadPresentationDoc, id);
+      if (query.archived) doc.archived = true;
+      else delete doc.archived;
+    }, ctx);
+  }
+
+  async list(query: ThreadDirectoryQuery, peer: AbortSignal, version: ThreadDirectoryVersion): Promise<ThreadDirectoryPage> {
+    const signal = this.#signal(peer);
+    signal.throwIfAborted();
+    if (version === 2) await this.#graph;
+    const workspace = query.workspace === undefined ? undefined : await workspaceIdentity(resolve(this.cwd, query.workspace), signal);
+    const scoped = workspace !== undefined && !query.browseAll;
+    const base = `thread-directory:${version}:${query.includeArchived ? "all" : "visible"}`;
+    const scope = workspace === undefined ? base :
+      `${base}:${query.browseAll ? "browse" : "within"}:${createHash("sha256").update(workspace).digest("base64url")}`;
+    const fence = query.cursor === undefined ? undefined : this.#cursors.decode<Fence>(scope, query.cursor);
+    if (this.#task) {
+      // Often the initial catalogue or a pending commit is ready immediately.
+      // Large inventories get a partial first page instead of blocking the picker.
+      const wait = new AbortController();
+      try {
+        await Promise.race([this.#task, delay(120, undefined, { signal: AbortSignal.any([signal, wait.signal]) })]);
+      } finally { wait.abort(); }
+    }
+    signal.throwIfAborted();
+    if (this.#failed) throw new WireError("internal");
+    const filter = query.includeArchived ? "" : "archived = 0";
+    const where = [filter, scoped ? "workspace = ?" : "", fence ? "(last,id) < (?,?)" : ""].filter(Boolean).join(" AND ");
+    const rows = this.#db.prepare(`SELECT * FROM directory ${where && `WHERE ${where}`} ORDER BY last DESC,id DESC LIMIT ?`)
+      .all(...(scoped && workspace !== undefined ? [workspace] : []), ...(fence ? [fence.last, fence.id] : []), query.limit + 1) as unknown as DirectoryRow[];
+    const indexing = this.#indexing;
+    const selected = rows.slice(0, query.limit), tail = selected.at(-1);
+    return {
+      indexing,
+      threads: selected.map(row => version === 2 ? this.#view(row) : this.#legacy(row)),
+      ...(workspace !== undefined && { workspaceMatches: selected.map<WorkspaceMatch>(row =>
+        !row.workspace ? "unknown" : row.workspace === workspace ? "inside" : "outside") }),
+      nextCursor: !indexing && tail && rows.length > query.limit ? this.#cursors.encode(scope, { last: tail.last, id: tail.id }) : null,
+    };
+  }
+
+  async close() {
+    this.#detach();
+    this.#life.abort();
+    await Promise.allSettled([this.#task, this.#graph, ...this.#mutating]);
+    this.#db.close();
+  }
+}
+
+// Resolve launch and indexed directories identically on the backend host.
+// Git's common directory groups subdirectories and linked worktrees. A plain
+// folder has exact canonical-directory scope. No checkout is read or changed.
+async function workspaceIdentity(path: string, signal: AbortSignal): Promise<string> {
+  signal.throwIfAborted();
+  const cwd = await existingDirectory(path);
+  try {
+    const { stdout } = await git("git", ["--no-optional-locks", "rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd, signal, timeout: 2_000, maxBuffer: 32 * 1024,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", LC_ALL: "C",
+        GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
+    });
+    const common = stdout.replace(/\r?\n$/, "");
+    if (!isAbsolute(common) || /[\0\r\n]/.test(common)) throw new WireError("invalid_request");
+    const canonical = await existingDirectory(common);
+    signal.throwIfAborted();
+    return "git:" + canonical;
+  } catch (error) {
+    signal.throwIfAborted();
+    const failure = error as NodeJS.ErrnoException & { stderr?: string };
+    if (failure.code === "ENOENT" || failure.stderr?.includes("not a git repository")) return "dir:" + cwd;
+    throw new WireError("internal");
+  }
+}
+
+function wireCwd(cwd: string | undefined) {
+  return cwd && cwd.isWellFormed() && !cwd.includes("\0") && Array.from(cwd).length <= 4096 ? cwd : "";
+}

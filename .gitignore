@@ -1,0 +1,14 @@
+/node_modules/
+/*/node_modules/
+/dist/
+/bin/
+/app/hush
+/app/internal/backendstart/release-assets/
+/data/
+/.hush/
+.crush/
+/.env*
+*.tsbuildinfo
+/plans/
+/tui/mock/
+/tui/experiments/

@@ -1,0 +1,29 @@
+
+
+                  ╭──────────────────────────────────────────────────────────╮
+                  │ Commands ─────────────────────────────────────────────── │
+                  │ › Type to filter                                         │
+                  │                                                          │
+                  │ Thread                                                   │
+                  │ › Switch threads                                ctrl+x s │
+                  │   New thread                                    ctrl+x n │
+                  │   Browse all workspaces                   ctrl+x shift+s │
+                  │   Fork history                                    ctrl+f │
+                  │   Select thinking level                        shift+tab │
+                  │   Compact the context                           ctrl+x j │
+                  │   Reset the context                             ctrl+x z │
+                  │   Close tab                                       ctrl+w │
+                  │   Previous tab                                  ctrl+x [ │
+                  │ Prompt                                                   │
+│ What changed in │   Edit prompt                                   ctrl+x e │
+                  │   Recall queued messages                          alt+up │
+  Answer          │                                                          │
+                  │ enter run  ↑↓ move  esc close                  1–11 / 20 │
+  See the docs and╰──────────────────────────────────────────────────────────╯
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  you ›
+  ◌ workspace #1

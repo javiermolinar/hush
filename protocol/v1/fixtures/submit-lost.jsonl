@@ -1,0 +1,4 @@
+{"type":"request","id":"h","method":"hello","params":{"versions":[1]}}
+{"type":"response","id":"h","method":"hello","ok":true,"result":{"version":1,"epoch":"old","capabilities":{}}}
+{"type":"request","id":"loss","method":"submit","params":{"threadId":"1","requestId":"stable-key","text":"Do the work","whenBusy":"followUp"}}
+{"type":"request","id":"unknown","method":"thread.reset","params":{"threadId":"1"}}

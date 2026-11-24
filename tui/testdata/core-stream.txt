@@ -1,0 +1,18 @@
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  Streaming
+
+  ── go  copy     ────────────────────────
+    fmt.Print("Hello")
+  ────────────────────────────────────────
+  ◌ running go test ./... · ok  example/pkg
+  ────────────────────────────────────────────────────────────
+  steer ›           enter steer  esc stop  alt+enter follow-up
+  ● workspace #1

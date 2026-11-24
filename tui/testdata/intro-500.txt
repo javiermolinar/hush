@@ -1,0 +1,25 @@
+  ██      ██  ██      ██    ████████  ██      ██  ▃
+  ██      ██  ██      ██  ██          ██      ██  █  █                ▂
+  ██████████  ██      ██    ██████    ██████████  █▃▅█▅▅▅▆▁▅▁ ▂▅▄ ▂▄▄ █ ▂  ▃▃▄    ▃▂
+  ██      ██  ██      ██          ██  ██      ██  ███████████████████▃█▇█▁▆███▇▄▇▄██▇▅ ▅▇▃▇▆▂▂ ▁ ▅▁▁ ▃ ▁ ▁▁▃▂ ▁ ▁
+  ██      ██    ██████    ████████    ██      ██  ████████████████████████████████████▆███████████████▇█▆████▆█▆█▅
+
+  ⎇ main  /work/hush                                                                            ● attached · up 3h 12m
+  ◇ gpt-6.2-sol  max
+
+  sessions    6 open · 2 running · 2 quiet
+  run status  ✗ thread #7   no answer · model run failed
+              ◑ migrate-db   sleeping until 02:00
+              /threads to review
+  skills      9 loaded
+  context     ▰▱▱▱▱▱▱▱▱▱▱▱ 8.4k of 400k (estimate)
+
+
+
+
+
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  main › ask anything
+  / commands  ·  ctrl+t threads  ·  ? actions
+  ◌ thread 1 · ◌ reconnecting · gpt-6.2-sol max                                                         ctx ▰▱▱▱▱▱ ~2%

@@ -1,0 +1,22 @@
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  Reset context?
+  Start fresh without deleting transcript history.
+  › No
+    Yes
+  enter choose  ↑↓ move  esc close

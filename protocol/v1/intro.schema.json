@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hush:protocol:intro:1",
+  "$defs": {
+    "uint": {"type":"integer", "minimum":0, "maximum":9007199254740991},
+    "id": {"type":"string", "pattern":"^[1-9][0-9]{0,15}$"},
+    "label": {"type":"string", "minLength":1, "maxLength":160},
+    "get": {
+      "type":"object", "additionalProperties":false,
+      "properties":{
+        "threadId":{"$ref":"#/$defs/id"}, "after":{"$ref":"#/$defs/uint"},
+        "cwd":{"type":"string", "minLength":1, "maxLength":4096}
+      },
+      "not":{"required":["threadId", "cwd"]}
+    },
+    "report": {
+      "type":"object", "additionalProperties":false,
+      "required":["revision", "startedAtMs", "cwd", "sessions", "attention", "moreAttention", "skills"],
+      "properties": {
+        "revision":{"$ref":"#/$defs/uint"},
+        "startedAtMs":{"$ref":"#/$defs/uint"},
+        "cwd":{"type":"string", "minLength":1, "maxLength":4096},
+        "model":{
+          "type":"object", "additionalProperties":false, "required":["provider", "modelId"],
+          "properties":{"provider":{"$ref":"#/$defs/label"}, "modelId":{"$ref":"#/$defs/label"}}
+        },
+        "thinking":{"enum":["off", "minimal", "low", "medium", "high", "xhigh", "max"]},
+        "sessions":{
+          "type":"object", "additionalProperties":false, "required":["open", "running", "quiet", "partial"],
+          "properties":{"open":{"$ref":"#/$defs/uint"}, "running":{"$ref":"#/$defs/uint"}, "quiet":{"$ref":"#/$defs/uint"}, "partial":{"type":"boolean"}}
+        },
+        "attention":{
+          "type":"array", "maxItems":3,
+          "items":{
+            "type":"object", "additionalProperties":false, "required":["title", "status"],
+            "properties":{
+              "title":{"$ref":"#/$defs/label"}, "status":{"enum":["stopped", "parked"]},
+              "reason":{"$ref":"#/$defs/label"}, "untilMs":{"$ref":"#/$defs/uint"}
+            }
+          }
+        },
+        "moreAttention":{"$ref":"#/$defs/uint"},
+        "skills":{"type":"array", "maxItems":512, "items":{"$ref":"#/$defs/label"}},
+        "moreSkills":{"$ref":"#/$defs/uint"},
+        "context":{
+          "type":"object", "additionalProperties":false, "required":["window", "renderedBytes"],
+          "properties":{
+            "window":{"allOf":[{"$ref":"#/$defs/uint"}, {"minimum":1}]},
+            "renderedBytes":{"$ref":"#/$defs/uint"}, "reportedTokens":{"$ref":"#/$defs/uint"}
+          }
+        }
+      }
+    },
+    "runIssue": {
+      "type":"object", "additionalProperties":false, "required":["taskId", "reason", "retry", "switchModel"],
+      "properties":{
+        "taskId":{"$ref":"#/$defs/id"},
+        "reason":{"enum":["model_error", "no_model", "faulted", "orphaned", "interrupted", "restart_limit", "turn_limit"]},
+        "detail":{"$ref":"#/$defs/label"}, "retry":{"type":"boolean"}, "switchModel":{"type":"boolean"},
+        "endedAtMs":{"$ref":"#/$defs/uint"}
+      }
+    },
+    "reportV2": {
+      "type":"object", "additionalProperties":false,
+      "required":["revision", "startedAtMs", "cwd", "sessions", "attention", "moreAttention", "skills"],
+      "properties":{
+        "revision":{"$ref":"#/$defs/uint"}, "startedAtMs":{"$ref":"#/$defs/uint"},
+        "cwd":{"$ref":"#/$defs/report/properties/cwd"}, "model":{"$ref":"#/$defs/report/properties/model"},
+        "thinking":{"$ref":"#/$defs/report/properties/thinking"}, "sessions":{"$ref":"#/$defs/report/properties/sessions"},
+        "skills":{"$ref":"#/$defs/report/properties/skills"}, "moreSkills":{"$ref":"#/$defs/uint"},
+        "context":{"$ref":"#/$defs/report/properties/context"}, "moreAttention":{"$ref":"#/$defs/uint"},
+        "thread":{
+          "type":"object", "additionalProperties":false, "required":["id"],
+          "properties":{
+            "id":{"$ref":"#/$defs/id"}, "title":{"$ref":"#/$defs/label"}, "issue":{"$ref":"#/$defs/runIssue"},
+            "dismissedFailureId":{"$ref":"#/$defs/id"}
+          },
+          "not":{"required":["issue", "dismissedFailureId"]}
+        },
+        "attention":{
+          "type":"array", "maxItems":3,
+          "items":{
+            "type":"object", "additionalProperties":false, "required":["threadId", "title", "status"],
+            "properties":{
+              "threadId":{"$ref":"#/$defs/id"}, "title":{"$ref":"#/$defs/label"}, "status":{"enum":["stopped", "parked"]},
+              "issue":{"$ref":"#/$defs/runIssue"}, "reason":{"$ref":"#/$defs/label"}, "untilMs":{"$ref":"#/$defs/uint"}
+            },
+            "if":{"properties":{"status":{"const":"stopped"}}},
+            "then":{"required":["issue"], "not":{"anyOf":[{"required":["reason"]}, {"required":["untilMs"]}]}},
+            "else":{"not":{"required":["issue"]}}
+          }
+        }
+      }
+    },
+    "rename": {
+      "type":"object", "additionalProperties":false, "required":["threadId", "title"],
+      "properties":{"threadId":{"$ref":"#/$defs/id"}, "title":{"type":"string", "minLength":1, "maxLength":256}}
+    },
+    "recover": {
+      "type":"object", "additionalProperties":false, "required":["threadId", "taskId"],
+      "properties":{"threadId":{"$ref":"#/$defs/id"}, "taskId":{"$ref":"#/$defs/id"}}
+    },
+    "successEnvelopeV2": {
+      "type":"object", "additionalProperties":false, "required":["type", "id", "method", "ok", "result"],
+      "properties": {
+        "type":{"const":"response"}, "id":{"type":"string", "pattern":"^[A-Za-z0-9_-]{1,160}$"},
+        "method":{"enum":["ext.intro.get", "ext.intro.rename", "ext.intro.retry", "ext.intro.dismiss"]}, "ok":{"const":true},
+        "result":{"type":"object"}
+      },
+      "oneOf":[
+        {"properties":{"method":{"const":"ext.intro.get"}, "result":{"$ref":"#/$defs/reportV2"}}},
+        {"properties":{"method":{"const":"ext.intro.rename"}, "result":{
+          "additionalProperties":false, "required":["title"], "properties":{"title":{"$ref":"#/$defs/label"}}
+        }}},
+        {"properties":{"method":{"const":"ext.intro.retry"}, "result":{
+          "additionalProperties":false, "required":["submissionId"], "properties":{"submissionId":{"$ref":"#/$defs/id"}}
+        }}},
+        {"properties":{"method":{"const":"ext.intro.dismiss"}, "result":{"maxProperties":0}}}
+      ]
+    },
+    "successEnvelope": {
+      "type":"object", "additionalProperties":false, "required":["type", "id", "method", "ok", "result"],
+      "properties": {
+        "type":{"const":"response"}, "id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,160}$"},
+        "method":{"const":"ext.intro.get"}, "ok":{"const":true}, "result":{"$ref":"#/$defs/report"}
+      }
+    }
+  }
+}

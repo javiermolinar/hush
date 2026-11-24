@@ -1,0 +1,30 @@
+{"type":"request","id":"h","method":"hello","params":{"versions":[1]}}
+{"type":"response","id":"h","method":"hello","ok":true,"result":{"version":1,"epoch":"new","capabilities":{}}}
+{"type":"request","id":"key","method":"submission.get","params":{"threadId":"1","requestId":"stable-key"}}
+{"type":"response","id":"key","method":"submission.get","ok":true,"result":{"threadId":"1","submissionId":"7","status":"queued"}}
+{"type":"request","id":"retry","method":"submit","params":{"threadId":"1","requestId":"stable-key","text":"Do the work","whenBusy":"followUp"}}
+{"type":"response","id":"retry","method":"submit","ok":true,"result":{"submissionId":"7"}}
+{"type":"request","id":"wait","method":"submission.wait","params":{"threadId":"1","submissionId":"7"}}
+{"type":"request","id":"idle","method":"thread.wait","params":{"threadId":"1"}}
+{"type":"request","id":"peek","method":"submission.get","params":{"threadId":"1","submissionId":"7"}}
+{"type":"response","id":"peek","method":"submission.get","ok":true,"result":{"threadId":"1","submissionId":"7","status":"placed","entryId":"9"}}
+{"type":"response","id":"wait","method":"submission.wait","ok":true,"result":{"threadId":"1","submissionId":"7","status":"done","entryId":"9","answerEntryId":"12"}}
+{"type":"response","id":"idle","method":"thread.wait","ok":true,"result":{}}
+{"type":"request","id":"create","method":"thread.new","params":{"cwd":"/repo","model":{"provider":"fixture","modelId":"test"}}}
+{"type":"response","id":"create","method":"thread.new","ok":true,"result":{"id":"30"}}
+{"type":"request","id":"list","method":"thread.list","params":{"limit":2}}
+{"type":"response","id":"list","method":"thread.list","ok":true,"result":{"threads":[{"id":"1"},{"id":"30"}],"nextCursor":null}}
+{"type":"request","id":"set","method":"thread.configure","params":{"threadId":"30","change":{"compactionEnabled":false,"thinkingLevel":"off"}}}
+{"type":"response","id":"set","method":"thread.configure","ok":true,"result":{}}
+{"type":"request","id":"cont","method":"continue","params":{"threadId":"30"}}
+{"type":"response","id":"cont","method":"continue","ok":true,"result":{"submissionId":"32"}}
+{"type":"request","id":"cont-wait","method":"submission.wait","params":{"threadId":"30","submissionId":"32"}}
+{"type":"response","id":"cont-wait","method":"submission.wait","ok":true,"result":{"threadId":"30","submissionId":"32","status":"unanswered","reason":"nothing_to_answer"}}
+{"type":"request","id":"compact","method":"thread.compact","params":{"threadId":"1","instructions":"Focus on the change"}}
+{"type":"response","id":"compact","method":"thread.compact","ok":true,"result":{"taskId":"40"}}
+{"type":"request","id":"abort","method":"thread.abort","params":{"threadId":"1"}}
+{"type":"response","id":"abort","method":"thread.abort","ok":true,"result":{}}
+{"type":"request","id":"reset","method":"thread.reset","params":{"threadId":"30","handoff":"new context"}}
+{"type":"response","id":"reset","method":"thread.reset","ok":true,"result":{}}
+{"type":"request","id":"missing","method":"submission.get","params":{"threadId":"30","submissionId":"7"}}
+{"type":"response","id":"missing","method":"submission.get","ok":false,"error":{"code":"not_found","message":"Submission not found"}}

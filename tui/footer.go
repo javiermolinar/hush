@@ -1,0 +1,621 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/javiermolinar/hush/sdk"
+	x "github.com/javiermolinar/hush/tui/extension"
+)
+
+const footerID = "hush/footer"
+const activateTabID x.ActionID = footerID + ".activate"
+const switcherID x.ActionID = "hush/menus.switch"
+const maxOpenTabs = 24
+const compactFooterWidth = 58
+
+// ThreadMetadata is optional authoritative information supplied by the host.
+// Empty fields mean unavailable; cumulative Usage is not context occupancy.
+type ThreadMetadata struct {
+	Title, Branch, Mode string
+	ContextUse          x.ContextUse
+	// ContextThreshold is the token count at which the context is compacted.
+	// Zero leaves the physical context window as the denominator.
+	ContextThreshold uint64
+	// Status may override the coarse native projection, for example for a schedule.
+	Status x.ThreadStatus
+}
+
+type footerMetadata struct {
+	workspace string
+	model     sdk.Model
+	thinking  string
+	context   x.ContextUse
+}
+
+func metadataFromReport(r IntroReport) footerMetadata {
+	return footerMetadata{workspace: r.Workspace, model: deref(r.Model), thinking: r.Thinking, context: contextFromReport(r.Context)}
+}
+
+func contextFromReport(c *IntroContext) x.ContextUse {
+	if c == nil || c.Window == 0 {
+		return x.ContextUse{}
+	}
+	tokens := c.RenderedBytes / 4
+	if c.RenderedBytes%4 != 0 {
+		tokens++
+	}
+	if c.ReportedTokens != nil {
+		tokens = *c.ReportedTokens
+	}
+	return x.ContextUse{Known: true, Window: c.Window, Tokens: tokens, Estimated: c.ReportedTokens == nil}
+}
+
+func (m *Model) footerThread(t *threadState) x.Thread {
+	thread, last := t.info, t.footer
+	if thread.Workspace == "" {
+		thread.Workspace = last.workspace
+		if thread.Workspace == "" && thread.ID == "" {
+			thread.Workspace = m.options.NewThread.CWD
+		}
+	}
+	if thread.Model.ModelID == "" {
+		thread.Model, thread.Thinking = last.model, last.thinking
+		if thread.Model.ModelID == "" && thread.ID == "" {
+			thread.Model = deref(m.options.NewThread.Model)
+		}
+	}
+	if !thread.ContextUse.Known && (last.model.ModelID == "" || thread.Model == last.model) &&
+		(last.workspace == "" || filepath.Clean(thread.Workspace) == filepath.Clean(last.workspace)) {
+		thread.ContextUse = last.context
+	}
+	return thread
+}
+
+func workspaceLabel(path string) string {
+	if path == "" {
+		return ""
+	}
+	if name := filepath.Base(path); name != "." && name != string(filepath.Separator) {
+		return oneLine(name)
+	}
+	return ""
+}
+
+func footerRegistration() x.Registration {
+	value := func(key string, slot x.SegmentSlot, order, priority int, f func(x.Thread) string) x.Segment {
+		return x.Segment{Key: key, Slot: slot, Order: order, Priority: priority, Render: func(c x.RenderContext) x.Line {
+			if s := f(c.Thread); s != "" {
+				return x.Line{{Text: s, Tone: x.Muted}}
+			}
+			return nil
+		}}
+	}
+	return x.Registration{ID: footerID, APIVersion: x.APIVersion, Actions: []x.Action{
+		{ID: activateTabID, Title: "Previous tab", Binding: x.Binding{Direct: "ctrl+[", Leader: "["}, Available: func(ctx x.Context) bool { return ctx.ActiveThreadID != "" }, Run: func(ctx x.Context, v x.Invocation) x.Outcome {
+			id := sdk.ID(v.Target)
+			if id == "" {
+				id = ctx.PreviousThreadID
+			}
+			if !id.Valid() {
+				return nil
+			}
+			return x.Outcome{x.Client{Op: x.Switch{ThreadID: id}}}
+		}},
+	}, Segments: []x.Segment{
+		value("branch", x.StatusLeft, 10, 15, func(t x.Thread) string {
+			if t.Branch == "" {
+				return ""
+			}
+			return "⎇ " + t.Branch
+		}),
+		value("mode", x.StatusLeft, 20, 20, func(t x.Thread) string { return t.Mode }),
+		{Key: "model", Slot: x.StatusLeft, Order: 30, Priority: 46, Render: func(c x.RenderContext) x.Line {
+			t := c.Thread
+			if t.Model.ModelID == "" {
+				return nil
+			}
+			room := max(1, c.Width/3)
+			label := oneLine(t.Model.ModelID)
+			if t.Thinking != "" && stringWidth(label)+1+stringWidth(t.Thinking) <= room {
+				label += " " + oneLine(t.Thinking)
+			}
+			return x.Line{{Text: ansi.Truncate(label, room, "…"), Tone: x.Muted}}
+		}},
+		{Key: "context", Slot: x.StatusRight, Order: 10, Priority: 46, Render: func(c x.RenderContext) x.Line {
+			v := c.Thread.ContextUse
+			if !v.Known || v.Window == 0 {
+				return nil
+			}
+			limit := min(c.Thread.ContextThreshold, v.Window)
+			if limit == 0 {
+				limit = v.Window
+			}
+			ratio := float64(v.Tokens) / float64(limit)
+			p := int(min(9.99, ratio) * 100)
+			filled := min(6, max(0, int(ratio*6+0.5)))
+			if v.Tokens != 0 {
+				filled = max(1, filled)
+			}
+			tone := x.Muted
+			if p >= 80 {
+				tone = x.Danger
+			} else if p >= 60 {
+				tone = x.Warning
+			}
+			percent := fmt.Sprintf("%d%%", p)
+			if v.Estimated {
+				percent = "~" + percent
+			}
+			label := "ctx " + percent
+			if c.Width >= compactFooterWidth {
+				label = fmt.Sprintf("ctx %s%s %s", strings.Repeat("▰", filled), strings.Repeat("▱", 6-filled), percent)
+			}
+			return x.Line{{Text: label, Tone: tone}}
+		}},
+		value("tokens", x.StatusRight, 20, 5, func(t x.Thread) string {
+			if t.Usage.TotalTokens == 0 {
+				return ""
+			}
+			return tokenLabel(t.Usage.TotalTokens)
+		}),
+		value("cost", x.StatusRight, 30, 10, func(t x.Thread) string {
+			if t.Usage.CostUSD == 0 && t.Usage.TotalTokens == 0 {
+				return ""
+			}
+			return fmt.Sprintf("$%.2f", t.Usage.CostUSD)
+		}),
+	}}
+}
+
+func tokenLabel(n uint64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM tok", float64(n)/1e6)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk tok", float64(n)/1000)
+	default:
+		return strconv.FormatUint(n, 10) + " tok"
+	}
+}
+
+func threadTitle(t x.Thread) string {
+	if t.Title != "" {
+		return oneLine(t.Title)
+	}
+	if name := workspaceLabel(t.Workspace); name != "" && t.ID != "" {
+		return name + " #" + string(t.ID)
+	}
+	return threadLabel(t.ID)
+}
+
+func tabStatus(s x.ThreadStatus) (string, x.Tone) {
+	switch s {
+	case x.Running:
+		return "●", x.Accent
+	case x.Parked:
+		return "◐", x.Warning
+	case x.Scheduled:
+		return "◷", x.Warning
+	case x.Stopped:
+		return "◌", x.Muted
+	case x.Failed:
+		return "✗", x.Danger
+	case x.Done:
+		return "✓", x.Good
+	default:
+		return "◌", x.Muted
+	}
+}
+
+func mergeRow(dst *displayRow, src displayRow, between string) {
+	if dst.text != "" && src.text != "" {
+		dst.text += between
+	}
+	at := stringWidth(dst.text)
+	dst.text += src.text
+	for _, hit := range src.hits {
+		hit.first += at
+		hit.last += at
+		dst.hits = append(dst.hits, hit)
+	}
+}
+
+type segmentPiece struct {
+	rank  segmentRank
+	row   displayRow
+	width int
+}
+
+func (m *Model) segmentRow(t *threadState, w int, left x.SegmentSlot) displayRow {
+	ctx := m.renderContext(t, w, 1, false)
+	registered := m.host.tabSegments
+	var dynamic []segmentPiece
+	add := func(key string, priority, order int, text string) {
+		if text != "" {
+			dynamic = append(dynamic, segmentPiece{rank: segmentRank{key, priority, order, left}, row: displayRow{text: text}})
+		}
+	}
+	if left == x.StatusLeft {
+		registered = m.host.statusSegments
+		ctx.Thread = m.footerThread(t)
+		repo := workspaceLabel(ctx.Thread.Workspace)
+		repoWidth := w / 3
+		if w < compactFooterWidth && ctx.Thread.Model.ModelID != "" && ctx.Thread.ContextUse.Known {
+			repoWidth = w / 5
+		}
+		repoLabel := ansi.Truncate(repo, max(1, repoWidth), "…")
+		if len(m.tabs) < 2 && t.info.ID != "" {
+			glyph, tone := tabStatus(t.info.Status)
+			if t.info.Status == x.Running || t.info.Status == x.Idle || t.info.Status == x.Done {
+				tone = x.Accent
+			}
+			label, priority := ansi.Truncate(threadTitle(ctx.Thread), max(2, w/2-2), "…"), 28
+			if t.info.Title == "" && repoLabel != "" {
+				label, priority = repoLabel, 45
+				if w >= compactFooterWidth || !ctx.Thread.ContextUse.Known {
+					label = ansi.Truncate(label+" #"+string(t.info.ID), max(2, w/2-2), "…")
+				}
+				repoLabel = ""
+			}
+			add("hush/thread", priority, -100, paint(tone, glyph)+" "+m.control(label))
+		}
+		add("hush/workspace", 45, -90, m.control(repoLabel))
+		if t.info.Archived {
+			add("hush/archive", 25, -85, paint(x.Muted, "archived"))
+		}
+		if m.connection != x.Connected && t.info.ID != "" {
+			label := "connecting"
+			if t.observed {
+				label = "reconnecting"
+			}
+			if m.connection == x.Disconnected {
+				label = "disconnected"
+			}
+			warning := []string{"◌", "◔", "◑", "◕"}[m.phase] + " " + label
+			add("hush/connection", 35, -80, paint(x.Warning, warning))
+		}
+		for key, a := range t.status {
+			add(key, a.Priority, a.Order, paint(a.Tone, oneLine(a.Text)))
+		}
+	}
+	slices.SortFunc(dynamic, func(a, b segmentPiece) int { return compareSegmentPriority(a.rank, b.rank) })
+
+	// Choose the longest fitting prefix in priority order. Registered
+	// renderers are pure and already ranked, so once a piece overflows there
+	// is no need to call any renderer that would have been evicted before it.
+	const sep, sepWidth = " · ", 3
+	var survivors []segmentPiece
+	var widths [2]int
+	var hasPiece [2]bool
+	for len(registered) > 0 || len(dynamic) > 0 {
+		var p segmentPiece
+		if len(dynamic) > 0 && (len(registered) == 0 || compareSegmentPriority(dynamic[0].rank, registered[0].rank) < 0) {
+			p, dynamic = dynamic[0], dynamic[1:]
+		} else {
+			a := registered[0]
+			registered = registered[1:]
+			n := 1024
+			rows := m.layoutLine(ctx, a.render(ctx), &n, 1)
+			if len(rows) == 0 || rows[0].text == "" {
+				continue
+			}
+			p = segmentPiece{rank: a.rank, row: rows[0]}
+		}
+		p.width = stringWidth(p.row.text)
+		side := 0
+		if p.rank.slot != left {
+			side = 1
+		}
+		next := widths
+		next[side] += p.width
+		if hasPiece[side] {
+			next[side] += sepWidth
+		}
+		gap := 0
+		if next[0] > 0 && next[1] > 0 {
+			gap = 2
+		}
+		if next[0]+next[1]+gap > w {
+			break
+		}
+		widths, hasPiece[side] = next, true
+		survivors = append(survivors, p)
+	}
+
+	slices.SortFunc(survivors, func(a, b segmentPiece) int { return compareSegmentLayout(a.rank, b.rank) })
+	var out displayRow
+	var text strings.Builder
+	at := 0
+	for i, p := range survivors {
+		if p.rank.slot != left && widths[1] == 0 {
+			break
+		}
+		if p.rank.slot != left && (i == 0 || survivors[i-1].rank.slot == left) {
+			pad := w - widths[1] - at
+			text.WriteString(strings.Repeat(" ", pad))
+			at += pad
+		} else if i > 0 {
+			text.WriteString(sep)
+			at += sepWidth
+		}
+		text.WriteString(p.row.text)
+		for _, hit := range p.row.hits {
+			hit.first += at
+			hit.last += at
+			out.hits = append(out.hits, hit)
+		}
+		at += p.width
+	}
+	out.text = text.String()
+	return out
+}
+
+func (m *Model) chromeRows(t *threadState, w int) []displayRow {
+	meta := m.segmentRow(t, w, x.StatusLeft)
+	if len(m.tabs) < 2 {
+		return []displayRow{meta}
+	}
+	return []displayRow{meta, m.tabLayout(w)}
+}
+
+func (m *Model) tabItem(id sdk.ID, w int) displayRow {
+	state := m.threads[id]
+	t := state.info
+	glyph, tone := tabStatus(t.Status)
+	baseTone := x.Plain
+	if id == m.active {
+		baseTone = x.Accent
+	}
+	if id == "" {
+		glyph = "+"
+	}
+	label := threadTitle(t)
+	if t.Forked {
+		label = "⑂ " + label
+	}
+	row := displayRow{text: paint(tone, glyph) + " " + paint(baseTone, ansiCut(label, max(1, w-4)))}
+	if room := w - stringWidth(row.text) - 1; room > 5 {
+		mergeRow(&row, m.segmentRow(state, room, x.Tab), " ")
+	}
+	color := m.palette.soft
+	if id == m.active && m.theme.Fills {
+		if dark := blendPalette(m.palette.background, m.palette.colors[4], 0.26); dark != nil {
+			color = dark
+		}
+	} else if t.Status == x.Parked && m.theme.Fills {
+		if dark := blendPalette(m.palette.background, m.palette.colors[3], 0.20); dark != nil {
+			color = dark
+		}
+	}
+	for i := range row.hits {
+		row.hits[i].first++
+		row.hits[i].last++
+	}
+	row.text = fill(" "+row.text+" ", color)
+	if id != "" && id != m.active {
+		row.hits = append(row.hits, spanHit{0, stringWidth(row.text), x.ActionRef{ID: activateTabID, Target: string(id)}, "switch to " + threadTitle(t)})
+	}
+	return row
+}
+
+// tabLayout generates both visible labels and their hit regions. Keep the active
+// tab visible even when all preceding tabs must be dropped.
+func (m *Model) tabLayout(w int) displayRow {
+	ids := m.tabs
+	if len(ids) == 0 {
+		ids = []sdk.ID{m.active}
+	}
+	var rows []displayRow
+	for _, id := range ids {
+		rows = append(rows, m.tabItem(id, max(8, min(32, w-6))))
+	}
+	chosen := make([]bool, len(ids))
+	active := slices.Index(ids, m.active)
+	if active < 0 {
+		active = 0
+	}
+	chosen[active] = true
+	remaining := w - stringWidth(rows[active].text) - 6
+	for i, row := range rows {
+		if i != active && remaining >= stringWidth(row.text)+1 {
+			remaining -= stringWidth(row.text) + 1
+			chosen[i] = true
+		}
+	}
+	var out displayRow
+	hidden := 0
+	for i, row := range rows {
+		if chosen[i] {
+			mergeRow(&out, row, " ")
+		} else {
+			hidden++
+		}
+	}
+	if hidden > 0 {
+		s := "+" + strconv.Itoa(hidden)
+		mergeRow(&out, displayRow{text: paint(x.Accent, s), hits: []spanHit{{0, stringWidth(s), x.ActionRef{ID: switcherID}, "show threads"}}}, " ")
+	}
+	return out
+}
+
+func (m *Model) actionBinding(a registeredAction) string {
+	if a.action.Binding.Direct == "ctrl+[" && !m.disambiguated {
+		return "ctrl+x " + a.action.Binding.Leader
+	}
+	if m.taken[a.action.Binding.Direct] {
+		return "ctrl+x " + a.action.Binding.Leader
+	}
+	return a.bindingLabel
+}
+
+func (m *Model) decorateView(v *tea.View, t *threadState) {
+	v.ReportFocus = true
+	needed := 0
+	for _, id := range m.tabs {
+		switch m.threads[id].info.Status {
+		case x.Parked, x.Failed:
+			needed++
+		}
+	}
+	v.WindowTitle = "hush · " + threadTitle(t.info)
+	if needed > 0 {
+		v.WindowTitle = fmt.Sprintf("(%d) %s", needed, v.WindowTitle)
+	}
+	if m.quitting {
+		v.ProgramStatus = &tea.ProgramStatus{State: tea.ProgramStateIdle}
+		return
+	}
+	switch t.info.Status {
+	case x.Running:
+		v.ProgressBar = tea.NewProgressBar(tea.ProgressBarIndeterminate, 0)
+	case x.Parked:
+		v.ProgramStatus = &tea.ProgramStatus{State: tea.ProgramStateBlocked, Message: "Waiting"}
+	}
+}
+
+func (m *Model) desktopStatus(id sdk.ID, before, after x.ThreadStatus) tea.Cmd {
+	if before == "" || before == after || m.focused && id == m.active {
+		return nil
+	}
+	switch after {
+	case x.Parked, x.Done, x.Stopped, x.Failed:
+		return tea.Raw("\x1b]9;" + oneLine(threadTitle(m.threads[id].info)+" · "+string(after)) + "\x07")
+	}
+	return nil
+}
+
+func (m *Model) openedTab(id sdk.ID) {
+	if id == "" || slices.Contains(m.tabs, id) {
+		return
+	}
+	m.tabs = append(m.tabs, id)
+	if len(m.tabs) > maxOpenTabs {
+		m.tabs = m.tabs[1:]
+	}
+}
+
+func (m *Model) tabsWithout(id sdk.ID) {
+	if i := slices.Index(m.tabs, id); i >= 0 {
+		m.tabs = slices.Delete(m.tabs, i, i+1)
+	}
+}
+
+// Other open tabs need a small independent native subscription, not a second
+// transcript or a server-wide poll. The active thread has its own full feed.
+type tabFeed struct {
+	lease  feedLease
+	source <-chan sdk.StateUpdate
+	update sdk.StateUpdate
+	ok     bool
+}
+
+func nextTab(f feedLease, src <-chan sdk.StateUpdate) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case <-f.ctx.Done():
+			return nil
+		case v, ok := <-src:
+			return tabFeed{f, src, v, ok}
+		}
+	}
+}
+
+func (m *Model) syncTabFeeds() tea.Cmd {
+	for id, f := range m.tabFeeds {
+		if id == m.active || !slices.Contains(m.tabs, id) {
+			f.cancel()
+			delete(m.tabFeeds, id)
+		}
+	}
+	var cmds []tea.Cmd
+	for _, id := range m.tabs {
+		if id == m.active || m.tabFeeds[id].token != 0 {
+			continue
+		}
+		ctx, cancel := context.WithCancel(m.ctx)
+		f := feedLease{m.token(), id, ctx, cancel}
+		m.tabFeeds[id] = f
+		backend := m.backend
+		cmds = append(cmds, func() tea.Msg {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return nextTab(f, backend.Watch(ctx, id, sdk.Window{Min: 1, Max: 1}))()
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m *Model) receiveTab(v tabFeed) tea.Cmd {
+	id := v.lease.owner
+	f := m.tabFeeds[id]
+	if id == m.active || f.token != v.lease.token {
+		return nil
+	}
+	if !v.ok {
+		f.cancel()
+		delete(m.tabFeeds, id)
+		return nil
+	}
+	next := nextTab(f, v.source)
+	if v.update.Err != nil || v.update.Snapshot.State.Thread.ID != id {
+		return next
+	}
+	t := m.threads[id]
+	prior := t.info
+	t.info = m.threadInfo(t, v.update.Snapshot)
+	if prior != t.info {
+		t.revision++
+		m.emit(id, x.Event{Kind: x.StatusChanged})
+	}
+	if prior.Usage != t.info.Usage {
+		m.emit(id, x.Event{Kind: x.UsageChanged})
+	}
+	return tea.Batch(next, m.desktopStatus(id, prior.Status, t.info.Status))
+}
+
+func (m *Model) threadInfo(t *threadState, snap sdk.Snapshot) x.Thread {
+	s := snap.State
+	out := x.Thread{ID: s.Thread.ID, LastEntryID: deref(s.Window.LastEntryID), Workspace: s.Agent.CWD, Thinking: s.Agent.ThinkingLevel,
+		Usage: s.Usage, Queued: len(s.Queue), Model: deref(s.Agent.Model), Status: x.Idle, Forked: s.Thread.Parent != nil}
+	if s.Thread.Parent != nil {
+		out.ParentID = s.Thread.Parent.ThreadID
+	}
+	out.Title, out.Mode, out.Archived = t.info.Title, t.info.Mode, t.info.Archived
+	t.activeRun = s.Run != nil || s.Streaming != nil || len(s.Compactions) != 0
+	if t.activeRun {
+		out.Status = x.Running
+		for _, tool := range s.Tools {
+			if tool.Status == "sleeping" || tool.Status == "waiting" {
+				out.Status = x.Parked
+				break
+			}
+		}
+	} else if s.CompactionFailure != nil || s.Failure != nil && failedRunCause(s.Failure.Reason) != "" && !t.dismissedFailure(s.Failure.TaskID) {
+		out.Status = x.Failed
+	} else if s.Failure != nil && s.Failure.Reason == "aborted" {
+		out.Status = x.Stopped
+	} else if t.info.Status == x.Running || t.info.Status == x.Parked || t.info.Status == x.Done {
+		out.Status = x.Done
+	}
+	if read := m.options.ProjectThread; read != nil {
+		meta := read(snap)
+		out.Title, out.Branch, out.Mode = limitText(meta.Title, 256), limitText(meta.Branch, 256), limitText(meta.Mode, 64)
+		out.ContextUse, out.ContextThreshold = meta.ContextUse, meta.ContextThreshold
+		if meta.Status != "" {
+			out.Status = meta.Status
+		}
+	}
+	m.mergeDirectory(&out, t)
+	t.observed = true
+	return out
+}
+
+func threadBusy(t *threadState) bool { return t.activeRun || t.info.Status == x.Running }

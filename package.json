@@ -1,0 +1,30 @@
+{
+  "name": "hush-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "workspaces": [
+    "server",
+    "backend"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "profile:check": "tsc -p protocol/v1/pi-1.6 && node --test protocol/v1/pi-1.6/*.test.mjs",
+    "protocol:check": "node --test protocol/v1/*.test.mjs",
+    "server:check": "npm run build && node --test server/test/*.test.mjs",
+    "server:bench": "npm run build && node --expose-gc server/test/memory.mjs",
+    "backend:bundle": "node backend/bundle.mjs",
+    "backend:check": "npm run build && npm run backend:bundle && node --test backend/test/*.test.mjs",
+    "headless:check": "npm run build && npm run backend:bundle && node --test app/test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "ajv": "8.18.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3"
+  }
+}
