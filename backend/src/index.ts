@@ -45,6 +45,9 @@ import { PiSources } from "./pi/source.js";
 const codingOrder = ["read", "bash", "edit", "write"];
 const coding: Extension = { ...CodingTools, tools: [...(CodingTools.tools ?? [])].sort(
   (a, b) => codingOrder.indexOf(a.name) - codingOrder.indexOf(b.name)) };
+const standaloneCoding: Extension = { ...coding, tools: coding.tools?.map(tool => tool.name === "edit"
+  ? { ...tool, description: "Replace exact text in one file. Keep replacements small." }
+  : tool) };
 
 function shellSettings(settings: SettingsManager): HarnessSettings {
   const compaction = {
@@ -165,7 +168,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral, sources?.tapTool, standalone);
     const prompt = dirs.extension(() => h);
     const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;
-    const builtin = tap(coding), fauxExtension = tap(fauxTools);
+    const builtin = tap(standalone ? standaloneCoding : coding), fauxExtension = tap(fauxTools);
     const localSettings = standalone && (config.dataDir || !config.faux && !config.model)
       ? await readStandaloneSettings(config.agentDir) : {};
     if (standalone && config.dataDir && localSettings.codemode === true) codemode = await workspaceCodemode();

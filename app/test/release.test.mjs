@@ -423,7 +423,7 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
     const instructions = [promptText(request.instructions), ...(request.input ?? [])
       .filter(m => ['system', 'developer'].includes(m.role)).map(m => promptText(m.content))].join('\n');
     let at = 0;
-    for (const text of [expectedPrompt, '## Active tools and working directory', 'release fixture personal supplement', 'release fixture project supplement']) {
+    for (const text of [expectedPrompt, `Working directory: ${JSON.stringify(cwd)}`, 'release fixture personal supplement', 'release fixture project supplement']) {
       const found = instructions.indexOf(text, at);
       assert.ok(found >= at, 'missing or out of order rendered Hush prompt section');
       assert.equal(instructions.split(text).length, 2, 'duplicated rendered Hush prompt section');

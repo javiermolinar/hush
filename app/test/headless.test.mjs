@@ -1035,7 +1035,7 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
     const { messages, tools } = seen[i];
     const prompt = messages.filter(message => message.role === "system" || message.role === "developer")
       .map(message => message.content).join("\n\n");
-    const expected = [bundled, "## Active tools and working directory", `Working directory: ${JSON.stringify(cfg.cwd)}`,
+    const expected = [bundled, `Working directory: ${JSON.stringify(cfg.cwd)}`,
       ...(i ? ["## Personal instructions", "personal-append-sentinel"] : []),
       "## Workspace context", "repo-agents-sentinel", local, "## Environment", "Tool host OS:"];
     assert.doesNotMatch(prompt, /\n- Client |\/pretend\/login\/fish/);
@@ -1046,10 +1046,14 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
       after = at + text.length;
       assert.equal(prompt.split(text).length, 2, `duplicated: ${text}`);
     }
-    const toolNames = tools.map(tool => tool.function.name).sort();
-    assert.ok(toolNames.includes("read"), "expected active coding tools");
-    const toolSection = prompt.split("## Active tools and working directory")[1].split("\n## ")[0];
-    assert.deepEqual([...toolSection.matchAll(/^- (\S+): /gm)].map(match => match[1]).sort(), toolNames);
+    const declared = new Map(tools.map(({ function: tool }) => [tool.name, tool]));
+    assert.deepEqual([...declared.keys()].sort(), ["bash", "edit", "read", "write"]);
+    assert.doesNotMatch(prompt, /^- (bash|edit|read|write): /m);
+    const edit = declared.get("edit");
+    assert.equal(edit.description, "Replace exact text in one file. Keep replacements small.");
+    const edits = edit.parameters.properties.edits;
+    assert.match(edits.description, /matched against the original file/);
+    assert.match(edits.items.properties.oldText.description, /unique.*not overlap/);
     for (const text of [...ignored, "oversized-agents-sentinel", ...(i ? ["leaf-agents-original"] : ["## Personal instructions", "personal-append-sentinel"])]) {
       assert.ok(!JSON.stringify(messages).includes(text), `unexpected: ${text}`);
     }

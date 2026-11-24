@@ -19,7 +19,7 @@ const safeEnv = Object.fromEntries(Object.entries(process.env).filter(([k, v]) =
 
 // Inlined by backend/bundle.mjs; no runtime prompt asset is needed.
 declare const HUSH_SYSTEM_PROMPT: string;
-const standaloneKeys = ["preamble", "tools", "addendum", "project_context"] as const;
+const standaloneKeys = ["preamble", "cwd", "addendum", "project_context"] as const;
 const promptFileLimit = 64 * 1024;
 const workspaceLimit = 256 * 1024;
 
@@ -73,24 +73,13 @@ async function workspaceContext(cwd: string) {
   if (files.length) return `## Workspace context\n\n${files.join("\n\n")}`;
 }
 
-const toolInstructions: ReadonlyMap<string, string> = new Map([
-  ["read", "Read files when needed to answer or make a requested change."],
-  ["bash", "Run shell commands only as needed for the task."],
-  ["edit", "Apply targeted changes to existing files when requested."],
-  ["write", "Create or replace files only when needed for requested changes."],
-  ["codemode", "Batch independent workspace text reads and return only the relevant excerpts."]
-]);
-
-async function standalonePromptSections(profileDir: string, cwd: string, selectedTools: string[]): Promise<Record<string, string>> {
+async function standalonePromptSections(profileDir: string, cwd: string): Promise<Record<string, string>> {
   const [personal, workspace] = await Promise.all([
     readSupplement(join(profileDir, "APPEND_SYSTEM.md"), promptFileLimit), workspaceContext(cwd),
   ]);
-  const tools = [...new Set(selectedTools)].map(name =>
-    `- ${name}: ${toolInstructions.get(name) ?? "Use according to its tool declaration when needed."}`);
   return {
     preamble: HUSH_SYSTEM_PROMPT.trimEnd(),
-    tools: `## Active tools and working directory\n\nWorking directory: ${JSON.stringify(cwd)}\n\n` +
-      (tools.length ? tools.join("\n") : "No tools are active."),
+    cwd: `Working directory: ${JSON.stringify(cwd)}`,
     ...(personal && { addendum: `## Personal instructions\n\n${personal.text}` }),
     ...(workspace && { project_context: workspace }),
   };
@@ -326,7 +315,7 @@ export class ProjectResources {
 
   async promptSections(loaded: Loaded, cwd: string, selectedTools: string[],
       overrides?: { systemPrompt?: string; appendSystemPrompt?: string }): Promise<Record<string, string>> {
-    if (this.#standalone) return standalonePromptSections(this.agentDir, cwd, selectedTools);
+    if (this.#standalone) return standalonePromptSections(this.agentDir, cwd);
     const loader = loaded.loader;
     if (!loader) return {};
     const hasOverrides = overrides?.systemPrompt !== undefined || overrides?.appendSystemPrompt !== undefined;

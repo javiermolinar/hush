@@ -17,7 +17,7 @@ const maxWorkers = 4;
 
 const inspectFile = defineTool({
   name: "inspect_file",
-  description: "Read one UTF-8 text file (up to 32 KiB, no links) relative to the thread's working directory. Returns its text.",
+  description: "Read a workspace-relative UTF-8 file (up to 32 KiB, no links).",
   callers: ["tools"],
   replay: "safe",
   parameters: {
@@ -79,10 +79,9 @@ export async function workspaceCodemode(): Promise<{ sandbox: CodemodeSandbox; e
   if (!tool) throw new Error("Durable did not register Codemode");
   const boundedCodemode: ToolRegistration = {
     ...tool,
-    description: "Run raw JavaScript (an async function body, no code fence) in QuickJS to batch independent workspace reads. " +
-      "Use Promise.all(paths.map(path => tools.inspect_file({ path }))), filter the results in the script, and return only the relevant text. " +
-      `Direct tools are not callable from scripts. At most ${maxCalls} calls. A first line ` +
-      `// @options: {\"max_output_tokens\": ${maxOutputTokens}, \"timeout_ms\": ${maxTimeMs}} can lower the host limits.`,
+    description: "Raw async JavaScript body, no fences. Batch reads with Promise.all and return excerpts. " +
+      `Only tools.inspect_file({ path }) is callable (max ${maxCalls} calls). Lower limits with a first line ` +
+      `// @options: {\"max_output_tokens\": ${maxOutputTokens}, \"timeout_ms\": ${maxTimeMs}}.`,
     outputLimits: { maxBytes: 16 * 1024, maxLines: 500 },
     async execute(args, api, ctx) {
       const { code: source } = args as CodemodeToolInput;

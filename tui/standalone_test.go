@@ -254,7 +254,7 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 			system = append(system, text)
 		}
 		prompt := strings.Join(system, "\n\n")
-		expected := []string{strings.TrimSpace(string(bundled)), "## Active tools and working directory", fmt.Sprintf("Working directory: %q", cwd)}
+		expected := []string{strings.TrimSpace(string(bundled)), fmt.Sprintf("Working directory: %q", cwd)}
 		ignored := []string{"tui-pi-system-sentinel", "tui-pi-append-sentinel", "tui-project-system-sentinel", "tui-project-append-sentinel", "tui-outside-workspace-sentinel"}
 		if i > 0 {
 			expected = append(expected, "## Personal instructions", "tui-personal-sentinel")
@@ -278,15 +278,17 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 				}
 			}
 		}
-		_, toolSection, _ := strings.Cut(prompt, "## Active tools and working directory")
-		toolSection, _, _ = strings.Cut(toolSection, "\n## ")
-		if len(req.Tools) == 0 || strings.Count(toolSection, "\n- ") != len(req.Tools) {
-			t.Fatalf("tool instructions do not match active tools: %v\n%s", req.Tools, toolSection)
-		}
+		var declared []string
 		for _, tool := range req.Tools {
-			if !strings.Contains(toolSection, "\n- "+tool.Function.Name+": ") {
-				t.Fatalf("missing instructions for %s", tool.Function.Name)
+			name := tool.Function.Name
+			declared = append(declared, name)
+			if strings.Contains(prompt, "\n- "+name+": ") {
+				t.Fatalf("duplicated tool instructions for %s", name)
 			}
+		}
+		slices.Sort(declared)
+		if !slices.Equal(declared, []string{"bash", "edit", "read", "write"}) {
+			t.Fatalf("unexpected tool declarations: %v", declared)
 		}
 	}
 	if n := requests.Load(); n != 2 {
