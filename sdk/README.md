@@ -53,14 +53,17 @@ version 3 and creates a thread with a validated model and thinking level.
 
 ## Workspace metadata
 
-Offer `workspaceFiles:[2,1]` for `WorkspaceFileScope` and `ListWorkspaceFiles`,
-and `SearchWorkspaceFiles` on a host that selects version 2.
-Offer `workspaceSkills:1` for `ListWorkspaceSkills` or `loadedContext:1` for
-`LoadedContext`. These reads run on a cancelable passive connection. Skills and
-context take an existing thread ID. The file methods take a `WorkspaceFileTarget`:
-an existing thread or, on version 2, the absolute `CWD` of a
-[prospective thread](../protocol/v1/workspace-files.md#prospective-threads),
-which previews a new thread's workspace without creating one. When submitting a selected standalone skill,
+Offer `workspaceFiles: [2, 1]` for `WorkspaceFileScope` and `ListWorkspaceFiles`,
+and `SearchWorkspaceFiles` on a host that selects version 2. The file methods
+take a `WorkspaceFileTarget`: an existing thread or, on version 2, the absolute
+`CWD` of a [prospective thread](../protocol/v1/workspace-files.md#prospective-threads).
+
+Offer `workspaceSkills: [2, 1]` for `ListWorkspaceSkills` and, on version 2,
+`PreviewWorkspaceSkills` for a prospective checkout without creating a thread.
+Offer `loadedContext:1` for `LoadedContext` on an existing thread. Metadata
+reads run on cancelable passive connections.
+
+When submitting a selected standalone skill,
 set `Input.SkillToken` to its opaque selection token and use its
 `/skill:NAME` command text. The SDK will not downgrade a selected skill
 to an unpinned submit on an older host.

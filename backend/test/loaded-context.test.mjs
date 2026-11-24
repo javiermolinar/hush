@@ -27,7 +27,7 @@ test('loaded context is the ordered next-prompt sources, scoped and stripped of 
   const local = await dial(socket), remote = await dial(socket), older = await dial(socket);
   t.after(async () => { local.close(); remote.close(); older.close(); await host.close(); await rm(dir, { recursive: true, force: true }); });
   for (const client of [local, remote]) {
-    const frame = await client.send('hello', { versions: [1], capabilities: { loadedContext: [1], workspaceFiles: [1], workspaceSkills: [1] } });
+    const frame = await client.send('hello', { versions: [1], capabilities: { loadedContext: [1], workspaceFiles: [1], workspaceSkills: [99] } });
     assert.deepEqual(ok(frame).capabilities, { loadedContext: 1 }); // independent of files or skills
   }
   assert.deepEqual(ok(await older.send('hello', { versions: [1] })).capabilities, {});

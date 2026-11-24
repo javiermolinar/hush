@@ -68,8 +68,8 @@ permit tool execution.
 
 Open `?` → **Show loaded context** to see the instruction files the backend
 resolves for the active thread’s next submission. The inspector lists paths,
-not contents. [Standalone skills](backend/README.md#standalone-skills) are
-optional; use `/skills` to stage a skill without submitting.
+not contents. Hush [discovers skills](backend/README.md#standalone-skills) from
+personal roots and trusted workspaces. Use `/skills` to stage one without submitting.
 
 ## Keep the backend running after exit
 

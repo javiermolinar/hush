@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { opendir, realpath } from "node:fs/promises";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Cursors } from "../../server/src/cursor.js";
 import { object, WireError } from "../../server/src/wire.js";
-import { skillCommand, skillName, type WorkspaceSkill, type WorkspaceSkillsHost } from "../../server/src/workspace-skills.js";
+import { skillCommand, skillName, type WorkspaceSkill, type WorkspaceSkillScope, type WorkspaceSkillsHost } from "../../server/src/workspace-skills.js";
+import { workspaceAncestors } from "./workspace-ancestors.js";
 import { threadWorkspace } from "./thread-workspace.js";
 import { readStoreJSON, statStorePath } from "./store-files.js";
 import { readScopedText } from "./workspace-file.js";
@@ -13,6 +14,8 @@ import type { WorkspaceTrust } from "./workspace-trust.js";
 
 const sourceLimit = 32 * 1024;
 const maxDirectoryEntries = 64;
+const maxSkillReads = 256;
+const maxSkills = 64;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const safe = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.isWellFormed() && !/[\x00-\x1f\x7f-\x9f]/.test(v);
 const fileStamp = (v: Awaited<ReturnType<typeof statStorePath>>) => v && `${v.dev}:${v.ino}:${v.birthtimeNs}:${v.ctimeNs}`;
@@ -34,15 +37,14 @@ async function settings(agent: string) {
           projects.has(row.workspace)) return;
       projects.set(row.workspace, row.directory);
     }
-    if (!(raw.personal || projects.size) || fileStamp(await statStorePath(path)) !== stamp) return;
-    return { personal: raw.personal === true, projects, stamp: hash([stamp, raw]) };
-  } catch { /* Invalid/unsafe private config does not opt in. */ }
+    if (fileStamp(await statStorePath(path)) !== stamp) return;
+    return { personal: raw.personal !== false, projects, stamp: hash([stamp, raw]) };
+  } catch { /* Invalid/unsafe private config does not add any roots. */ }
 }
 
-export const standaloneSkillsConfigured = async (agent: string) => !!await settings(agent);
-
 type Root = { cwd: string; directory: string; source: WorkspaceSkill["source"]; grant: string };
-type Scope = { cwd: string; stamp: string; roots: Root[] };
+type Scope = { cwd: string; checkout: string; stamp: string; roots: Root[] };
+type Pin = { draft: boolean; binding: string };
 type Skill = Omit<WorkspaceSkill, "token"> & { fingerprint: string; body: string; path: string; base: string };
 
 export function skillUnavailable() {
@@ -59,18 +61,30 @@ export class StandaloneSkills implements WorkspaceSkillsHost {
 
   constructor(private readonly h: () => Harness, private readonly agent: string, private readonly trust: WorkspaceTrust) {}
 
-  async #scope(thread: string, signal: AbortSignal): Promise<Scope> {
-    const cwd = await threadWorkspace(this.h(), thread, signal);
-    const cfg = await settings(this.agent), roots: Root[] = [];
-    if (!cfg) return { cwd, stamp: "", roots };
-    if (cfg.personal) roots.push({ cwd: await realpath(this.agent), directory: "skills", source: "personal", grant: "" });
-    if (cfg.projects.size) {
-      const binding = await this.trust.binding(cwd, signal).catch(() => undefined);
-      signal.throwIfAborted();
-      const directory = binding && cfg.projects.get(binding.path);
-      if (binding && directory) roots.push({ cwd: binding.path, directory, source: "workspace", grant: binding.stamp });
+  async #scope(query: WorkspaceSkillScope, signal: AbortSignal): Promise<Scope> {
+    const cwd = "threadId" in query ? await threadWorkspace(this.h(), query.threadId, signal) : query.cwd;
+    const [cfg, profile, work] = await Promise.all([
+      settings(this.agent), realpath(this.agent), this.trust.binding(cwd, signal).catch(() => undefined),
+    ]);
+    // For untrusted paths, don't vary the visible result based on what
+    // exists on disk. Only trusted checkouts get canonical path bindings.
+    const checkout = work?.path ?? resolve(cwd);
+    const roots: Root[] = [];
+    const home = dirname(profile);
+    if (cfg?.personal !== false) {
+      roots.push({ cwd: profile, directory: "skills", source: "personal", grant: "" },
+        { cwd: home, directory: ".agents/skills", source: "personal", grant: "" });
     }
-    return { cwd, stamp: cfg.stamp, roots };
+    if (work) {
+      const explicit = cfg?.projects.get(work.path);
+      if (explicit) roots.push({ cwd: work.path, directory: explicit, source: "workspace", grant: work.stamp });
+      for (const dir of await workspaceAncestors(work.path, signal)) {
+        if (dir === home || dir === work.path && explicit === ".agents/skills") continue;
+        roots.push({ cwd: dir, directory: ".agents/skills", source: "workspace", grant: work.stamp });
+      }
+    }
+    signal.throwIfAborted();
+    return { cwd, checkout, stamp: cfg?.stamp ?? "", roots };
   }
 
   async #read(root: Root, name: string, signal: AbortSignal): Promise<Skill | undefined> {
@@ -99,34 +113,40 @@ export class StandaloneSkills implements WorkspaceSkillsHost {
       if (++count > maxDirectoryEntries) throw new WireError("limit");
       if (entry.isDirectory() && skillName(entry.name)) names.push(entry.name);
     }
-    return names;
+    return names.sort();
   }
 
-  #binding(thread: string, scope: Scope, skill: Skill) {
-    return hash([thread, scope.cwd, scope.stamp, skill.fingerprint]);
+  #binding(query: WorkspaceSkillScope, scope: Scope, skill: Skill) {
+    // Draft selection binds the backend checkout before it has a thread ID.
+    // Established thread tokens include the exact ID and recorded cwd.
+    const owner = "threadId" in query ? [query.threadId, scope.cwd, scope.checkout] : [scope.checkout];
+    return hash([owner, scope.stamp, skill.fingerprint]);
   }
 
-  async list(threadId: string, peer: AbortSignal) {
+  async list(query: WorkspaceSkillScope, peer: AbortSignal) {
     if (this.#pending >= 4) throw new WireError("limit");
     this.#pending++;
     try {
       const signal = AbortSignal.any([peer, AbortSignal.timeout(3500)]);
-      const scope = await this.#scope(threadId, signal);
-      const candidates = new Map<string, Skill | null>();
+      const scope = await this.#scope(query, signal);
+      const candidates = new Map<string, Skill>();
+      let remaining = maxSkillReads;
       for (const root of scope.roots) {
-        const names = await this.#names(root, signal);
-        // Bound per-list disk concurrency as well as total bytes. A directory
-        // of many small skills should not pay each read's latency in series.
-        for (let offset = 0; offset < names.length; offset += 4) {
-          const batch = await Promise.all(names.slice(offset, offset + 4).map(name => this.#read(root, name, signal)));
-          for (const skill of batch) if (skill) candidates.set(skill.name, candidates.has(skill.name) ? null : skill);
+        if (!remaining || candidates.size === maxSkills) break;
+        const names = (await this.#names(root, signal)).filter(name => !candidates.has(name)).slice(0, remaining);
+        // Bound per-list concurrency and total file reads across all roots.
+        for (let offset = 0; offset < names.length && candidates.size < maxSkills;) {
+          const pending = names.slice(offset, offset + Math.min(4, maxSkills - candidates.size));
+          const batch = await Promise.all(pending.map(name => this.#read(root, name, signal)));
+          remaining -= pending.length;
+          for (const skill of batch) if (skill) candidates.set(skill.name, skill);
+          offset += pending.length;
         }
       }
-      if (hash(await this.#scope(threadId, signal)) !== hash(scope)) throw skillUnavailable();
-      const skills = Array.from(candidates.values()).filter((skill): skill is Skill => !!skill)
-        .sort((a, b) => a.name.localeCompare(b.name)).slice(0, 64)
+      if (hash(await this.#scope(query, signal)) !== hash(scope)) throw skillUnavailable();
+      const skills = Array.from(candidates.values()).sort((a, b) => a.name.localeCompare(b.name))
         .map(skill => ({ name: skill.name, description: skill.description, source: skill.source,
-          token: this.#cursors.encode("workspaceSkill", this.#binding(threadId, scope, skill)) }));
+          token: this.#cursors.encode("workspaceSkill", { draft: "cwd" in query, binding: this.#binding(query, scope, skill) } satisfies Pin) }));
       return { skills };
     } finally { this.#pending--; }
   }
@@ -135,17 +155,23 @@ export class StandaloneSkills implements WorkspaceSkillsHost {
     const match = skillCommand(input);
     if (!match) throw skillUnavailable();
     const signal = AbortSignal.any([...(peer ? [peer] : []), AbortSignal.timeout(3500)]);
-    const scope = await this.#scope(thread, signal);
+    const query = { threadId: thread };
+    const scope = await this.#scope(query, signal);
     if (!cwd || resolve(cwd) !== resolve(scope.cwd)) throw skillUnavailable();
     const name = match[1]!;
-    const choices = (await Promise.all(scope.roots.map(root => this.#read(root, name, signal)))).filter((value): value is Skill => !!value);
-    if (choices.length !== 1 || hash(await this.#scope(thread, signal)) !== hash(scope)) throw skillUnavailable();
-    const skill = choices[0]!, binding = this.#binding(thread, scope, skill);
-    if (token) {
-      try { if (this.#cursors.decode<string>("workspaceSkill", token) !== binding) throw skillUnavailable(); }
-      catch { throw skillUnavailable(); }
+    let skill: Skill | undefined;
+    for (const root of scope.roots) {
+      skill = await this.#read(root, name, signal);
+      if (skill) break;
     }
-    const expected = token ?? this.#cursors.encode("workspaceSkill", binding);
+    if (!skill || hash(await this.#scope(query, signal)) !== hash(scope)) throw skillUnavailable();
+    if (token) {
+      try {
+        const pin = this.#cursors.decode<Pin>("workspaceSkill", token);
+        if (pin.binding !== this.#binding(pin.draft ? { cwd: scope.cwd } : query, scope, skill)) throw skillUnavailable();
+      } catch { throw skillUnavailable(); }
+    }
+    const expected = this.#cursors.encode("workspaceSkill", { draft: false, binding: this.#binding(query, scope, skill) } satisfies Pin);
     const args = match[2]?.trim();
     return {
       text: `<skill name="${name}" location="${xml(skill.path)}">\nReferences are relative to ${JSON.stringify(skill.base)}.\n\n${skill.body}\n</skill>` + (args ? `\n\n${args}` : ""),

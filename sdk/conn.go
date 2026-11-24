@@ -248,24 +248,22 @@ func (s *session) receive(f map[string]any) error {
 		if err := optionalEnvelope(f, version, LoadedContextVersion); err != nil {
 			return err
 		}
-	} else if ok && method == workspaceSkillsList {
+	} else if ok && (method == workspaceSkillsList || method == workspaceSkillsSubmit) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[workspaceSkillsCapability]
 		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, WorkspaceSkillsVersion); err != nil {
+		if !supportedWorkspaceSkills(version) {
+			return ErrProtocol
+		}
+		if err := optionalEnvelope(f, version, version); err != nil {
 			return err
 		}
-	} else if ok && method == workspaceSkillsSubmit {
-		s.mu.Lock()
-		version := s.hello.Capabilities[workspaceSkillsCapability]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, WorkspaceSkillsVersion); err != nil {
-			return err
-		}
-		if err := schemaCheck("success", map[string]any{
-			"type": f["type"], "id": f["id"], "method": "submit", "ok": true, "result": f["result"],
-		}); err != nil {
-			return err
+		if method == workspaceSkillsSubmit {
+			if err := schemaCheck("success", map[string]any{
+				"type": f["type"], "id": f["id"], "method": "submit", "ok": true, "result": f["result"],
+			}); err != nil {
+				return err
+			}
 		}
 	} else if ok && method == environmentSubmit {
 		s.mu.Lock()

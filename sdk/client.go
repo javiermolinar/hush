@@ -133,7 +133,7 @@ func invoke[T any](ctx context.Context, c *Client, method string, params any) (T
 // A passive wait has its own connection: cancelling it actually releases the server's
 // waiter without closing other calls or withdrawing an already-admitted input.
 func waitOn[T any](ctx context.Context, c *Client, method string, params any) (T, error) {
-	return waitOnCapability[T](ctx, c, method, params, "", 0)
+	return waitOnCapability[T](ctx, c, method, params, "")
 }
 
 func waitOnCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, versions ...uint64) (T, error) {
@@ -369,7 +369,7 @@ type Input struct {
 	WhenBusy    BusyMode          `json:"whenBusy"`
 	Images      []Image           `json:"images,omitempty"` // requires images:1; bytes, never paths
 	Environment ClientEnvironment `json:"-"`                // optional; sent only through clientEnvironment:1
-	SkillToken  string            `json:"-"`                // selected standalone skill; requires workspaceSkills:1
+	SkillToken  string            `json:"-"`                // selected standalone skill; requires workspaceSkills
 }
 
 // Submit makes at most one automatic retry after a connection loss and only if

@@ -15,7 +15,8 @@ import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./che
 import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
 import { parseLoadedContext, loadedContextVersion, type LoadedContextHost } from "./loaded-context.js";
 import { parseWorkspaceFiles, parseWorkspaceFileSearch, workspaceFilesVersion, workspaceFileSearchVersion, type WorkspaceFilesHost } from "./workspace-files.js";
-import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillsVersion, type WorkspaceSkillsHost } from "./workspace-skills.js";
+import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillDraftVersion, workspaceSkillsVersion,
+  type WorkspaceSkillsHost, type WorkspaceSkillsVersion } from "./workspace-skills.js";
 import { PiPeer, piEventsVersion, type PiEventsHost } from "./pi-events.js";
 import { imageReply, imagesVersion, parseImageRef, parseImageSubmit, type ImagesHost } from "./images.js";
 export type { ImagesHost } from "./images.js";
@@ -169,7 +170,7 @@ class Peer {
   #gitDiffPending = false;
   #loadedContext?: LoadedContextHost;
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
-  #workspaceSkills?: WorkspaceSkillsHost;
+  #workspaceSkills?: { host: WorkspaceSkillsHost; version: WorkspaceSkillsVersion };
   readonly #pendingMetadata = new Set<string>();
   #modelCatalog?: { host: ModelCatalogHost; version: ModelCatalogVersion };
   #storeIdentity?: StoreIdentity;
@@ -429,8 +430,9 @@ class Peer {
         }
         if (parts[1] === "workspaceSkills" && this.#workspaceSkills) {
           if (parts[2] === "list") {
-            const host = this.#workspaceSkills, threadId = parseWorkspaceSkillList(req.params);
-            this.#metadata(req, parts[1], () => host.list(threadId, this.#abort.signal));
+            const { host, version } = this.#workspaceSkills;
+            const scope = parseWorkspaceSkillList(req.params, version);
+            this.#metadata(req, parts[1], () => host.list(scope, this.#abort.signal));
             return;
           }
           if (parts[2] !== "submit") throw new WireError("unknown_method");
@@ -492,9 +494,12 @@ class Peer {
           capabilities.loadedContext = loadedContextVersion;
           this.#loadedContext = this.capabilities.loadedContext;
         }
-        if (this.capabilities?.workspaceSkills && req.params.capabilities?.workspaceSkills?.includes(workspaceSkillsVersion)) {
-          capabilities.workspaceSkills = workspaceSkillsVersion;
-          this.#workspaceSkills = this.capabilities.workspaceSkills;
+        const skills = this.capabilities?.workspaceSkills, offeredSkills = req.params.capabilities?.workspaceSkills;
+        const skillsVersion = offeredSkills?.includes(workspaceSkillDraftVersion) ? workspaceSkillDraftVersion
+          : offeredSkills?.includes(workspaceSkillsVersion) ? workspaceSkillsVersion : undefined;
+        if (skills && skillsVersion !== undefined) {
+          capabilities.workspaceSkills = skillsVersion;
+          this.#workspaceSkills = { host: skills, version: skillsVersion };
         }
         const files = this.capabilities?.workspaceFiles, offeredFiles = req.params.capabilities?.workspaceFiles;
         if (files) {

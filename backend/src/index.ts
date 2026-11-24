@@ -26,7 +26,7 @@ import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
 import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
 import { LoadedContext } from "./loaded-context.js";
-import { skillUnavailable, StandaloneSkills, standaloneSkillsConfigured } from "./workspace-skills.js";
+import { skillUnavailable, StandaloneSkills } from "./workspace-skills.js";
 import { readStandaloneSettings, StandaloneSettingsHost, standaloneModelDefault, standaloneSettingsView } from "./standalone-settings.js";
 import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
@@ -175,7 +175,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const sources = config.piEvents ? new PiSources(runtime) : undefined;
     const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral, sources?.tapTool, standalone);
     const trust = standalone && !config.ephemeral ? new WorkspaceTrust(config.agentDir) : undefined;
-    const workspaceSkills = trust && config.dataDir && await standaloneSkillsConfigured(config.agentDir)
+    const workspaceSkills = trust && config.dataDir && ["darwin", "linux"].includes(process.platform)
       ? new StandaloneSkills(() => h!, config.agentDir, trust) : undefined;
     const authorizeWork = trust && ((cwd: string | undefined, ctx: Context) =>
       trust.require(dirs.directory(cwd), ctx.abortSignal));

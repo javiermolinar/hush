@@ -258,30 +258,31 @@ policy. Loopback fixtures check the request contents, not whether a model follow
 
 ## Standalone skills
 
-Skills are off by default. To enable them, create a private (mode 600)
-`~/.hush/skills.json` on the backend host and restart the backend. For example:
+Hush discovers text skills automatically on the **backend host**, in this order:
 
-```json
-{
-  "personal": true,
-  "projectRoots": [
-    { "workspace": "/absolute/physical/project", "directory": ".agents/skills" }
-  ]
-}
-```
+1. `~/.hush/skills`, then `~/.agents/skills`.
+2. Any explicitly configured root for the exact physical workspace.
+3. `.agents/skills` in the working directory and its ancestors through the Git
+   root, nearest first. Outside Git, only the working directory applies.
 
-`personal: true` enables `~/.hush/skills`. Each project row selects one relative
-directory for the exact physical workspace; it does not grant trust. Use
-`hush trust grant --cwd PATH` to trust the workspace. Each enabled
-root uses `NAME/SKILL.md` with matching `name`, a `description`, and a text body
-of at most 32 KiB total. Unreadable files, symlinks, and conflicting names within
-one thread's enabled roots are not eligible. Standalone does not import Pi
-settings, hooks, MCP servers, or a project's Hush configuration.
+The first valid definition of a name wins, and the picker shows up to 64 skills.
+Project roots require the [workspace grant](#workspace-trust) for the working
+directory (`hush trust grant --cwd PATH`). There is no automatic scan of
+`.claude/skills` or `.pi/skills`, and Hush does not import project settings,
+hooks, or MCP servers. A skill is `NAME/SKILL.md` with matching `name`, a
+`description`, and a nonempty text body within a 32 KiB file. Hush skips
+unreadable files and symlinks.
 
-In an existing thread, choose a suggestion under `/` or use `/skills`. Selection
-only stages `/skill:NAME`; press Enter on the staged draft to submit. Hush
-rechecks the file, workspace, and grant at admission. If an old selection
-changes, review the fresh skill list rather than resending the old selection.
+No configuration file is needed. A private (mode 600) `~/.hush/skills.json`
+can disable both personal roots with `"personal": false` or add per-workspace
+relative paths with `"projectRoots": [{"workspace": "/absolute/physical/project",
+"directory": "other-skills"}]`. Adding a root does not grant trust.
+
+Use `/skills` or choose a suggestion under `/` in an existing thread or at a
+fresh local prompt. Selection only stages `/skill:NAME`; press Enter to submit.
+Personal skills can be listed without workspace trust. Hush requires that trust
+to submit and rechecks the selected source at admission. If a selection changes,
+use the picker again instead of resending its stale token.
 
 ## Opt-in Pi profile
 

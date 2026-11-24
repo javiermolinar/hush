@@ -18,6 +18,39 @@ const stageSkillOp x.LocalOp = "workspaceSkills.stage"
 type workspaceSkillsBackend interface {
 	ListWorkspaceSkills(context.Context, sdk.ID) ([]sdk.WorkspaceSkill, error)
 }
+type workspaceSkillDraftBackend interface {
+	PreviewWorkspaceSkills(context.Context, string) ([]sdk.WorkspaceSkill, error)
+}
+
+func (m *Model) skillScope(thread sdk.ID) (sdk.IntroScope, bool) {
+	if !m.nativeSkills {
+		return sdk.IntroScope{}, false
+	}
+	scope := m.introScope(thread)
+	if thread.Valid() {
+		return scope, m.connection == x.Connected
+	}
+	// A successful hello suffices on a local draft, which has no thread
+	// watch yet. An attach-only remote draft must not use the client cwd.
+	return scope, m.nativeSkillDraft && scope.CWD != ""
+}
+
+func (m *Model) skillLookup(thread sdk.ID) func(context.Context) ([]sdk.WorkspaceSkill, error) {
+	scope, ok := m.skillScope(thread)
+	if !ok {
+		return nil
+	}
+	if scope.ThreadID.Valid() {
+		backend := m.backend.(workspaceSkillsBackend)
+		return func(ctx context.Context) ([]sdk.WorkspaceSkill, error) {
+			return backend.ListWorkspaceSkills(ctx, scope.ThreadID)
+		}
+	}
+	backend := m.backend.(workspaceSkillDraftBackend)
+	return func(ctx context.Context) ([]sdk.WorkspaceSkill, error) {
+		return backend.PreviewWorkspaceSkills(ctx, scope.CWD)
+	}
+}
 
 type skillsLease struct {
 	owner                  sdk.ID
@@ -58,7 +91,7 @@ func (m *Model) syncSkills() tea.Cmd {
 	if t != nil && t.stagedSkill.token != "" && skillOf(m.editor.value()) != t.stagedSkill.name {
 		t.stagedSkill = stagedSkill{}
 	}
-	if !m.nativeSkills || m.connection != x.Connected || !m.active.Valid() {
+	if _, ok := m.skillScope(m.active); !ok {
 		if m.skills.generation != 0 {
 			m.stopSkills()
 		}
@@ -66,7 +99,7 @@ func (m *Model) syncSkills() tea.Cmd {
 	}
 	text := m.editor.value()
 	slash := strings.HasPrefix(text, "/") && !strings.ContainsAny(text, " \t\n")
-	if m.skills.owner == m.active && m.skills.navigation == m.navigation {
+	if m.skills.generation != 0 && m.skills.owner == m.active && m.skills.navigation == m.navigation {
 		refresh := slash && !m.skills.slash && !m.skills.waiting
 		m.skills.slash = slash
 		if !refresh {
@@ -75,14 +108,14 @@ func (m *Model) syncSkills() tea.Cmd {
 	} else {
 		m.stopSkills()
 	}
-	backend := m.backend.(workspaceSkillsBackend)
+	lookup := m.skillLookup(m.active)
 	ctx, cancel := context.WithTimeout(m.ctx, menuTimeout+time.Second)
 	s := &m.skills
 	s.owner, s.navigation, s.generation, s.cancel, s.slash, s.waiting = m.active, m.navigation, m.token(), cancel, slash, true
-	owner, generation := s.owner, s.generation
+	generation := s.generation
 	return func() tea.Msg {
 		defer cancel()
-		listed, err := backend.ListWorkspaceSkills(ctx, owner)
+		listed, err := lookup(ctx)
 		if err != nil {
 			listed = nil
 		}
@@ -92,7 +125,7 @@ func (m *Model) syncSkills() tea.Cmd {
 
 func (m *Model) receiveSkills(v skillsMsg) {
 	s := &m.skills
-	if s.generation == v.generation && s.owner == m.active && s.navigation == m.navigation && m.connection == x.Connected {
+	if _, ok := m.skillScope(m.active); ok && s.generation == v.generation && s.owner == m.active && s.navigation == m.navigation {
 		s.listed, s.waiting, s.cancel = v.listed, false, nil
 		if i := m.threads[m.active].intro; i != nil && !i.frozen && v.listed != nil {
 			n := len(v.listed)
@@ -110,7 +143,7 @@ func (m *Model) receiveSkills(v skillsMsg) {
 }
 
 func (m *Model) currentSkills() []sdk.WorkspaceSkill {
-	if m.nativeSkills && m.connection == x.Connected && m.skills.owner == m.active && m.skills.navigation == m.navigation {
+	if _, ok := m.skillScope(m.active); ok && m.skills.owner == m.active && m.skills.navigation == m.navigation {
 		return m.skills.listed
 	}
 	return nil
@@ -133,7 +166,7 @@ func (m *Model) skillSlashMatches(prefix string, out []registeredAction) []regis
 }
 
 func (m *Model) stageSkill(value stagedSkill) {
-	if !m.nativeSkills || !m.active.Valid() || value.name == "" || value.token == "" {
+	if _, ok := m.skillScope(m.active); !ok || value.name == "" || value.token == "" {
 		return
 	}
 	m.editor.set("/skill:" + value.name + " ")

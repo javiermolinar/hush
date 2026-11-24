@@ -53,8 +53,8 @@ go test -count=1 -v ./tui -run '^TestFrameBudget/(file-picker|skill-slash|skill-
 
 The offline benchmark uses a temporary profile and a real Unix socket. It
 reports p50, p95 and p99 latency for file scope and pages (including 3800
-entries), skill discovery and admission (8 and 64 skills), prompt metadata,
-and supervisor dispatch and attach. It does not register an OS service or use
+entries), skill discovery and admission (including a fresh-prompt preview of
+64 skills), prompt metadata, and supervisor dispatch and attach. It does not register an OS service or use
 real credentials. Set `HUSH_BENCH_SAMPLES` to change the sample count. Record
 that count, the machine, filesystem and Node version when comparing results.
 Run without other tests competing for CPU or disk. The Go cases measure

@@ -102,6 +102,7 @@ type Model struct {
 	nativeFiles               bool
 	nativeFileSearch          bool
 	nativeSkills              bool
+	nativeSkillDraft          bool
 	nativeContext             bool
 	skills                    skillsLease
 	images                    imageState
@@ -315,8 +316,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.receiveTab(v)
 	case menuCapabilities:
 		m.menuFeaturesFromBackend = v.features
-		m.directoryEnabled, m.nativeFiles, m.nativeSkills, m.nativeContext = v.directory, v.files, v.skills, v.context
-		m.nativeFileSearch = v.fileSearch
+		m.directoryEnabled, m.nativeContext = v.directory, v.context
+		m.nativeFiles, m.nativeFileSearch = v.files, v.fileSearch
+		m.nativeSkills, m.nativeSkillDraft = v.skills, v.skillDraft
 		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff())
 	case skillsMsg:
 		m.receiveSkills(v)

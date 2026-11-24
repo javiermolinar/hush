@@ -1,4 +1,4 @@
-import { lstat, open, realpath } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
@@ -13,6 +13,7 @@ import { ProfileDoc } from "./pi/projection.js";
 import { Rejected } from "./pi/commands.js";
 import { readScopedText } from "./workspace-file.js";
 import type { InstructionSource } from "../../server/src/loaded-context.js";
+import { workspaceAncestors } from "./workspace-ancestors.js";
 
 export type Warn = (code: "resource_watch_failed" | "mcp_unavailable" | "harness_report" | "closing" | "listening") => void;
 const keys = ["preamble", "tools", "rules", "docs", "addendum", "project_context", "skills", "cwd"] as const;
@@ -38,19 +39,7 @@ async function readSupplement(dir: string, name: string, kind: InstructionSource
 }
 
 async function workspaceContext(cwd: string, signal?: AbortSignal) {
-  const parents = [cwd];
-  for (let dir = cwd;;) {
-    signal?.throwIfAborted();
-    const git = await lstat(join(dir, ".git")).catch(() => undefined);
-    if (git?.isDirectory() || git?.isFile()) break; // Includes linked worktrees.
-    const parent = dirname(dir);
-    if (parent === dir || parents.length >= 64) {
-      parents.length = 1; // Without a known repository boundary, only cwd applies.
-      break;
-    }
-    parents.push(parent);
-    dir = parent;
-  }
+  const parents = await workspaceAncestors(cwd, signal);
   const files: Instruction[] = [];
   let remaining = workspaceLimit;
   for (const dir of parents.reverse()) {

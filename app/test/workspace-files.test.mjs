@@ -38,7 +38,8 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   await cli('status');
   const connect = async () => {
     client = await dial(socket); // attach-only peer can have an unrelated client cwd
-    assert.deepEqual(ok(await client.send('hello', { versions: [1], capabilities: { workspaceFiles: [2, 1] } })).capabilities, { workspaceFiles: 2 });
+    const hello = ok(await client.send('hello', { versions: [1], capabilities: { workspaceFiles: [2, 1], workspaceSkills: [2, 1] } }));
+    assert.deepEqual(hello.capabilities, { workspaceFiles: 2, workspaceSkills: 2 });
   };
   await connect();
   older = await dial(socket);
@@ -109,6 +110,7 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   assert.deepEqual(ok(await draft('search', { cwd: workspace, query: 'an inner file.txt', limit: 10 })),
     { matches: [{ path: 'nested folder/an inner file.txt', directory: false }], partial: false });
   denied(await draft('search', { cwd: foreign, query: 'secret', limit: 10 }), 'not_found');
+  assert.deepEqual(ok(await client.send('ext.workspaceSkills.list', { cwd: workspace })), { skills: [] });
   assert.deepEqual(await threads(), known);
 
   await cli('trust', 'grant', '--scope', 'home');

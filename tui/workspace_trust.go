@@ -188,10 +188,11 @@ func (m *Model) receiveWorkspaceTrust(msg workspaceTrustMsg) tea.Cmd {
 	}
 	closed := m.closeDialog(d, nil, false)
 	if msg.granted {
-		// Invalidate in-flight reads so permissions appear without waiting for
-		// either poll and a reply from the old lease cannot hide them again.
-		m.stopFileScope() // Update starts a fresh lease for the active thread.
+		// Discard in-flight metadata from the previous scope. Update starts
+		// fresh file and skill lookups for the active thread or draft.
+		m.stopFileScope()
 		m.stopGitDiff()
+		m.stopSkills()
 		return tea.Batch(closed, m.syncGitDiff(), m.notifyRoute(d.route, "Workspace trusted", x.Good))
 	}
 	return closed

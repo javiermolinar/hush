@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"path"
 	"regexp"
 	"strings"
 	"unicode"
@@ -9,10 +10,11 @@ import (
 )
 
 const (
-	WorkspaceSkillsVersion    = 1
-	workspaceSkillsCapability = "workspaceSkills"
-	workspaceSkillsList       = "ext.workspaceSkills.list"
-	workspaceSkillsSubmit     = "ext.workspaceSkills.submit"
+	WorkspaceSkillsVersion     = 1
+	WorkspaceSkillDraftVersion = 2
+	workspaceSkillsCapability  = "workspaceSkills"
+	workspaceSkillsList        = "ext.workspaceSkills.list"
+	workspaceSkillsSubmit      = "ext.workspaceSkills.submit"
 )
 
 var (
@@ -20,7 +22,7 @@ var (
 	workspaceSkillToken = regexp.MustCompile(`^[A-Za-z0-9_-]{44,512}$`)
 )
 
-// WorkspaceSkill is an eligible text skill in the named thread's scope. The
+// WorkspaceSkill is an eligible text skill in a thread or draft scope. The
 // token pins the source and grant; keep it when staging a selected command.
 type WorkspaceSkill struct {
 	Name        string `json:"name"`
@@ -33,10 +35,26 @@ func (c *Client) ListWorkspaceSkills(ctx context.Context, thread ID) ([]Workspac
 	if !thread.Valid() {
 		return nil, ErrProtocol
 	}
+	return c.workspaceSkills(ctx, map[string]ID{"threadId": thread}, WorkspaceSkillsVersion, WorkspaceSkillDraftVersion)
+}
+
+// PreviewWorkspaceSkills lists skills for a prospective backend checkout
+// without creating a thread. A preview token binds that exact checkout.
+func (c *Client) PreviewWorkspaceSkills(ctx context.Context, cwd string) ([]WorkspaceSkill, error) {
+	if !path.IsAbs(cwd) || len(cwd) > 4096 || !utf8.ValidString(cwd) || strings.IndexFunc(cwd, unicode.IsControl) >= 0 {
+		return nil, ErrProtocol
+	}
+	return c.workspaceSkills(ctx, map[string]string{"cwd": cwd}, WorkspaceSkillDraftVersion)
+}
+
+func supportedWorkspaceSkills(version uint64) bool {
+	return version == WorkspaceSkillsVersion || version == WorkspaceSkillDraftVersion
+}
+
+func (c *Client) workspaceSkills(ctx context.Context, scope any, versions ...uint64) ([]WorkspaceSkill, error) {
 	out, err := waitOnCapability[struct {
 		Skills []WorkspaceSkill `json:"skills"`
-	}](ctx, c, workspaceSkillsList,
-		map[string]ID{"threadId": thread}, workspaceSkillsCapability, WorkspaceSkillsVersion)
+	}](ctx, c, workspaceSkillsList, scope, workspaceSkillsCapability, versions...)
 	if err != nil {
 		return nil, err
 	}

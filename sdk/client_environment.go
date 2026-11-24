@@ -75,7 +75,7 @@ func (c *Client) submitInput(ctx context.Context, input Input, route *submission
 	}
 	var params any = input
 	if route.method == workspaceSkillsSubmit {
-		if s.hello.Capabilities[workspaceSkillsCapability] != WorkspaceSkillsVersion {
+		if !supportedWorkspaceSkills(s.hello.Capabilities[workspaceSkillsCapability]) {
 			return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: workspaceSkillsCapability}
 		}
 		v := struct {

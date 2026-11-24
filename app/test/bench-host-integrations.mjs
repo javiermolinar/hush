@@ -22,7 +22,7 @@ const invoke = (binary, args) => exec(binary, args, { env, timeout: 10_000 });
 const cli = (...args) => invoke(exe, args);
 const put = (name, data) => writeFile(name, data, { mode: 0o600 });
 const dir = name => mkdir(name, { recursive: true, mode: 0o700 });
-const capabilities = { workspaceFiles: [1], workspaceSkills: [1], loadedContext: [1] };
+const capabilities = { workspaceFiles: [1], workspaceSkills: [2, 1], loadedContext: [1] };
 let runner;
 const records = [];
 const checked = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
@@ -83,9 +83,9 @@ async function boot(token) {
   throw new Error('fixture supervisor failed to start');
 }
 
-async function seedSkills(cwd, count) {
-  for (let i = 0; i < count; i++) {
-    const name = `review-${String(i).padStart(2, '0')}`, folder = join(cwd, '.agents/skills', name);
+async function seedSkills(root, start, end) {
+  for (let i = start; i < end; i++) {
+    const name = `review-${String(i).padStart(2, '0')}`, folder = join(root, name);
     await dir(folder);
     await put(join(folder, 'SKILL.md'), `---\nname: ${name}\ndescription: Read-only benchmark skill ${i}\n---\n${'Fixture text. '.repeat(150)}`);
   }
@@ -112,8 +112,12 @@ try {
     await put(join(sub, 'AGENTS.md'), 'Fixture instructions.\n'.repeat(1570));
     if (n+1 < levels) sub = join(sub, `nested folder ${n}`);
   }
-  await Promise.all([seedSkills(work, 8), seedSkills(sub, 64), seedFiles(work, 'documents', 80), seedFiles(work, 'many files', 3800)]);
-  await put(join(agent, 'skills.json'), JSON.stringify({ projectRoots: [work, sub].map(workspace => ({ workspace, directory: '.agents/skills' })) }));
+  await Promise.all([
+    seedSkills(join(agent, 'skills'), 0, 2), seedSkills(join(home, '.agents/skills'), 2, 4),
+    seedSkills(join(work, '.agents/skills'), 4, 8), seedSkills(join(heavy, '.agents/skills'), 4, 12),
+    seedSkills(join(sub, '.agents/skills'), 12, 64),
+    seedFiles(work, 'documents', 80), seedFiles(work, 'many files', 3800),
+  ]);
   await put(entry, `process.env.NODE_NO_WARNINGS = '1';\nif (process.argv.includes('--supervisor')) process.argv.push('--faux');\n${await readFile(bundle, 'utf8')}`);
   const token = randomUUID();
   await invoke(process.execPath, [entry, '--hush-internal-service-claim', token]);
@@ -125,9 +129,13 @@ try {
   const skills = threadId => request('ext.workspaceSkills.list', { threadId });
   const instructions = threadId => request('ext.loadedContext.get', { threadId });
   const cursor = (await files('many files')).nextCursor;
-  const [{ name, token: skillToken }] = (await skills(small)).skills;
+  const smallSkills = (await skills(small)).skills;
+  assert.equal(smallSkills.length, 8);
+  const { name, token: skillToken } = smallSkills.find(s => s.source === 'workspace');
   assert.ok(cursor && skillToken);
+  const preview = () => request('ext.workspaceSkills.list', { cwd: sub });
   assert.equal((await skills(large)).skills.length, 64);
+  assert.equal((await preview()).skills.length, 64);
   assert.equal((await instructions(large)).sources.length, levels + 1);
   await measure('file-scope', samples, () => request('ext.workspaceFiles.scope', { threadId: small }));
   await measure('file-first-page-80', samples, () => files('documents'));
@@ -135,6 +143,7 @@ try {
   await measure('file-next-page-3800', samples, () => files('many files', cursor));
   await measure('skills-list-8', samples, () => skills(small));
   await measure('skills-list-64', samples, () => skills(large));
+  await measure('skills-preview-64', samples, preview);
   await measure('loaded-context-small', samples, () => instructions(small));
   await measure('loaded-context-200KiB', samples, () => instructions(large));
   await measure('skill-source-check-and-receipt', samples, () => request('ext.workspaceSkills.submit', {

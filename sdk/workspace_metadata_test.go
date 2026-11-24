@@ -182,6 +182,39 @@ func TestWorkspaceFileTargetValidation(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSkillDraftNegotiation(t *testing.T) {
+	for _, version := range []uint64{WorkspaceSkillsVersion, WorkspaceSkillDraftVersion} {
+		t.Run(map[uint64]string{1: "thread only", 2: "draft capable"}[version], func(t *testing.T) {
+			ctx, socket := runContext(t)
+			listener(t, socket, func(c net.Conn, r *bufio.Reader) {
+				q, err := readReq(r)
+				if err != nil {
+					return
+				}
+				reply(c, q, Hello{Version: 1, Epoch: "draft-skill", Capabilities: map[string]uint64{workspaceSkillsCapability: version}})
+				q, err = readReq(r)
+				if err != nil {
+					return
+				}
+				if version == WorkspaceSkillsVersion || q.Method != workspaceSkillsList || len(q.Params) != 1 || q.Params["cwd"] != "/backend/path with spaces" {
+					t.Errorf("unexpected draft lookup: %+v", q)
+				}
+				reply(c, q, map[string]any{"skills": []WorkspaceSkill{{Name: "review", Token: strings.Repeat("B", 80), Source: "workspace", Description: "Review"}}})
+			})
+			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceSkillsCapability: {WorkspaceSkillDraftVersion, WorkspaceSkillsVersion}}})
+			defer c.Close()
+			got, err := c.PreviewWorkspaceSkills(ctx, "/backend/path with spaces")
+			if version == WorkspaceSkillsVersion {
+				if !IsCode(err, "unsupported_capability") {
+					t.Fatalf("legacy host accepted draft preview: %v", err)
+				}
+			} else if err != nil || len(got) != 1 || got[0].Name != "review" {
+				t.Fatalf("preview=%+v; %v", got, err)
+			}
+		})
+	}
+}
+
 func TestStagedSkillSubmitDoesNotDowngrade(t *testing.T) {
 	for _, capable := range []bool{false, true} {
 		t.Run(map[bool]string{false: "older host", true: "supported"}[capable], func(t *testing.T) {

@@ -63,6 +63,7 @@ type menuCapabilities struct {
 	files      bool
 	fileSearch bool
 	skills     bool
+	skillDraft bool
 	context    bool
 }
 
@@ -80,6 +81,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, files := m.backend.(fileBrowseBackend)
 	_, fileSearch := m.backend.(fileSearchBackend)
 	_, skills := m.backend.(workspaceSkillsBackend)
+	_, skillDraft := m.backend.(workspaceSkillDraftBackend)
 	_, loadedContext := m.backend.(loadedContextBackend)
 	_, native := m.backend.(modelCatalogBackend)
 	_, search := m.backend.(modelCatalogSearchBackend)
@@ -139,11 +141,12 @@ func (m *Model) menuProbe() tea.Cmd {
 		if gitDiff && hello.Capabilities["gitDiff"] == sdk.GitDiffVersion {
 			f |= x.GitDiff
 		}
-		fileVersion := hello.Capabilities["workspaceFiles"]
+		fileVersion, skillVersion := hello.Capabilities["workspaceFiles"], hello.Capabilities["workspaceSkills"]
 		return menuCapabilities{features: f, directory: managed && directory,
 			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || fileVersion == sdk.WorkspaceFileSearchVersion),
 			fileSearch: files && fileSearch && fileVersion == sdk.WorkspaceFileSearchVersion,
-			skills:     skills && hello.Capabilities["workspaceSkills"] == sdk.WorkspaceSkillsVersion,
+			skills:     skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),
+			skillDraft: skillDraft && skillVersion == sdk.WorkspaceSkillDraftVersion,
 			context:    loadedContext && hello.Capabilities["loadedContext"] == sdk.LoadedContextVersion}
 	}
 }
@@ -157,7 +160,7 @@ func (m *Model) menuFeatures() x.Features {
 	if m.fileAvailable("") {
 		f |= x.Files
 	}
-	if m.nativeSkills && m.active.Valid() && m.connection == x.Connected {
+	if _, ok := m.skillScope(m.active); ok {
 		f |= x.Skills
 	}
 	if m.contextAvailable() {
@@ -221,12 +224,11 @@ func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Conte
 			return scheduleJob(backend, target(op.ThreadID), op), true
 		}
 	case x.ListSkills:
-		if backend, ok := m.backend.(workspaceSkillsBackend); ok && m.nativeSkills {
-			owner := target(op.ThreadID)
+		if lookup := m.skillLookup(target(op.ThreadID)); lookup != nil {
 			return func(ctx context.Context) x.ClientResult {
 				call, cancel := context.WithTimeout(ctx, menuTimeout+time.Second)
 				defer cancel()
-				v, err := backend.ListWorkspaceSkills(call, owner)
+				v, err := lookup(call)
 				return x.ClientResult{WorkspaceSkills: v, Err: err}
 			}, true
 		}
