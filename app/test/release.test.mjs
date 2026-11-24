@@ -88,12 +88,10 @@ try:
     else:
         model, = args
         wait_for('Select model')
-        time.sleep(.2)
-        for char in model:
-            os.write(master, char.encode())
-            time.sleep(.045)
-        wait_for(model + '  ')
-        time.sleep(.2)
+        os.write(master, b'\x1b[200~' + model.encode() + b'\x1b[201~')
+        # The padded search field can contain the full ID before the host
+        # answers. Wait for the selected catalog row, not the typed text.
+        wait_for('› openai-codex/' + model + '  ')
         os.write(master, b'\r')
         wait_for('Thinking level')
         os.write(master, b'\r')
