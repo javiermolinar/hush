@@ -68,7 +68,7 @@ func (a keychainAPI) perform(chain uintptr, req request) ([]byte, error) {
 	if a.status(chain, &status) != 0 || status&unlocked == 0 {
 		return nil, errUnavailable
 	}
-	service := servicePrefix + req.Scope
+	service, account := servicePrefix+req.Scope, req.Provider
 	var item uintptr
 	var data unsafe.Pointer
 	var size uint32

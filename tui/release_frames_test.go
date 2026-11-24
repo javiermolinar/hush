@@ -31,8 +31,9 @@ func TestReleaseFrames(t *testing.T) {
 		t.Run(theme.name, func(t *testing.T) {
 			var clipboard string
 			m, s := demo(t, Options{Fills: FillOn, ReducedMotion: true,
-				CopyText: func(_ context.Context, text string) error { clipboard = text; return nil },
-				Services: MenuServices{Rename: func(context.Context, x.SetTitle) error { return nil }},
+				CopyText:      func(_ context.Context, text string) error { clipboard = text; return nil },
+				Services:      MenuServices{Rename: func(context.Context, x.SetTitle) error { return nil }},
+				ProviderLogin: loginFixture(),
 			})
 			m.Update(tea.WindowSizeMsg{Width: 100, Height: 22})
 			m.Update(tea.BackgroundColorMsg{Color: theme.bg})
@@ -49,6 +50,13 @@ func TestReleaseFrames(t *testing.T) {
 				}
 				return ansi.Strip(frame)
 			}
+			m.editor.set("/login")
+			press(m, tea.KeyEnter, 0)
+			if frame := shot("provider-login"); !strings.Contains(frame, "Fixture provider") || !strings.Contains(frame, "Device provider") {
+				t.Fatal("the provider picker did not show both sign-in choices")
+			}
+			press(m, tea.KeyEscape, 0)
+
 			m.editor.set("Keep this draft")
 			s.queue = []sdk.QueueItem{{SubmissionID: "7", Mode: string(sdk.FollowUp), Text: "Queued fixture"}}
 			s.info.Status = x.Running

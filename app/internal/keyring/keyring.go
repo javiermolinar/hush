@@ -9,6 +9,8 @@ import (
 	"errors"
 	"io"
 	"time"
+
+	"github.com/javiermolinar/hush/app/internal/authproviders"
 )
 
 const HelperArg = "--hush-internal-keyring"
@@ -16,13 +18,13 @@ const HelperEnv = "HUSH_KEYRING_HELPER"
 
 const maxCredential = 64 << 10
 const servicePrefix = "io.github.javiermolinar.hush.oauth."
-const account = "openai-codex"
 
 var errUnavailable = errors.New("system keyring unavailable")
 
 type request struct {
 	Operation string          `json:"operation"`
 	Scope     string          `json:"scope"`
+	Provider  string          `json:"provider,omitempty"`
 	Record    json.RawMessage `json:"record,omitempty"`
 }
 
@@ -43,6 +45,12 @@ func Run(in io.Reader, out io.Writer) int {
 		return 2
 	}
 	defer clear(req.Record)
+	if req.Provider == "" {
+		req.Provider = authproviders.Default // Preserve the original Codex item and request format.
+	}
+	if _, ok := authproviders.Lookup(req.Provider); !ok {
+		return 2
+	}
 	switch req.Operation {
 	case "get", "delete":
 		if len(req.Record) != 0 {

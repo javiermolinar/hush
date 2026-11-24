@@ -7,10 +7,10 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AuthOperationOptions, Credential, CredentialStore, OAuthCredential } from "@earendil-works/pi-ai";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { authProvider, authProviders, defaultAuthProvider } from "./auth-providers.js";
 import { AuthStorage, InMemoryCredentialStore } from "./pi-source.js";
 import { prepareAuthFile, privateFile } from "./profile.js";
 
-const provider = "openai-codex";
 const maxCredentialBytes = 64 * 1024; // private pipe and platform helper bound
 const selectionName = "credential-store";
 const advice = {
@@ -19,7 +19,7 @@ const advice = {
   locked: "Hush keyring is locked or unavailable. Unlock the login Keychain or the session's Secret Service on the backend host, then retry 'hush auth status'.",
   helper: "Hush keyring helper is unavailable. Start the backend with the installed hush binary (or set HUSH_KEYRING_HELPER to its trusted absolute path).",
   busy: "Hush keyring is busy with another sign-in, refresh, or logout. Wait for it to finish, then retry.",
-  record: "The Hush keyring credential is invalid. Remove it with 'hush auth logout' and sign in again.",
+  record: "The Hush keyring credential is invalid. Remove it with 'hush auth logout PROVIDER' and sign in again.",
 } as const;
 
 class CredentialError extends Error {
@@ -56,7 +56,7 @@ async function selection(dir: string): Promise<"file" | "keyring"> {
   }
 }
 
-async function acquire(dir: string, signal?: AbortSignal) {
+export async function acquireCredentialLock(dir: string, signal?: AbortSignal) {
   const path = join(dir, "keyring-lock.sqlite");
   let db: DatabaseSync;
   try {
@@ -95,14 +95,18 @@ async function acquire(dir: string, signal?: AbortSignal) {
   }
 }
 
-function canonicalRecord(value: unknown): OAuthCredential {
+function canonicalRecord(id: string, value: unknown): OAuthCredential {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CredentialError("record");
-  const { type, access, refresh, expires, accountId } = value as Record<string, unknown>;
-  if (type !== "oauth" || typeof access !== "string" || !access || typeof refresh !== "string" || !refresh ||
-      typeof expires !== "number" || !Number.isFinite(expires) || expires <= 0 || typeof accountId !== "string" || !accountId) {
+  const fields = value as Record<string, unknown>;
+  const { type, access, refresh, expires, accountId } = fields;
+  if (type !== "oauth" || typeof access !== "string" || !access || typeof refresh !== "string" ||
+      (!refresh && id !== "openrouter") || typeof expires !== "number" || !Number.isFinite(expires) || expires <= 0 ||
+      (id === defaultAuthProvider && (typeof accountId !== "string" || !accountId))) {
     throw new CredentialError("record");
   }
-  return { type, access, refresh, expires, accountId };
+  // Pi uses extra fields during refresh and model selection (e.g. ChatGPT's
+  // issued client ID and Copilot's available model IDs). Keep them intact.
+  return { ...fields, type, access, refresh, expires };
 }
 
 class ProfileKeyring implements CredentialStore {
@@ -114,12 +118,12 @@ class ProfileKeyring implements CredentialStore {
 
   constructor(private readonly dir: string, private readonly scope: string, private readonly checkSelection: () => Promise<void>) {}
 
-  async #call(operation: "get" | "set" | "delete", record?: OAuthCredential, signal?: AbortSignal) {
+  async #call(operation: "get" | "set" | "delete", id: string, record?: OAuthCredential, signal?: AbortSignal) {
     signal?.throwIfAborted();
     if (!this.#helper || !isAbsolute(this.#helper)) throw new CredentialError("helper");
-    const data = record && JSON.stringify(record);
-    if (data && Buffer.byteLength(data) > maxCredentialBytes) throw new CredentialError("record");
-    const input = `{"operation":${JSON.stringify(operation)},"scope":${JSON.stringify(this.scope)}${data ? `,"record":${data}` : ""}}`;
+    if (record && Buffer.byteLength(JSON.stringify(record)) > maxCredentialBytes) throw new CredentialError("record");
+    const input = JSON.stringify({ operation, scope: this.scope,
+      provider: id === defaultAuthProvider ? undefined : id, record });
     return new Promise<string>((resolve, reject) => {
       const child = spawn(this.#helper!, ["--hush-internal-keyring"], {
         env: this.#env, stdio: ["pipe", "pipe", "ignore"], signal, timeout: 4_000, killSignal: "SIGKILL",
@@ -150,16 +154,19 @@ class ProfileKeyring implements CredentialStore {
 
   async read(id: string, options?: AuthOperationOptions) {
     await this.checkSelection();
-    if (id !== provider) return;
-    const data = await this.#call("get", undefined, options?.signal);
+    if (!authProvider(id)) return;
+    const data = await this.#call("get", id, undefined, options?.signal);
     if (!data) return;
-    try { return canonicalRecord(JSON.parse(data)); }
+    try { return canonicalRecord(id, JSON.parse(data)); }
     catch { throw new CredentialError("record"); }
   }
 
   async list(options?: AuthOperationOptions) {
-    const saved = await this.read(provider, options);
-    return saved ? [{ providerId: provider, type: saved.type }] : [];
+    const entries = await Promise.all(authProviders.map(async ({ id }) => {
+      const saved = await this.read(id, options);
+      return saved ? { providerId: id, type: saved.type } : undefined;
+    }));
+    return entries.filter(entry => entry !== undefined);
   }
 
   modify(id: string, edit: (current: Credential | undefined) => Promise<Credential | undefined>, options?: AuthOperationOptions) {
@@ -173,7 +180,7 @@ class ProfileKeyring implements CredentialStore {
   // A locked view prevents reacquiring the same lock when ModelRuntime writes
   // at the end of interactive login. Logout cannot interleave with that login.
   async exclusive<T>(job: (store: CredentialStore) => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const unlock = await acquire(this.dir, signal);
+    const unlock = await acquireCredentialLock(this.dir, signal);
     let active = true;
     try {
       await this.checkSelection();
@@ -181,22 +188,22 @@ class ProfileKeyring implements CredentialStore {
       return await job({
         read: this.read.bind(this), list: this.list.bind(this),
         modify: async (id, edit, options) => {
-          if (!active || id !== provider) throw new CredentialError("record");
+          if (!active || !authProvider(id)) throw new CredentialError("record");
           const current = await this.read(id, options);
           options?.signal?.throwIfAborted();
           const next = await edit(current);
           options?.signal?.throwIfAborted();
           if (next === undefined) return current;
-          const record = canonicalRecord(next);
+          const record = canonicalRecord(id, next);
           await this.checkSelection();
-          await this.#call("set", record);
+          await this.#call("set", id, record);
           return record;
         },
         delete: async (id, options) => {
-          if (!active || id !== provider) throw new CredentialError("record");
+          if (!active || !authProvider(id)) throw new CredentialError("record");
           await this.checkSelection();
           options?.signal?.throwIfAborted();
-          await this.#call("delete");
+          await this.#call("delete", id);
         },
       });
     } finally { active = false; unlock(); }

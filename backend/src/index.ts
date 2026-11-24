@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
 import type { CredentialStore } from "@earendil-works/pi-ai";
-import { registerBunOAuthFlows as registerBundledOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { ModelRegistry, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   AgentDoc, createRegistry, Harness, MemoryStorage, type AgentChange, type Conversation, type Cursor, type Extension, type HarnessSettings,
@@ -15,6 +14,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createCoreServer, type NativeHost } from "../../server/src/index.js";
 import { WireError } from "../../server/src/wire.js";
 import { runAuthCommand } from "./auth.js";
+import { registerBundledOAuthFlows } from "./auth-providers.js";
 import { credentialAdvice, credentialConfigurationFailed, hushCredentialStore } from "./credentials.js";
 import { nativeModelCatalog, nativeSelectionValidator } from "./model-catalog.js";
 import { Rejected } from "./pi/commands.js";
@@ -61,9 +61,7 @@ function shellSettings(settings: SettingsManager): HarnessSettings {
 }
 
 export async function loadModels(config: BackendConfig) {
-  // Pi's normal OAuth loader uses variable imports, which esbuild cannot fold
-  // into a single file. The standalone registration uses ordinary Node APIs.
-  registerBundledOAuthFlows();
+  await registerBundledOAuthFlows();
   const standalone = config.profile === "hush";
   const authPath = join(config.agentDir, "auth.json"), modelsPath = join(config.agentDir, "models.json");
   let credentials: CredentialStore | undefined;
