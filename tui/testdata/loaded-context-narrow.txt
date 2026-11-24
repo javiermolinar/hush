@@ -1,0 +1,12 @@
+│ Wh╭──────────────────────────────╮
+    │ Loaded context · next submi… │
+  An│ Personal · APPEND_SYSTEM.md  │
+    │   /backend/home/.hush/APPEND │
+  Se│ _SYSTEM.md                   │
+    │ Workspace · AGENTS.md        │
+  ──│   /backend/workspace/AGENTS. │──
+    │ esc close            1–5 / 9 │
+  ──╰──────────────────────────────╯──
+  ────────────────────────────────────
+  you ›
+  dir workspa…

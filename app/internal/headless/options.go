@@ -18,9 +18,11 @@ const usage = `Usage:
   hush --no-wait [--json] [--thread ID] [--request-id KEY] [PROMPT...]
   hush --no-session [--backend BUNDLE] [PROMPT...]
   hush status [--thread ID] [--json]
+  hush service install [--backend BUNDLE]
+  hush service status|pause|resume|restart|uninstall
   hush stop [--socket PATH] [--json | -q]
   hush auth login|status|logout [--backend BUNDLE]
-  hush trust status|grant|revoke [--scope git|work] [--cwd PATH] [--json]
+  hush trust status|grant|revoke [--scope git|work|browse|home] [--cwd PATH] [--json]
   hush store inspect|activate|rollback [--backend BUNDLE]
   hush store prepare --from PINNED-HUSH [--backend BUNDLE]
   hush wait --thread ID [--json]
@@ -75,6 +77,7 @@ const (
 	localStore
 	scheduleCommand
 	checkpointCommand
+	localService
 )
 
 // InteractiveOptions are passed to the terminal frontend only after routing.
@@ -102,6 +105,7 @@ type options struct {
 	authAction, trustAction string
 	trustScope              string
 	storeAction, storeFrom  string
+	serviceAction           string
 	schedule                scheduleOptions
 	checkpoint              checkpointOptions
 	directory               sdk.ThreadDirectoryOptions
@@ -199,14 +203,29 @@ func parse(args []string) (options, error) {
 			f.Changed("profile") && o.ui.Profile != "hush" || f.Changed("cwd") && o.create.CWD == "" {
 			return o, errors.New("trust is local to the Hush backend host and accepts only --backend, --profile hush, --cwd, --json and --scope")
 		}
-		if f.Changed("scope") && o.trustScope != "git" && o.trustScope != "work" {
-			return o, errors.New("use --scope git or --scope work for trust")
+		if f.Changed("scope") && !slices.Contains([]string{"git", "work", "browse", "home"}, o.trustScope) ||
+			o.trustScope == "home" && f.Changed("cwd") {
+			return o, errors.New("use --scope git, work, browse, or home (home does not accept --cwd)")
 		}
 		o.command, o.trustAction = localTrust, rest[1]
 		return o, nil
 	}
 	if f.Changed("scope") {
 		return o, errors.New("--scope is for trust")
+	}
+	if len(rest) != 0 && rest[0] == "service" && f.ArgsLenAtDash() != 0 {
+		if len(rest) != 2 || !slices.Contains([]string{"install", "status", "pause", "resume", "restart", "uninstall"}, rest[1]) {
+			return o, errors.New("use service install, status, pause, resume, restart, or uninstall")
+		}
+		var invalid bool
+		f.Visit(func(v *pflag.Flag) {
+			invalid = invalid || v.Name != "profile" && !(v.Name == "backend" && rest[1] == "install")
+		})
+		if invalid || f.Changed("backend") && o.bundle == "" || f.Changed("profile") && o.ui.Profile != "hush" {
+			return o, errors.New("service requires the local Hush profile; only install accepts --backend")
+		}
+		o.command, o.serviceAction = localService, rest[1]
+		return o, nil
 	}
 	if len(rest) != 0 && rest[0] == "store" && f.ArgsLenAtDash() != 0 {
 		if len(rest) != 2 || !slices.Contains([]string{"inspect", "prepare", "activate", "rollback"}, rest[1]) {

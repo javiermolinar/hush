@@ -47,6 +47,7 @@ type threadState struct {
 	lastAnswer                                               string
 	lastAnswerID                                             sdk.ID
 	draft                                                    string
+	stagedSkill                                              stagedSkill
 	history                                                  []string
 	aborting, sending                                        bool
 	activeRun, observed                                      bool

@@ -16,6 +16,7 @@ const supplied = {
   "no-session": { type: "boolean" },
   "parent-stdin": { type: "boolean" },
   "startup-fd": { type: "string" },
+  "supervisor": { type: "string" },
   "pi-events": { type: "boolean" },
   "faux": { type: "boolean" },
   "config": { type: "string" },
@@ -35,13 +36,14 @@ export type BackendConfig = {
   ephemeral: boolean;
   parentStdin?: boolean;
   startupFd?: 3;
+  supervisor?: string;
   piEvents?: boolean;
   faux: boolean;
 };
 
 export class BackendError extends Error {
   constructor(readonly code: "configuration" | "socket_directory" | "data_locked" | "socket_unavailable" |
-     "store_profile" | "store_cutover" | "startup_failed" | "shutdown_failed") { super(code); }
+     "store_profile" | "store_cutover" | "service_owned" | "startup_failed" | "shutdown_failed") { super(code); }
 }
 
 export function hushDirectory() {
@@ -55,7 +57,7 @@ export async function parseConfig(argv: string[]): Promise<BackendConfig> {
   const file: Record<string, unknown> = cli.config ? JSON.parse(await readFile(cli.config, "utf8")) : {};
   if (file === null || Array.isArray(file) || typeof file !== "object") throw new BackendError("configuration");
   for (const k of Object.keys(file)) {
-    if (k === "config" || k === "parent-stdin" || k === "startup-fd" || !Object.hasOwn(supplied, k)) throw new BackendError("configuration");
+    if (k === "config" || k === "parent-stdin" || k === "startup-fd" || k === "supervisor" || !Object.hasOwn(supplied, k)) throw new BackendError("configuration");
     const type = supplied[k as keyof typeof supplied].type;
     if (typeof file[k] !== type && !((k === "idle-ms" || k === "schedule-late-ms") && typeof file[k] === "number"))
       throw new BackendError("configuration");
@@ -92,6 +94,8 @@ export async function parseConfig(argv: string[]): Promise<BackendConfig> {
   if (profile !== "pi" && profile !== "hush" || profile === "hush" && (explicitAgent || piEvents)) {
     throw new BackendError("configuration");
   }
+  const supervisor = str("supervisor");
+  if (supervisor && (profile !== "hush" || ephemeral || !/^[a-f0-9-]{36}$/.test(supervisor))) throw new BackendError("configuration");
   const agentDir = profile === "hush" ? hushDirectory() : resolve(explicitAgent ?? getAgentDir());
   const dataDir = ephemeral ? undefined : data === undefined ? join(agentDir, profile === "pi" ? "hush" : "runtime") : resolve(data);
   return {
@@ -99,6 +103,6 @@ export async function parseConfig(argv: string[]): Promise<BackendConfig> {
     cwd: resolve(str("cwd") ?? process.cwd()), agentDir,
     model: m ? { provider: m[1], modelId: m[2] } : undefined,
     threadTitleModel: title ? { provider: title[1], modelId: title[2] } : undefined,
-    idleMs, scheduleLateMs, ephemeral, parentStdin, startupFd: startup === "3" ? 3 : undefined, piEvents, faux,
+    idleMs, scheduleLateMs, ephemeral, parentStdin, startupFd: startup === "3" ? 3 : undefined, piEvents, faux, supervisor,
   };
 }

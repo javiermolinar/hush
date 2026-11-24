@@ -167,7 +167,17 @@ func (m *Model) outputRows(d *dialog, w, n int) ([]string, []int) {
 		full := copyHint + "  " + m.keyHint("↑↓ ←→", "scroll") + "  " + m.keyHint("esc", "close")
 		compact := copyHint + "  " + m.keyCap("↑↓ ←→") + "  " + m.keyCap("esc")
 		target := outputCopyTarget
-		if d.review {
+		if d.loadedContext != nil {
+			compact, target = m.keyHint("esc", "close"), -1
+			if m.contextCanOpenSkills(d) {
+				compact = m.contextSkillsHint() + "  " + compact
+				target = outputSkillsTarget
+			}
+			full = compact
+			if page < len(v.lines) {
+				full += "  " + m.keyHint("↑↓", "scroll")
+			}
+		} else if d.review {
 			accept, escape := "continue", "cancel"
 			if d.done == nil {
 				accept, escape = "close", "close"
@@ -224,6 +234,8 @@ func (m *Model) outputMove(d *dialog, rows, cols int) {
 func (m *Model) outputKey(d *dialog, chord string) tea.Cmd {
 	w, page := m.outputSize(d)
 	switch chord {
+	case "s":
+		return m.openContextSkills(d)
 	case "enter":
 		if d.review && m.dialogVisible(d) && page > 0 {
 			if d.output.top+page < len(d.output.lines) {
@@ -249,7 +261,9 @@ func (m *Model) outputKey(d *dialog, chord string) tea.Cmd {
 	case "end", "ctrl+end":
 		d.output.top = max(0, len(d.output.lines)-page)
 	case "c", "ctrl+c":
-		return m.copyToolOutput(d)
+		if d.loadedContext == nil {
+			return m.copyToolOutput(d)
+		}
 	}
 	return nil
 }

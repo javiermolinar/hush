@@ -14,6 +14,7 @@ type registeredAction struct {
 	owner        string
 	action       extension.Action
 	bindingLabel string
+	skill        stagedSkill
 }
 type segmentRank struct {
 	key             string
@@ -210,7 +211,7 @@ func makeRegistry(options Options) (registry, error) {
 			}
 			a.Title = limitText(a.Title, 256)
 			a.Description = limitText(a.Description, 1024)
-			r.actions = append(r.actions, registeredAction{reg.ID, a, label})
+			r.actions = append(r.actions, registeredAction{owner: reg.ID, action: a, bindingLabel: label})
 			r.byID[a.ID] = i
 			r.leader[seq] = i
 		}

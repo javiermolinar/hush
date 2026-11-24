@@ -169,8 +169,8 @@ export interface NativeHost {
   defaults?(cwd: string | undefined, context: Context): Promise<AgentChange>;
   /** Decline native writes/forks on host-owned threads before admission. Native reads stay available. */
   mayMutate?(conv: Conversation, context: Context): Promise<boolean>;
-  prepare?(input: Readonly<{ cwd?: string; text?: string }>, context: Context):
-    Promise<{ text?: string; agent?: AgentChange }>;
+  prepare?(input: Readonly<{ threadId?: string; cwd?: string; text?: string; skillToken?: string }>, context: Context):
+    Promise<{ text?: string; agent?: AgentChange; confirm?: (signal?: AbortSignal) => Promise<void> }>;
   /** Check the selected model outside the transaction. Never resolve or carry request credentials. */
   requireModel?(model: AgentState["model"]): Promise<void>;
   validateSelection?(model: AgentState["model"], level: NonNullable<AgentState["thinkingLevel"]>): Promise<void>;
@@ -254,7 +254,7 @@ export class DurableAdapter {
     return { id: id(conv.id) };
   }
 
-  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment): Promise<Admission> {
+  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment, skillToken?: string): Promise<Admission> {
     switch (request.method) {
       case "thread.new": return { result: await this.#createThread(request.params, ctx) };
       case "thread.list": {
@@ -327,18 +327,20 @@ export class DurableAdapter {
       case "submit": {
         const { requestId, text, whenBusy } = request.params;
         const draft = { type: "input", content: text, requestId, whenBusy, entry: environmentEntry(environment) } as const;
+        if (skillToken && !this.host?.prepare) throw new WireError("unsupported_capability", "workspaceSkills");
         if (!this.host?.prepare) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
         // Return the saved receipt before loading resources or running host admission hooks.
         const previous = await conv.commit(tx => tx.submissionByRequest(conv.id, requestId), ctx);
         if (previous) return { result: { submissionId: id(previous.id) } };
-        const prepared = await this.#prepare(conv, ctx, text);
+        const prepared = await this.#prepare(conv, ctx, text, skillToken);
         if (prepared.text !== undefined && prepared.text !== text) {
           encode({ ...request, params: { ...request.params, text: prepared.text } });
         }
+        await prepared.confirm?.(ctx.abortSignal);
         const submission = await conv.commit(async tx => {
           const raced = await tx.submissionByRequest(conv.id, requestId);
           if (raced) return raced.id;
-          if (prepared.verify) prepared.verify((await tx.doc(AgentDoc, conv.id)).model);
+          if (prepared.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
           if (prepared.agent) await configure(tx, conv.id, prepared.agent);
           return conv.submit(tx, { ...draft, content: prepared.text ?? text });
         }, ctx);
@@ -349,8 +351,9 @@ export class DurableAdapter {
         const draft = { type: "continue" } as const;
         if (!this.host?.prepare) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
         const prepared = await this.#prepare(conv, ctx);
+        await prepared.confirm?.(ctx.abortSignal);
         const submission = await conv.commit(async tx => {
-          if (prepared.verify) prepared.verify((await tx.doc(AgentDoc, conv.id)).model);
+          if (prepared.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
           if (prepared.agent) await configure(tx, conv.id, prepared.agent);
           return conv.submit(tx, draft);
         }, ctx);
@@ -373,7 +376,8 @@ export class DurableAdapter {
   }
 
   async submitImages(input: ImageSubmission, imagesHost: ImagesHost, signal: AbortSignal, ctx: Context,
-      environment?: ClientEnvironment) {
+      environment?: ClientEnvironment, skillToken?: string) {
+    if (skillToken && !this.host?.prepare) throw new WireError("unsupported_capability", "workspaceSkills");
     const conv = await this.#get(input.threadId, ctx);
     if (this.host?.mayMutate && !await this.host.mayMutate(conv, ctx)) {
       throw new WireError("unsupported_capability", "piEvents");
@@ -387,19 +391,20 @@ export class DurableAdapter {
     }, ctx);
     if (start.submissionId) return { submissionId: start.submissionId };
 
-    const prepared = this.host?.prepare ? await this.#prepare(conv, ctx, text) : undefined;
+    const prepared = this.host?.prepare ? await this.#prepare(conv, ctx, text, skillToken) : undefined;
     const body = prepared?.text ?? text;
     if (Buffer.byteLength(body) > 128 * 1024 || !body.isWellFormed()) throw new WireError("limit");
     const fitted = await imagesHost.fit(start.model, input.images, signal);
     if (fitted.images.length !== input.images.length) throw new WireError("internal");
+    await prepared?.confirm?.(ctx.abortSignal);
     // Apply the same atomic admission/receipt rule as a text submission. Do
     // not commit fitted content if another client changed the model meanwhile.
     const submission = await conv.commit(async tx => {
       const previous = await tx.submissionByRequest(conv.id, requestId);
       if (previous) return previous.id;
-      const current = (await tx.doc(AgentDoc, conv.id)).model;
+      const current = await tx.doc(AgentDoc, conv.id);
       prepared?.verify?.(current);
-      const model = prepared?.agent?.model === undefined ? current : prepared.agent.model;
+      const model = prepared?.agent?.model === undefined ? current.model : prepared.agent.model;
       if (model?.provider !== start.model?.provider || model?.modelId !== start.model?.modelId) throw new WireError("busy");
       if (prepared?.agent) await configure(tx, conv.id, prepared.agent);
       return conv.submit(tx, {
@@ -411,10 +416,15 @@ export class DurableAdapter {
     return { submissionId: id(submission) };
   }
 
-  async #prepare(conv: Conversation, ctx: Context, text?: string) {
+  async #prepare(conv: Conversation, ctx: Context, text?: string, skillToken?: string) {
     const doc = await this.harness.snapshot(AgentDoc, conv.id, ctx);
-    const prepared = await this.host!.prepare!({ cwd: doc?.cwd, text }, ctx);
-    return { ...prepared, verify: await checkPreparedModel(this.host?.requireModel, doc?.model, prepared.agent) };
+    const prepared = await this.host!.prepare!({ threadId: id(conv.id), cwd: doc?.cwd, text, skillToken }, ctx);
+    const model = await checkPreparedModel(this.host?.requireModel, doc?.model, prepared.agent);
+    const verify = (model || prepared.confirm) ? (current: AgentState) => {
+      if (prepared.confirm && current.cwd !== doc?.cwd) throw new WireError("busy");
+      model?.(current.model);
+    } : undefined;
+    return { ...prepared, verify };
   }
 
   async #get(id: string, ctx: Context) {

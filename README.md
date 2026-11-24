@@ -55,6 +55,35 @@ Git review explains missing Git permission but cannot grant it. On the backend
 host, use `hush trust grant --cwd PATH` for Git operations. This is separate from
 [permission to run agent tools](backend/README.md#workspace-tool-trust).
 
+On supported hosts, type `@` to browse the active thread’s authorized
+workspace, then Tab or Enter to complete a path without submitting. Use
+`hush trust grant --scope browse --cwd PATH` on the backend host to enable it.
+`@~/` browses the backend’s home only after a separate
+`hush trust grant --scope home`. Neither grant permits tool execution.
+
+Open `?` → **Show loaded context** to see the instruction files the backend
+resolves for the active thread’s next submission. The inspector lists paths,
+not contents. [Standalone skills](backend/README.md#standalone-skills) are
+optional; use `/skills` to stage a skill without submitting.
+
+## Keep the backend running after exit
+
+Run `hush service install` as the desktop login user to opt in to a macOS
+LaunchAgent or Linux systemd user unit. Stop any manually started backend first
+with `hush stop`. The service pins the Hush, Node, bundle, and keyring helper
+paths. It does not inherit shell-only credentials, change the credential store,
+or enable Linux linger. Unlock the login Keychain or Secret Service before using
+keyring credentials. Check `hush service status` and `~/.hush/supervisor.log` for
+attention; reattach with `hush` or `hush --thread ID`.
+
+Use `hush service restart` for a normal restart, `hush service pause` before a
+supported store cutover, and `hush service resume` only after inspecting the
+store. While installed or paused, Hush will not start a replacement on demand.
+`hush service uninstall` removes the job without removing history or credentials.
+Explicit sockets remain attach-only. To verify an install on the same format-1
+store, keep its existing `allowLegacyStore` opt-in; service install does not
+migrate the database.
+
 ## What it won’t do
 
 A scheduled run can’t fire while the backend is down. A new thread worktree starts

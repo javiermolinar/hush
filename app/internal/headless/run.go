@@ -43,6 +43,13 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		_, err := io.WriteString(out, usage)
 		return report(err)
 	}
+	if o.command == localService {
+		profile, err := backendstart.SelectProfile(o.ui.Profile, false)
+		if err != nil || profile != backendstart.Hush || os.Getenv("HUSH_SOCKET") != "" {
+			return report(errors.New("service controls the local Hush profile; unset HUSH_SOCKET and select the Hush profile"))
+		}
+		return report(backendstart.Service(ctx, o.serviceAction, o.bundle, out, stderr))
+	}
 	if o.command == localAuth || o.command == localTrust || o.command == localStore {
 		var err error
 		switch o.command {

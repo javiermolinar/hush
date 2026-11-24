@@ -121,6 +121,7 @@ type introState struct {
 	feedReady, feedError     bool
 	listed                   *int
 	moreListed               bool
+	standaloneSkillCount     *int
 	labels                   [introFieldCount]introLabel
 	report                   IntroReport
 	revision                 uint64
@@ -269,7 +270,9 @@ func (m *Model) receiveIntro(v introReportMsg) tea.Cmd {
 		}
 	} else if v.rich && v.update.Err == nil {
 		i.richReport = true
-		m.menuFeaturesFromBackend |= x.Skills
+		if len(v.update.Report.Skills) != 0 || v.update.Report.MoreSkills > 0 {
+			m.menuFeaturesFromBackend |= x.Skills
+		}
 	}
 	if v.update.Err == nil {
 		i.reportReady = true
@@ -413,7 +416,9 @@ func (i *introState) refresh(at time.Time) {
 		}
 		put(introReview, review, x.Accent)
 	}
-	if r.Skills != nil || r.MoreSkills > 0 {
+	if i.standaloneSkillCount != nil {
+		put(introSkills, strconv.Itoa(*i.standaloneSkillCount)+" loaded", x.Plain)
+	} else if r.Skills != nil || r.MoreSkills > 0 {
 		put(introSkills, strconv.Itoa(len(r.Skills)+r.MoreSkills)+" loaded", x.Plain)
 	} else if i.expectReport && !i.reportReady {
 		pending(introSkills)

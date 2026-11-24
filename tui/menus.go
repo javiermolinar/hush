@@ -60,6 +60,9 @@ type modelCatalogDraftBackend interface {
 type menuCapabilities struct {
 	features  x.Features
 	directory bool
+	files     bool
+	skills    bool
+	context   bool
 }
 
 func (m *Model) menuProbe() tea.Cmd {
@@ -73,12 +76,15 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, schedules := m.backend.(scheduleBackend)
 	_, checkpoints := m.backend.(checkpointBackend)
 	_, gitDiff := m.backend.(gitDiffBackend)
+	_, files := m.backend.(fileBrowseBackend)
+	_, skills := m.backend.(workspaceSkillsBackend)
+	_, loadedContext := m.backend.(loadedContextBackend)
 	_, native := m.backend.(modelCatalogBackend)
 	_, search := m.backend.(modelCatalogSearchBackend)
 	_, draft := m.backend.(modelCatalogDraftBackend)
 	catalog = catalog && m.options.Services.Models == nil
 	native = native && m.options.Services.Models == nil
-	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive && !schedules && !checkpoints && !gitDiff {
+	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive && !schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext {
 		return nil
 	}
 	ctx := m.ctx
@@ -104,7 +110,7 @@ func (m *Model) menuProbe() tea.Cmd {
 			f |= x.Catalog
 		}
 		version := hello.Capabilities["intro"]
-		if intro && (version == sdk.IntroVersion || version == sdk.IntroActionsVersion) {
+		if intro && hello.Capabilities["piEvents"] == sdk.PiEventsVersion && (version == sdk.IntroVersion || version == sdk.IntroActionsVersion) {
 			f |= x.Skills
 		}
 		if titles && version == sdk.IntroActionsVersion {
@@ -126,7 +132,10 @@ func (m *Model) menuProbe() tea.Cmd {
 		if gitDiff && hello.Capabilities["gitDiff"] == sdk.GitDiffVersion {
 			f |= x.GitDiff
 		}
-		return menuCapabilities{features: f, directory: managed && directory}
+		return menuCapabilities{features: f, directory: managed && directory,
+			files:   files && hello.Capabilities["workspaceFiles"] == sdk.WorkspaceFilesVersion,
+			skills:  skills && hello.Capabilities["workspaceSkills"] == sdk.WorkspaceSkillsVersion,
+			context: loadedContext && hello.Capabilities["loadedContext"] == sdk.LoadedContextVersion}
 	}
 }
 
@@ -136,8 +145,14 @@ func (m *Model) menuFeatures() x.Features {
 	if s.Models != nil {
 		f |= x.Catalog
 	}
-	if s.Files != nil {
+	if m.fileAvailable("") {
 		f |= x.Files
+	}
+	if m.nativeSkills && m.active.Valid() && m.connection == x.Connected {
+		f |= x.Skills
+	}
+	if m.contextAvailable() {
+		f |= x.LoadedContext
 	}
 	if s.Rename != nil {
 		f |= x.Titles
@@ -194,6 +209,15 @@ func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Conte
 			return scheduleJob(backend, target(op.ThreadID), op), true
 		}
 	case x.ListSkills:
+		if backend, ok := m.backend.(workspaceSkillsBackend); ok && m.nativeSkills {
+			owner := target(op.ThreadID)
+			return func(ctx context.Context) x.ClientResult {
+				call, cancel := context.WithTimeout(ctx, menuTimeout+time.Second)
+				defer cancel()
+				v, err := backend.ListWorkspaceSkills(call, owner)
+				return x.ClientResult{WorkspaceSkills: v, Err: err}
+			}, true
+		}
 		if backend, ok := m.backend.(introBackend); ok && features.Has(x.Skills) {
 			scope := m.introScope(target(op.ThreadID))
 			return func(ctx context.Context) x.ClientResult {
@@ -270,6 +294,13 @@ func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Conte
 			}, true
 		}
 	case x.ListFiles:
+		if services.Files == nil && m.nativeFiles {
+			backend := m.backend.(fileBrowseBackend)
+			owner, limit := target(op.ThreadID), pageLimit(op.Limit)
+			return func(ctx context.Context) x.ClientResult {
+				return browseFiles(ctx, backend, owner, op.Query, op.Cursor, limit)
+			}, true
+		}
 		if services.Files != nil {
 			op.ThreadID, op.Limit = target(op.ThreadID), pageLimit(op.Limit)
 			return func(ctx context.Context) x.ClientResult {
@@ -438,6 +469,9 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 			}
 			return forkMenu(id, "")
 		}),
+		da("loaded-context", "Show loaded context", "", "i a", "", x.LoadedContext, func(_ x.Context, _ x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: openLoadedContextOp}}
+		}),
 		da("skills", "List loaded skills", "", "l", "skills", x.Skills, func(_ x.Context, _ x.Invocation) x.Outcome {
 			return x.Outcome{x.Client{Op: x.ListSkills{}, Done: showSkills}}
 		}),
@@ -490,6 +524,9 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 func showSkills(_ x.Context, result x.ClientResult) x.Outcome {
 	if result.Err != nil {
 		return clientNote(result, "")
+	}
+	if result.WorkspaceSkills != nil {
+		return stageSkillChoice(result.WorkspaceSkills)
 	}
 	if len(result.Skills) == 0 {
 		return showNote("No skills are loaded for this workspace", x.Muted)

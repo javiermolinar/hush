@@ -241,6 +241,32 @@ func (s *session) receive(f map[string]any) error {
 		if version != ImagesVersion || imagesWire["successEnvelope"].Validate(f) != nil {
 			return fmt.Errorf("%w: images schema or negotiation", ErrProtocol)
 		}
+	} else if ok && method == loadedContextGet {
+		s.mu.Lock()
+		version := s.hello.Capabilities[loadedContextCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, LoadedContextVersion); err != nil {
+			return err
+		}
+	} else if ok && method == workspaceSkillsList {
+		s.mu.Lock()
+		version := s.hello.Capabilities[workspaceSkillsCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, WorkspaceSkillsVersion); err != nil {
+			return err
+		}
+	} else if ok && method == workspaceSkillsSubmit {
+		s.mu.Lock()
+		version := s.hello.Capabilities[workspaceSkillsCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, WorkspaceSkillsVersion); err != nil {
+			return err
+		}
+		if err := schemaCheck("success", map[string]any{
+			"type": f["type"], "id": f["id"], "method": "submit", "ok": true, "result": f["result"],
+		}); err != nil {
+			return err
+		}
 	} else if ok && method == environmentSubmit {
 		s.mu.Lock()
 		version := s.hello.Capabilities[clientEnvironmentCapability]
@@ -252,6 +278,13 @@ func (s *session) receive(f map[string]any) error {
 		if err := schemaCheck("success", map[string]any{
 			"type": f["type"], "id": f["id"], "method": "submit", "ok": true, "result": f["result"],
 		}); err != nil {
+			return err
+		}
+	} else if ok && (method == workspaceFilesPrefix+"scope" || method == workspaceFilesPrefix+"list") {
+		s.mu.Lock()
+		version := s.hello.Capabilities[workspaceFilesCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, WorkspaceFilesVersion); err != nil {
 			return err
 		}
 	} else if ok && (method == gitDiffPrefix+"summary" || method == gitDiffPrefix+"file") {

@@ -11,6 +11,8 @@ import { buildSystemPromptSections, createCodingToolDefinitions, expandPromptTem
 import { McpScopes } from "./mcp.js";
 import { ProfileDoc } from "./pi/projection.js";
 import { Rejected } from "./pi/commands.js";
+import { readScopedText } from "./workspace-file.js";
+import type { InstructionSource } from "../../server/src/loaded-context.js";
 
 export type Warn = (code: "resource_watch_failed" | "mcp_unavailable" | "harness_report" | "closing" | "listening") => void;
 const keys = ["preamble", "tools", "rules", "docs", "addendum", "project_context", "skills", "cwd"] as const;
@@ -23,65 +25,63 @@ const standaloneKeys = ["preamble", "cwd", "addendum", "project_context"] as con
 const promptFileLimit = 64 * 1024;
 const workspaceLimit = 256 * 1024;
 
-async function readSupplement(path: string, limit: number) {
+type Instruction = InstructionSource & { text: string; length: number };
+
+async function readSupplement(dir: string, name: string, kind: InstructionSource["kind"], limit: number, signal?: AbortSignal): Promise<Instruction | undefined> {
+  const path = join(dir, name);
+  if (Buffer.byteLength(path) > 4096 || !path.isWellFormed() || /[\x00-\x1f\x7f-\x9f]/.test(path)) return;
+  signal?.throwIfAborted();
   try {
-    if (!(await lstat(path)).isFile()) return;
-    // Do not follow a final symlink or block on a FIFO swapped in after lstat.
-    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const stat = await file.stat();
-      if (!stat.isFile() || stat.size > limit) return;
-      const data = Buffer.alloc(limit + 1);
-      let length = 0;
-      while (length < data.length) {
-        const { bytesRead } = await file.read(data, length, data.length - length, length);
-        if (!bytesRead) break;
-        length += bytesRead;
-      }
-      if (length > limit) return;
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, length)).trim();
-      if (text) return { text, length };
-    } finally { await file.close(); }
-  } catch { /* Optional: missing, unreadable, or invalid text. */ }
+    const { text, length } = await readScopedText(dir, name, limit, signal);
+    if (text.trim()) return { kind, path, text: text.trim(), length };
+  } catch { signal?.throwIfAborted(); /* Missing, unsafe, or invalid text. */ }
 }
 
-async function workspaceContext(cwd: string) {
-  const directory = await realpath(cwd).catch(() => undefined);
-  if (!directory) return;
-  const parents = [directory];
-  for (let dir = directory;;) {
+async function workspaceContext(cwd: string, signal?: AbortSignal) {
+  const parents = [cwd];
+  for (let dir = cwd;;) {
+    signal?.throwIfAborted();
     const git = await lstat(join(dir, ".git")).catch(() => undefined);
     if (git?.isDirectory() || git?.isFile()) break; // Includes linked worktrees.
     const parent = dirname(dir);
-    if (parent === dir) {
-      parents.length = 1; // Outside a repository, only the cwd applies.
+    if (parent === dir || parents.length >= 64) {
+      parents.length = 1; // Without a known repository boundary, only cwd applies.
       break;
     }
     parents.push(parent);
     dir = parent;
   }
-  const files: string[] = [];
+  const files: Instruction[] = [];
   let remaining = workspaceLimit;
   for (const dir of parents.reverse()) {
     if (!remaining) break;
-    const path = join(dir, "AGENTS.md");
-    const file = await readSupplement(path, Math.min(promptFileLimit, remaining));
+    const file = await readSupplement(dir, "AGENTS.md", "workspace", Math.min(promptFileLimit, remaining), signal);
     if (!file) continue;
     remaining -= file.length;
-    files.push(`### ${JSON.stringify(path)}\n\n${file.text}`);
+    files.push(file);
   }
-  if (files.length) return `## Workspace context\n\n${files.join("\n\n")}`;
+  return files;
 }
 
-async function standalonePromptSections(profileDir: string, cwd: string, includeWorkspace: boolean): Promise<Record<string, string>> {
+// Both generation and the inspector project this same ordered resolution. Do
+// not read cached prompt bytes, Pi resources or private provider configuration.
+async function standaloneInstructions(profileDir: string, cwd: string, includeWorkspace: boolean, signal?: AbortSignal) {
   const [personal, workspace] = await Promise.all([
-    readSupplement(join(profileDir, "APPEND_SYSTEM.md"), promptFileLimit), includeWorkspace && workspaceContext(cwd),
+    realpath(profileDir).catch(() => undefined).then(dir => dir ? readSupplement(dir, "APPEND_SYSTEM.md", "personal", promptFileLimit, signal) : undefined),
+    includeWorkspace ? workspaceContext(cwd, signal) : [],
   ]);
+  return personal ? [personal, ...workspace] : workspace;
+}
+
+async function standalonePromptSections(profileDir: string, cwd: string, workspace: string | undefined, signal?: AbortSignal): Promise<Record<string, string>> {
+  const sources = await standaloneInstructions(profileDir, workspace ?? cwd, workspace !== undefined, signal);
+  const personal = sources.find(s => s.kind === "personal");
+  const files = sources.filter(s => s.kind === "workspace").map(s => `### ${JSON.stringify(s.path)}\n\n${s.text}`);
   return {
     preamble: HUSH_SYSTEM_PROMPT.trimEnd(),
     cwd: `Working directory: ${JSON.stringify(cwd)}`,
     ...(personal && { addendum: `## Personal instructions\n\n${personal.text}` }),
-    ...(workspace && { project_context: workspace }),
+    ...(files.length && { project_context: `## Workspace context\n\n${files.join("\n\n")}` }),
   };
 }
 
@@ -313,9 +313,19 @@ export class ProjectResources {
     return this.expand(loaded, await this.expandSkill(loaded, input)) ?? input;
   }
 
+  async instructionSources(cwd: string, includeWorkspace: boolean, signal: AbortSignal): Promise<InstructionSource[]> {
+    if (!this.#standalone) return [];
+    const sources = await standaloneInstructions(this.agentDir, cwd, includeWorkspace, signal);
+    signal.throwIfAborted();
+    return sources.map(({ kind, path }) => ({ kind, path }));
+  }
+
   async promptSections(loaded: Loaded, cwd: string, selectedTools: string[],
-      overrides?: { systemPrompt?: string; appendSystemPrompt?: string }, includeWorkspace = true): Promise<Record<string, string>> {
-    if (this.#standalone) return standalonePromptSections(this.agentDir, cwd, includeWorkspace);
+      overrides?: { systemPrompt?: string; appendSystemPrompt?: string }, includeWorkspace = true, signal?: AbortSignal, workspaceAuthorized = false): Promise<Record<string, string>> {
+    if (this.#standalone) {
+      const physical = includeWorkspace && !workspaceAuthorized ? await realpath(cwd).catch(() => undefined) : cwd;
+      return standalonePromptSections(this.agentDir, cwd, includeWorkspace ? physical : undefined, signal);
+    }
     const loader = loaded.loader;
     if (!loader) return {};
     const hasOverrides = overrides?.systemPrompt !== undefined || overrides?.appendSystemPrompt !== undefined;
@@ -346,7 +356,7 @@ export class ProjectResources {
       const overrides = loaded.loader ? await input.read.snapshot(ProfileDoc, input.conversationId, ctx) : undefined;
       // Generation can continue without an env after revocation, but must not
       // read fresh workspace instructions on that path.
-      return this.promptSections(loaded, cwd, input.agent.tools.map(t => t.name), overrides, !requireWorkspaceEnv || !!input.env);
+      return this.promptSections(loaded, cwd, input.agent.tools.map(t => t.name), overrides, !requireWorkspaceEnv || !!input.env, ctx.abortSignal, requireWorkspaceEnv);
     };
     return defineExtension({
       name: this.#standalone ? "hush-standalone-prompt" : "hush-pi-prompt",

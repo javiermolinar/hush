@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -368,6 +369,7 @@ type Input struct {
 	WhenBusy    BusyMode          `json:"whenBusy"`
 	Images      []Image           `json:"images,omitempty"` // requires images:1; bytes, never paths
 	Environment ClientEnvironment `json:"-"`                // optional; sent only through clientEnvironment:1
+	SkillToken  string            `json:"-"`                // selected standalone skill; requires workspaceSkills:1
 }
 
 // Submit makes at most one automatic retry after a connection loss and only if
@@ -380,12 +382,13 @@ func (c *Client) Submit(ctx context.Context, input Input) (Receipt, error) {
 	if input.WhenBusy == "" {
 		input.WhenBusy = RejectBusy
 	}
-	if len(input.Images) != 0 && !validImageInput(input) {
+	if len(input.Images) != 0 && !validImageInput(input) || input.SkillToken != "" &&
+		(!workspaceSkillToken.MatchString(input.SkillToken) || !strings.HasPrefix(input.Text, "/skill:")) {
 		return Receipt{}, ErrProtocol
 	}
 	input.Environment = input.Environment.normalized()
-	var method string
-	receipt, err := c.submitInput(ctx, input, &method)
+	var route submissionRoute
+	receipt, err := c.submitInput(ctx, input, &route)
 	var e *TransportError
 	if !retryableTransport(err) || !errors.As(err, &e) || ctx.Err() != nil || c.life.Err() != nil {
 		return receipt, err
@@ -393,7 +396,7 @@ func (c *Client) Submit(ctx context.Context, input Input) (Receipt, error) {
 	if !pause(ctx, c.life, 25*time.Millisecond) {
 		return receipt, err
 	}
-	second, retryErr := c.submitInput(ctx, input, &method)
+	second, retryErr := c.submitInput(ctx, input, &route)
 	if retryErr != nil && e.Indeterminate {
 		return Receipt{}, &TransportError{Err: retryErr, Indeterminate: true}
 	}

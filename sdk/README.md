@@ -47,6 +47,16 @@ ID in searches to list models before a thread exists. `NewCatalogThread` require
 version 3 and creates a thread with a validated model and thinking level.
 `ConfigureCatalogThread` changes an existing selection only on a negotiated connection.
 
+## Workspace metadata
+
+Offer `workspaceFiles:1` for `WorkspaceFileScope` and `ListWorkspaceFiles`,
+`workspaceSkills:1` for `ListWorkspaceSkills`, or `loadedContext:1` for
+`LoadedContext`. All three methods take an existing thread ID and run on a
+cancelable passive connection. When submitting a selected standalone skill,
+set `Input.SkillToken` to its opaque selection token and use its
+`/skill:NAME` command text. The SDK will not downgrade a selected skill
+to an unpinned submit on an older host.
+
 ## Optional runtime shutdown
 
 Offer `runtime: [sdk.RuntimeVersion]` and call `StopRuntime` to request an orderly backend shutdown. A lost reply is

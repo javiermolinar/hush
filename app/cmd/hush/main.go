@@ -6,6 +6,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/javiermolinar/hush/app/internal/backendstart"
+	"github.com/javiermolinar/hush/app/internal/filelist"
 	"github.com/javiermolinar/hush/app/internal/headless"
 	"github.com/javiermolinar/hush/app/internal/keyring"
 )
@@ -21,6 +23,12 @@ func main() {
 		}
 		os.Exit(keyring.Run(os.Stdin, os.Stdout))
 	}
+	if len(os.Args) == 2 && os.Args[1] == filelist.HelperArg {
+		if !privatePipe(os.Stdin) || !privatePipe(os.Stdout) {
+			os.Exit(2)
+		}
+		os.Exit(filelist.Run(os.Stdin, os.Stdout))
+	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -32,6 +40,11 @@ func main() {
 		case <-ctx.Done():
 		}
 	}()
+	if len(os.Args) > 1 && os.Args[1] == backendstart.ServiceRunnerArg {
+		code := backendstart.RunSupervised(ctx, os.Args[2:], os.Stderr)
+		cancel(nil)
+		os.Exit(code) // A normal supervisor stop should not trigger restart.
+	}
 	code := headless.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, runInteractive)
 	if sig, ok := context.Cause(ctx).(signalExit); ok {
 		code = 128 + int(sig.Signal)

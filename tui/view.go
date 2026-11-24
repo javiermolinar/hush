@@ -421,7 +421,11 @@ func (m *Model) slashSheet(matches []registeredAction, w int) []displayRow {
 		if active && m.theme.Fills {
 			line = fill(fit(line, w), blendPalette(m.palette.background, m.palette.colors[4], .15))
 		}
-		out = append(out, displayRow{text: line, hits: []spanHit{{0, w, x.ActionRef{ID: a.action.ID}, a.action.Title}}})
+		ref := x.ActionRef{ID: a.action.ID}
+		if ref.ID == stageSkillID {
+			ref.Target = a.skill.name + "\n" + a.skill.token
+		}
+		out = append(out, displayRow{text: line, hits: []spanHit{{0, w, ref, a.action.Title}}})
 	}
 	return out
 }
@@ -563,10 +567,15 @@ func (m *Model) ruleHints(t *threadState, slashes, files bool) []string {
 	if m.editor.value() != "" {
 		return []string{m.keyHint("enter", "send")}
 	}
+	hints := []string{m.keyHint("/", "commands")}
 	if t.intro != nil && !t.intro.frozen && len(m.tabs) < 2 {
-		return []string{m.keyHint("/", "commands"), m.keyHint(m.actionBinding(m.host.actions[m.host.byID[switcherID]]), "threads"), m.keyHint("?", "all keys")}
+		hints = append(hints, m.keyHint(m.actionBinding(m.host.actions[m.host.byID[switcherID]]), "threads"))
 	}
-	return []string{m.keyHint("/", "commands"), m.keyHint("?", "all keys")}
+	hints = append(hints, m.keyHint("?", "all keys"))
+	if m.fileAvailable("") {
+		hints = append(hints, m.keyHint("@", "files"))
+	}
+	return hints
 }
 
 type cell struct{ x, y int }
@@ -707,6 +716,15 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 							return m.workspaceTrustKey(d, "t")
 						case workspaceTrustDismissTarget:
 							return m.workspaceTrustKey(d, "n")
+						}
+					}
+					if target == outputSkillsTarget && d.loadedContext != nil {
+						left := f.dialogX
+						if f.dialogFramed {
+							left += 2
+						}
+						if p.X >= left && p.X < left+stringWidth(m.contextSkillsHint()) {
+							return m.openContextSkills(d)
 						}
 					}
 					if target == outputCopyTarget && d.output != nil {

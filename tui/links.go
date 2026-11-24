@@ -25,7 +25,7 @@ type linkTarget struct {
 }
 
 // Bare paths need a line number to distinguish them from ordinary dotted words.
-var references = regexp.MustCompile(`https?://[^\s<>"'\x{2400}-\x{2426}]+|@[A-Za-z0-9_./-]+(?::[0-9]+)?|#[0-9]+|/?(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+:[1-9][0-9]*`)
+var references = regexp.MustCompile(`https?://[^\s<>"'\x{2400}-\x{2426}]+|@"[^"\r\n]+"|@[A-Za-z0-9_./-]+(?::[0-9]+)?|#[0-9]+|/?(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+:[1-9][0-9]*`)
 var pathLine = regexp.MustCompile(`^(.*?)(?::([1-9][0-9]*)|#L([1-9][0-9]*))$`)
 
 func hasControl(s string) bool {
@@ -137,7 +137,14 @@ func (m *Model) linkify(text, workspace string) string {
 		par, uri := "", ""
 		switch match[0] {
 		case '@':
-			par, uri = fileTarget(workspacePath(workspace, match[1:]))
+			raw := match[1:]
+			if strings.HasPrefix(raw, `"`) {
+				raw = raw[1 : len(raw)-1]
+				if !validFileRef(strings.TrimSuffix(raw, "/")) || strings.HasPrefix(raw, "~/") {
+					continue // A backend-home reference is not a workspace link.
+				}
+			}
+			par, uri = fileTarget(workspacePath(workspace, raw))
 		case '#':
 			if m.options.RepositoryURL != "" {
 				uri = safeURL(strings.TrimRight(m.options.RepositoryURL, "/") + "/pull/" + match[1:])

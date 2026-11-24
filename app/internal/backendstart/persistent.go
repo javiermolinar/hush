@@ -134,11 +134,21 @@ func (t target) ensure(ctx context.Context, bundlePath string) error {
 	}
 	startup, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
+	if t.profile == Hush {
+		if installed, err := serviceInstalled(t.agent); err != nil {
+			return err
+		} else if installed {
+			return t.waitSupervisor(startup)
+		}
+	}
 	node, bundle, err := LocalRuntime(startup, bundlePath)
 	if err != nil {
 		return err
 	}
 	err = launch(startup, node, bundle, t)
+	if errors.Is(err, errSupervised) { // An install raced the pre-launch probe.
+		return t.waitSupervisor(startup)
+	}
 	if err != nil && !errors.Is(err, errContended) {
 		return err
 	}

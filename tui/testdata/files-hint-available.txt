@@ -1,0 +1,20 @@
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ────────────────────────────────────────────── / commands  ? all keys  @ files
+  you ›
+  dir workspace

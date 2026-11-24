@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/javiermolinar/hush/app/internal/filelist"
 	"github.com/javiermolinar/hush/app/internal/keyring"
 	"syscall"
 	"time"
@@ -95,6 +96,7 @@ func findNode(ctx context.Context) (string, error) {
 }
 
 var errContended = errors.New("another backend holds the data-directory lock")
+var errSupervised = errors.New("the login supervisor owns this backend")
 
 type startupRecord struct {
 	Ready  bool   `json:"ready"`
@@ -166,14 +168,14 @@ func RuntimeEnv(profile Profile) []string {
 	if profile == Hush {
 		out := env[:0]
 		for _, item := range env {
-			if !strings.HasPrefix(item, "PI_") && !strings.HasPrefix(item, keyring.HelperEnv+"=") {
+			if !strings.HasPrefix(item, "PI_") && !strings.HasPrefix(item, keyring.HelperEnv+"=") && !strings.HasPrefix(item, filelist.HelperEnv+"=") {
 				out = append(out, item)
 			}
 		}
 		// The trusted backend can call the installed binary without PATH
 		// lookup. No provider credential is passed in argv or the environment.
 		if exe, err := os.Executable(); err == nil {
-			out = append(out, keyring.HelperEnv+"="+exe)
+			out = append(out, keyring.HelperEnv+"="+exe, filelist.HelperEnv+"="+exe)
 		}
 		env = out
 	}
@@ -247,6 +249,8 @@ func readStartup(r io.Reader, socket string) error {
 		switch status.Error {
 		case "data_locked":
 			return errContended
+		case "service_owned":
+			return errSupervised
 		case "store_profile", "store_cutover":
 			return fmt.Errorf("could not start backend (%s); run 'hush store inspect' on the backend host: %w", status.Error, sdk.ErrStoreIncompatible)
 		case "credential_configuration":

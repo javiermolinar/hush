@@ -24,6 +24,9 @@ import { threadTitleGenerator } from "./thread-title-model.js";
 import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
+import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
+import { LoadedContext } from "./loaded-context.js";
+import { skillUnavailable, StandaloneSkills, standaloneSkillsConfigured } from "./workspace-skills.js";
 import { readStandaloneSettings, standaloneModelDefault } from "./standalone-settings.js";
 import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
@@ -34,6 +37,7 @@ import { fauxModel, fauxTools, makeFaux } from "./faux.js";
 import { checkStoreProfile, hushDefaultModel, initializeStore, privateDirectory, privateFile } from "./profile.js";
 import { activeCutover, allowManagedOpen, managedRuntime, managedWriter, runStoreCommand } from "./cutover.js";
 import { dataLock } from "./store-lock.js";
+import { checkSupervisor, claimSupervisor } from "./supervisor.js";
 import { StoreValidationError, verifyLegacyStore } from "./store-snapshot.js";
 import { checkSocket } from "./store-socket.js";
 import { findInitialModel, InMemoryCodingAgentModelsStore, InMemoryCredentialStore, resolveModelScopeFromModels } from "./pi-source.js";
@@ -118,6 +122,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
   let intro: IntroReports | undefined;
   let threadDirectory: ThreadDirectory | undefined;
   let images: ImageFitter | undefined;
+  let workspaceFiles: WorkspaceFiles | undefined;
   let codemode: Awaited<ReturnType<typeof workspaceCodemode>> | undefined;
   let h: Harness | undefined, resources: ProjectResources | undefined, server: ReturnType<typeof createCoreServer> | undefined;
   let models: Awaited<ReturnType<typeof loadModels>> | undefined;
@@ -132,6 +137,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       () => intro?.close(),
       () => server?.close(),
       () => images?.close(),
+      () => workspaceFiles?.close(),
       () => threadDirectory?.close(),
       () => h?.close(context),
       () => codemode?.sandbox.close(),
@@ -154,6 +160,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
   try {
     const managed = standalone && config.dataDir ? await managedRuntime(config.agentDir, config.dataDir) : undefined;
     if (managed) unlockManaged = await managedWriter(managed);
+    await checkSupervisor(managed?.agent, config.supervisor);
     const gate = managed && await activeCutover(managed);
     await privateDirectory(directory, !config.ephemeral && !gate);
     if (config.dataDir) unlockRuntime = await dataLock(config.dataDir);
@@ -170,6 +177,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const sources = config.piEvents ? new PiSources(runtime) : undefined;
     const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral, sources?.tapTool, standalone);
     const workTrust = standalone && !config.ephemeral ? new WorkspaceWorkTrust(config.agentDir) : undefined;
+    const workspaceSkills = workTrust && config.dataDir && await standaloneSkillsConfigured(config.agentDir)
+      ? new StandaloneSkills(() => h!, config.agentDir, workTrust) : undefined;
     const authorizeWork = workTrust && ((cwd: string | undefined, ctx: Context) =>
       workTrust.require(dirs.directory(cwd), ctx.abortSignal));
     const prompt = dirs.extension(() => h, !!workTrust);
@@ -254,10 +263,16 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       defaults, requireModel,
       validateSelection: standalone ? nativeSelectionValidator(runtime, requireModel) : undefined,
       async mayMutate(conv, ctx) { return !(await h!.snapshot(ProfileDoc, conv.id, ctx))?.id; },
-      async prepare({ cwd, text }, ctx) {
+      async prepare({ threadId, cwd, text, skillToken }, ctx) {
         // Native text, images, Continue and Retry share this admission path.
         await authorizeWork?.(cwd, ctx);
         const project = await dirs.load(cwd);
+        if (standalone && !config.ephemeral && text?.startsWith("/skill:")) {
+          if (!workspaceSkills || !threadId) throw skillUnavailable();
+          const skill = await workspaceSkills.expand(threadId, cwd, text, skillToken, ctx.abortSignal);
+          return { ...skill, agent: selection(project) };
+        }
+        if (skillToken) throw skillUnavailable();
         try {
           const expanded = !standalone && !config.ephemeral && text?.startsWith("/skill:") ? await dirs.expandSkill(project, text, true) : text;
           return { text: dirs.expand(project, expanded), agent: selection(project) };
@@ -319,6 +334,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
         void close().catch(() => {});
         return;
       }
+      if (config.supervisor) return; // Only its login supervisor owns this lifetime.
       const wake = harness.wake();
       if (server.connections !== 0 || wake.active || wake.at !== undefined || pi?.active) {
         quiescentSince = undefined;
@@ -343,7 +359,10 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }
     const modelCatalog = standalone ? nativeModelCatalog(harness, runtime, modelRegistry, nativeDefault) : undefined;
     const gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
-    server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff,
+    const browser = standalone && config.dataDir ? await workspaceFileHelper() : undefined;
+    workspaceFiles = browser ? new WorkspaceFiles(harness, config.agentDir, browser) : undefined;
+    const loadedContext = workTrust && config.dataDir ? new LoadedContext(harness, dirs, workTrust) : undefined;
+    server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff, workspaceFiles, workspaceSkills, loadedContext,
       hushProfile: standalone ? 1 : undefined, nativeStop: standalone ? 1 : undefined,
       workspaceWorkTrust: workTrust ? 1 : undefined,
       clientEnvironment: standalone ? 1 : undefined, modelCatalog, storeIdentity,
@@ -352,9 +371,16 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     await chmod(config.socket, 0o600);
     warn("listening");
     harness.resume();
+    if (config.supervisor && !config.faux) {
+      const { provider } = nativeDefault;
+      // A once-per-boot diagnostic must not stop the scheduler. Never print provider data.
+      void runtime.checkAuth(provider, { signal: AbortSignal.timeout(5_000) }).then(auth => {
+        if (!auth) process.stderr.write("Hush service: provider sign-in needed. Run 'hush auth status' or choose another model.\n");
+      }, error => process.stderr.write("Hush service: " + (credentialAdvice(error) ?? "Provider credentials unavailable; run 'hush auth status'.") + "\n"));
+    }
     void harness.closed.then(() => { if (!closing) void close().catch(() => {}); });
     check();
-    timer = setInterval(check, Math.min(250, Math.max(15, Math.ceil(config.idleMs / 4))));
+    if (!config.supervisor) timer = setInterval(check, Math.min(250, Math.max(15, Math.ceil(config.idleMs / 4))));
     return { harness, root, server, modelRegistry, runtime, closed: stopped.promise, close };
   } catch (err) {
     await close().catch(() => {});
@@ -374,6 +400,11 @@ async function main() {
   }
   if (argv[0] === "trust") {
     process.exitCode = await runWorkspaceTrustCommand(argv.slice(1));
+    return;
+  }
+  if (argv[0] === "--hush-internal-service-claim") {
+    if (argv.length !== 2) throw new BackendError("configuration");
+    await claimSupervisor(argv[1]);
     return;
   }
   if (argv[0] === "store") {
@@ -446,7 +477,16 @@ function invokedDirectly() {
 
 if (invokedDirectly()) {
   await main().catch(error => {
-    process.stderr.write("hush-backend: " + (credentialAdvice(error) ?? errorCode(error)) + "\n");
-    process.exitCode = 1;
+    const code = errorCode(error);
+    const supervised = process.argv.includes("--supervisor");
+    const serviceClaim = process.argv[2] === "--hush-internal-service-claim";
+    const advice = code === "service_owned" ? "The login supervisor owns this backend. Check 'hush service status' or 'hush service resume'."
+      : supervised && code === "store_cutover" ? "The store is fenced. Run 'hush store inspect' before restarting the service."
+      : (supervised || serviceClaim) && code === "data_locked" ? "Another backend or store operation owns this profile. Wait until it stops."
+      : credentialAdvice(error);
+    process.stderr.write("hush-backend: " + (advice ?? code) + "\n");
+    // The launcher maps known startup/hold failures to a non-restarting exit.
+    process.exitCode = supervised &&
+      ["service_owned", "data_locked", "store_profile", "store_cutover", "configuration", "socket_directory", "socket_unavailable", "credential_configuration"].includes(code) ? 78 : 1;
   });
 }

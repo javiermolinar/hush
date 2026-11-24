@@ -45,28 +45,52 @@ func (v ClientEnvironment) normalized() ClientEnvironment {
 	return v
 }
 
-func (c *Client) submitInput(ctx context.Context, input Input, method *string) (Receipt, error) {
+type submissionRoute struct {
+	method      string
+	environment bool
+}
+
+func (c *Client) submitInput(ctx context.Context, input Input, route *submissionRoute) (Receipt, error) {
 	s, err := c.connect(ctx)
 	if err != nil {
 		return Receipt{}, err
 	}
-	if *method == "" {
+	if route.method == "" {
+		route.environment = input.Environment != (ClientEnvironment{}) && s.hello.Capabilities[clientEnvironmentCapability] == ClientEnvironmentVersion
 		// Pin the method and payload for this attempt and any same-store retry.
 		// Capability fallback is allowed only before the first write.
 		switch {
-		case input.Environment != (ClientEnvironment{}) && s.hello.Capabilities[clientEnvironmentCapability] == ClientEnvironmentVersion:
-			*method = environmentSubmit
+		case input.SkillToken != "":
+			route.method = workspaceSkillsSubmit
+		case route.environment:
+			route.method = environmentSubmit
 		case len(input.Images) > 0:
-			*method = imageSubmit
+			route.method = imageSubmit
 		default:
-			*method = "submit"
+			route.method = "submit"
 		}
 	}
 	if len(input.Images) > 0 && s.hello.Capabilities["images"] != ImagesVersion {
 		return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: "images"}
 	}
 	var params any = input
-	if *method == environmentSubmit {
+	if route.method == workspaceSkillsSubmit {
+		if s.hello.Capabilities[workspaceSkillsCapability] != WorkspaceSkillsVersion {
+			return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: workspaceSkillsCapability}
+		}
+		v := struct {
+			Input       Input              `json:"input"`
+			Token       string             `json:"token"`
+			Environment *ClientEnvironment `json:"environment,omitempty"`
+		}{Input: input, Token: input.SkillToken}
+		if route.environment {
+			if s.hello.Capabilities[clientEnvironmentCapability] != ClientEnvironmentVersion {
+				return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: clientEnvironmentCapability}
+			}
+			v.Environment = &input.Environment
+		}
+		params = v
+	} else if route.method == environmentSubmit {
 		if s.hello.Capabilities[clientEnvironmentCapability] != ClientEnvironmentVersion {
 			return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: clientEnvironmentCapability}
 		}
@@ -75,7 +99,7 @@ func (c *Client) submitInput(ctx context.Context, input Input, method *string) (
 			Environment ClientEnvironment `json:"environment"`
 		}{input, input.Environment}
 	}
-	v, err := s.call(ctx, *method, params, nil)
+	v, err := s.call(ctx, route.method, params, nil)
 	if err != nil {
 		return Receipt{}, err
 	}

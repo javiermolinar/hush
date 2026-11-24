@@ -34,6 +34,24 @@ Treat new secret findings as real until verified. Rotate exposed credentials and
 history before sharing it. Don't add broad path or rule exclusions for fixtures or plan metadata. Use
 [private reporting](SECURITY.md) for suspected vulnerabilities.
 
+## Measure host integration latency
+
+After the development build, run:
+
+```sh
+node app/test/bench-host-integrations.mjs
+go test -count=1 -v ./tui -run '^TestFrameBudget/(file-picker|skill-slash|skill-sheet|loaded-context)$'
+```
+
+The offline benchmark uses a temporary profile and a real Unix socket. It
+reports p50, p95 and p99 latency for file scope and pages (including 3800
+entries), skill discovery and admission (8 and 64 skills), prompt metadata,
+and supervisor dispatch and attach. It does not register an OS service or use
+real credentials. Set `HUSH_BENCH_SAMPLES` to change the sample count. Record
+that count, the machine, filesystem and Node version when comparing results.
+Run without other tests competing for CPU or disk. The Go cases measure
+`Update` + `View` separately and enforce the 2.08 ms p99 budget.
+
 ## Setting up the GitHub repository
 
 1. **Review what will be pushed.** Keep runtime data, session logs and provider credentials out of

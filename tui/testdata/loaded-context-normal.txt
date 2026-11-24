@@ -1,0 +1,24 @@
+                  ╭──────────────────────────────────────────────────────────╮
+                  │ Commands ─────────────────────────────────────────────── │
+                  │ › show loaded context                                    │
+                  │                                                          │
+                  │ › Show loaded context                         ctrl+x i a │
+    ╭──────────────────────────────────────────────────────────────────────────────────────╮
+    │ Loaded context · next submission                                                     │
+    │ Personal · APPEND_SYSTEM.md                                                          │
+    │   /backend/home/.hush/APPEND_SYSTEM.md                                               │
+    │ Workspace · AGENTS.md                                                                │
+    │   /backend/workspace/AGENTS.md                                                       │
+    │ Workspace · AGENTS.md                                                                │
+│ Wh│   /backend/workspace/nested folder/AGENTS.md                                         │
+    │ s skills  esc close                                                                  │
+  An╰──────────────────────────────────────────────────────────────────────────────────────╯
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

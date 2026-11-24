@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"image/color"
 	"slices"
@@ -27,7 +28,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "image-preview", "queued-inputs"} {
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -101,6 +102,39 @@ func TestFrameBudget(t *testing.T) {
 				m.options.WorkspaceTrust = workspaceTrustFixture("/work/" + strings.Repeat("wide界", 18) + "/project")
 				openWorkspaceTrustFixture(t, m)
 			}
+			if which == "file-picker" {
+				m.options.Services.Files = func(context.Context, x.ListFiles) ([]x.File, string, error) { return nil, "", nil }
+				m.editor.set("@zzzz")
+				m.files = filePicker{owner: m.active, generation: m.token()}
+				for i := range 400 {
+					m.files.records = append(m.files.records, x.File{Path: fmt.Sprintf("file %03d.go", i)})
+				}
+			}
+			if which == "skill-slash" || which == "skill-sheet" {
+				m.backend = workspaceMetadataFixture{}
+				m.nativeSkills = true
+				m.skills = skillsLease{owner: m.active, navigation: m.navigation, generation: m.token()}
+				var listed []sdk.WorkspaceSkill
+				for i := range 64 {
+					listed = append(listed, sdk.WorkspaceSkill{Name: fmt.Sprintf("review-%02d", i), Source: "workspace", Description: "Review the current draft"})
+				}
+				m.receiveSkills(skillsMsg{m.skills.generation, listed})
+				if which == "skill-slash" {
+					m.editor.set("/skill:")
+				} else {
+					budget := maxEffects
+					m.admit(m.route(m.active, menusID), stageSkillChoice(listed), &budget)
+				}
+			}
+			if which == "loaded-context" {
+				var contents strings.Builder
+				for i := range 64 {
+					fmt.Fprintf(&contents, "Workspace · AGENTS.md\n  /remote/%02d/%s/AGENTS.md\n", i, strings.Repeat("directory/", 15))
+				}
+				d := &dialog{route: m.route(m.active, menusID), token: m.token(), title: "Loaded context", loadedContext: &contextDialog{ready: true}}
+				m.setContextOutput(d, contents.String())
+				m.pushDialog(d)
+			}
 			if which == "rewind-preview" {
 				b := maxEffects
 				m.openDialog(m.route(m.active, coreID), x.ReviewDialog{Title: "Review rewind",
@@ -167,6 +201,11 @@ func TestFrameBudget(t *testing.T) {
 					default:
 						msg = modelSearchResult{token: m.sheet.token, catalog: modelPage}
 					}
+				case "file-picker", "skill-slash", "skill-sheet":
+					keys := [...]tea.KeyPressMsg{{Code: '0', Text: "0"}, {Code: tea.KeyBackspace}}
+					msg = keys[i%len(keys)]
+				case "loaded-context":
+					msg = tea.KeyPressMsg{Code: []rune{tea.KeyDown, tea.KeyPgDown, tea.KeyUp}[i%3]}
 				case "palette":
 					keys := [...]tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: 'c', Text: "c"}, {Code: tea.KeyDown}, {Code: tea.KeyBackspace}}
 					msg = keys[i%len(keys)]
@@ -205,7 +244,7 @@ func TestFrameBudget(t *testing.T) {
 			}
 			slices.Sort(ds)
 			p99 := ds[len(ds)*99/100-1]
-			t.Logf("p99 %s", p99)
+			t.Logf("p50 %s, p95 %s, p99 %s", ds[len(ds)/2-1], ds[len(ds)*95/100-1], p99)
 			if p99 > 2080*time.Microsecond {
 				t.Fatalf("p99 %s exceeds 2.08 ms", p99)
 			}

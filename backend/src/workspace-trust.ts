@@ -9,7 +9,7 @@ import { WireError } from "../../server/src/wire.js";
 import { hushDirectory } from "./config.js";
 
 export type WorkspaceTrustStatus = { kind: "git" | "directory"; path: string; trusted: boolean };
-type DirectoryIdentity = { path: string; device: bigint; inode: bigint; birth: bigint };
+export type DirectoryIdentity = { path: string; device: bigint; inode: bigint; birth: bigint };
 export type WorkspaceTrustIdentity = DirectoryIdentity & ({ kind: "directory" } |
   { kind: "git"; cwd: DirectoryIdentity; gitDir: DirectoryIdentity });
 
@@ -159,21 +159,21 @@ function present(path: string) {
   catch (error) { if (!enoent(error)) throw error; }
 }
 
-function hasGrant(path: string, expected: Buffer) {
+function grantStamp(path: string, expected: Buffer) {
   // Verify both the name and the opened file. In particular don't follow links
   // or block on a FIFO, and never read an unbounded or permissive grant file.
   const uid = process.getuid?.();
   const valid = (info: NonNullable<ReturnType<typeof present>>) => uid !== undefined && info.isFile() &&
     info.nlink === 1n && info.uid === BigInt(uid) && (info.mode & 0o7077n) === 0n && info.size === BigInt(expected.length);
   const named = present(path);
-  if (!named) return false;
+  if (!named) return;
   if (!valid(named)) throw failure("storage");
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch (error) { if (enoent(error)) return false; throw error; }
+  catch (error) { if (enoent(error)) return; throw error; }
   try {
     const actual = fstatSync(fd, { bigint: true });
-    if (actual.nlink === 0n) return false; // Removed/replaced by another process.
+    if (actual.nlink === 0n) return; // Removed/replaced by another process.
     if (!valid(actual)) throw failure("storage");
     const data = Buffer.alloc(expected.length + 1);
     let size = 0;
@@ -186,9 +186,11 @@ function hasGrant(path: string, expected: Buffer) {
     // Ensure a cross-process revocation during the read isn't accepted from an
     // already open descriptor. Atomic replacement may conservatively deny.
     const current = present(path);
-    if (!current) return false;
+    if (!current) return;
     if (!valid(current)) throw failure("storage");
-    return current.dev === actual.dev && current.ino === actual.ino;
+    if (current.dev === actual.dev && current.ino === actual.ino && current.ctimeNs === actual.ctimeNs) {
+      return `${actual.dev}:${actual.ino}:${actual.birthtimeNs}:${actual.ctimeNs}`;
+    }
   } finally { closeSync(fd); }
 }
 
@@ -214,6 +216,12 @@ const key = (data: Buffer) => createHash("sha256").update(data).digest("hex");
 const record = (purpose: string, { path, device, inode, birth }: DirectoryIdentity) =>
   Buffer.from(JSON.stringify([purpose, path, String(device), String(inode), String(birth)]) + "\n");
 
+function storedGrant(agentDir: string, area: string, data: Buffer, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const dir = join(agentDir, area);
+  if (privateDir(agentDir, false) && privateDir(dir, false)) return grantStamp(join(dir, key(data)), data);
+}
+
 function access(agentDir: string, area: string, data: Buffer, signal?: AbortSignal, change?: boolean) {
   signal?.throwIfAborted();
   try {
@@ -226,9 +234,9 @@ function access(agentDir: string, area: string, data: Buffer, signal?: AbortSign
     // Atomic publication and unlink never change the workspace or overwrite
     // decisions about other directories. An unsafe record never grants trust.
     const path = join(dir, key(data));
-    if (change === undefined) return hasGrant(path, data);
+    if (change === undefined) return !!grantStamp(path, data);
     if (change) {
-      if (!hasGrant(path, data)) publish(dir, path, data);
+      if (!grantStamp(path, data)) publish(dir, path, data);
     } else {
       try { unlinkSync(path); } catch (error) { if (!enoent(error)) throw error; }
     }
@@ -297,10 +305,17 @@ export class WorkspaceWorkTrust {
   }
 
   async require(workspace: string, signal?: AbortSignal) {
+    return (await this.binding(workspace, signal)).path;
+  }
+
+  async binding(workspace: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const identity = await directory(workspace);
-    if (!this.#access(identity, "work", signal)) throw failure("work");
-    return identity.path;
+    let stamp: string | undefined;
+    try { stamp = storedGrant(this.agentDir, "workspace-work-v1", record("work", identity), signal); }
+    catch (error) { signal?.throwIfAborted(); throw failure("storage"); }
+    if (!stamp) throw failure("work");
+    return { ...identity, stamp };
   }
 
   #status(identity: DirectoryIdentity, signal?: AbortSignal) {
@@ -310,6 +325,25 @@ export class WorkspaceWorkTrust {
 
   #access(identity: DirectoryIdentity, purpose: "work" | "dismissed", signal?: AbortSignal, change?: boolean) {
     return access(this.agentDir, "workspace-work-v1", record(purpose, identity), signal, change);
+  }
+}
+
+// Browse grants use separate records from Git and tool execution. Home is a
+// separate purpose and can never be selected by supplying a path over the wire.
+export class WorkspaceBrowseTrust {
+  constructor(private readonly agentDir: string) {}
+
+  async root(kind: "browse" | "home", workspace: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    const identity = await directory(kind === "home" ? dirname(this.agentDir) : workspace);
+    const stamp = storedGrant(this.agentDir, "workspace-browse-v1", record(kind, identity), signal);
+    return stamp === undefined ? undefined : { ...identity, stamp };
+  }
+
+  async change(kind: "browse" | "home", workspace: string, signal: AbortSignal, change?: boolean): Promise<WorkspaceTrustStatus> {
+    const identity = await directory(kind === "home" ? dirname(this.agentDir) : workspace);
+    return { kind: "directory", path: identity.path,
+      trusted: access(this.agentDir, "workspace-browse-v1", record(kind, identity), signal, change) };
   }
 }
 
@@ -335,7 +369,8 @@ export async function runWorkspaceTrustCommand(argv: string[]): Promise<number> 
     }
     const scope = values.scope ?? "git";
     if (action !== "status" && action !== "grant" && action !== "revoke" || values.expect !== undefined ||
-        scope !== "git" && scope !== "work") throw new Error();
+        scope !== "git" && scope !== "work" && scope !== "browse" && scope !== "home" ||
+        scope === "home" && values.cwd !== undefined) throw new Error();
     const workspace = resolve(values.cwd ?? ".");
     let state: WorkspaceTrustStatus & { dismissed?: boolean };
     if (scope === "work") {
@@ -344,6 +379,8 @@ export async function runWorkspaceTrustCommand(argv: string[]): Promise<number> 
       const { kind, path, trusted, dismissed } = action === "status" ? await store.review(workspace, signal) :
         await store.change(workspace, action, signal);
       state = { kind, path, trusted, dismissed };
+    } else if (scope === "browse" || scope === "home") {
+      state = await new WorkspaceBrowseTrust(agentDir).change(scope, workspace, signal, action === "status" ? undefined : action === "grant");
     } else {
       const store = new WorkspaceTrust(agentDir);
       state = action === "status" ? await store.inspect(workspace, signal) : await store.change(workspace, action === "grant", signal);
@@ -353,7 +390,7 @@ export async function runWorkspaceTrustCommand(argv: string[]): Promise<number> 
     return 0;
   } catch (error) {
     process.stderr.write("hush: " + (error instanceof WireError ? error.message :
-      "Use trust status, grant, or revoke [--scope git|work] on the Hush backend host.") + "\n");
+      "Use trust status, grant, or revoke [--scope git|work|browse|home] on the Hush backend host.") + "\n");
     return 1;
   }
 }

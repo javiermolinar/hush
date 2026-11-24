@@ -39,6 +39,7 @@ type dialog struct {
 	modelSearch                 *modelSearchState
 	git                         *gitReview
 	workTrust                   *workspaceTrustDialog
+	loadedContext               *contextDialog
 	result                      func(tea.Model) (any, bool)
 	done                        func(x.Context, any, bool) x.Outcome
 }
@@ -229,6 +230,9 @@ func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) te
 	}
 	if d.workTrust != nil && d.workTrust.cancel != nil {
 		d.workTrust.cancel()
+	}
+	if d.loadedContext != nil && d.loadedContext.cancel != nil {
+		d.loadedContext.cancel()
 	}
 	if !m.live(d.route) || d.done == nil {
 		return nil

@@ -132,6 +132,9 @@ const Checkpoints Features = 1 << 13
 // GitDiff enables read-only review of a thread's Git worktree.
 const GitDiff Features = 1 << 14
 
+// LoadedContext enables the host’s read-only instruction-source inspector.
+const LoadedContext Features = 1 << 15
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.
@@ -147,6 +150,7 @@ type ClientResult struct {
 	NativeModels     bool // catalog rows and configuration use the native capability
 	Skills           []string
 	MoreSkills       int
+	WorkspaceSkills  []sdk.WorkspaceSkill // selected standalone sources carry admission tokens
 	Files            []File
 	Approvals        []Approval
 	Schedules        []sdk.ScheduleItem

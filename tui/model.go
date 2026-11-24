@@ -98,6 +98,11 @@ type Model struct {
 	selection                 selection
 	slashIndex                int
 	files                     filePicker
+	fileScope                 fileScopeLease
+	nativeFiles               bool
+	nativeSkills              bool
+	nativeContext             bool
+	skills                    skillsLease
 	images                    imageState
 	intro                     *introState
 	introOnly                 bool
@@ -228,6 +233,8 @@ func (m *Model) Close() {
 	m.stopFeed()
 	m.stopBackendReport()
 	m.stopGitDiff()
+	m.stopFileScope()
+	m.stopSkills()
 	for id, work := range m.pending {
 		work.cancel()
 		delete(m.pending, id)
@@ -306,8 +313,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.receiveTab(v)
 	case menuCapabilities:
 		m.menuFeaturesFromBackend = v.features
-		m.directoryEnabled = v.directory
+		m.directoryEnabled, m.nativeFiles, m.nativeSkills, m.nativeContext = v.directory, v.files, v.skills, v.context
 		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff())
+	case skillsMsg:
+		m.receiveSkills(v)
+	case fileScopeMsg:
+		cmd = m.receiveFileScope(v)
+	case renewFileScope:
+		if uint64(v) == m.fileScope.generation {
+			cmd = m.fileScopeCommand()
+		}
+	case nativeFilePage:
+		cmd = m.receiveNativeFilePage(v)
 	case gitDiffTick:
 		if uint64(v) == m.gitDiffFeed.tick {
 			cmd = m.scanGitDiff()
@@ -409,7 +426,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if scanImages {
 		cmd = tea.Batch(cmd, m.scheduleImageScan())
 	}
-	return m, tea.Batch(cmd, m.syncClock(), m.syncIntroClock(), m.syncWorkspaceTrust())
+	return m, tea.Batch(cmd, m.syncClock(), m.syncIntroClock(), m.syncWorkspaceTrust(), m.syncFileScope(), m.syncSkills())
 }
 
 func (m *Model) ensureThread(id sdk.ID) *threadState {
@@ -646,6 +663,14 @@ func (m *Model) invoke(r ownerRoute, ref extension.ActionRef, budget *int) tea.C
 	if *budget <= 0 || !m.live(r) {
 		return nil
 	}
+	if ref.ID == stageSkillID {
+		if m.foreground(r) {
+			if name, token, ok := strings.Cut(ref.Target, "\n"); ok {
+				m.stageSkill(stagedSkill{name, token})
+			}
+		}
+		return nil
+	}
 	i, ok := m.host.byID[ref.ID]
 	if !ok || !m.eligibleFor(m.host.actions[i], r.owner, ref.Target) {
 		return nil
@@ -801,6 +826,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	}
 	t := m.threads[r.owner]
 	switch e.Op {
+	case openLoadedContextOp:
+		return m.openLoadedContext(r, budget)
 	case openGitDiffOp:
 		return m.openGitDiff(r)
 	case openWorkspaceTrustOp:
@@ -829,6 +856,12 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 			}
 			if id.Valid() && m.threads[id] != nil {
 				return m.closeThread(id)
+			}
+		}
+	case stageSkillOp:
+		if m.foreground(r) {
+			if name, token, pinned := strings.Cut(e.Text, "\n"); pinned {
+				m.stageSkill(stagedSkill{name, token})
 			}
 		}
 	case extension.CompleteFile:

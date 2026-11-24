@@ -303,6 +303,10 @@ export async function runStoreCommand(argv: string[], entry: string) {
   }
   const unlock = await managedWriter(paths);
   try {
+    if (await privateFile(join(paths.agent, "supervisor-v1.json")) &&
+        !await privateFile(join(paths.agent, "supervisor-hold-v1"))) {
+      throw fail("The login supervisor owns this profile. Run 'hush service pause' before changing the store.");
+    }
     const runtime = await statStorePath(paths.runtime), control = await statStorePath(paths.control);
     if (!runtime || !control || runtime.dev !== control.dev) throw fail("Cutover requires runtime and control on the same local filesystem.");
     // Do not create a missing legacy lock in a cutover operation. Its inode

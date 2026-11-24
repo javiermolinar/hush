@@ -4,7 +4,7 @@ import { diffRevisions, type JsonValue } from "@earendil-works/chord/delta";
 import type { Harness } from "@earendil-works/pi-durable";
 import { DurableAdapter, nativeStopVersion, parseStop, projectView, requestError, type NativeHost, type StructuralView } from "./durable.js";
 export type { NativeHost } from "./durable.js";
-import { clientEnvironment, clientEnvironmentVersion } from "./client-environment.js";
+import { clientEnvironment, clientEnvironmentVersion, type ClientEnvironment } from "./client-environment.js";
 import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, modelCatalogVersion,
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
@@ -12,6 +12,9 @@ import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
 import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
+import { parseLoadedContext, loadedContextVersion, type LoadedContextHost } from "./loaded-context.js";
+import { parseWorkspaceFiles, workspaceFilesVersion, type WorkspaceFilesHost } from "./workspace-files.js";
+import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillsVersion, type WorkspaceSkillsHost } from "./workspace-skills.js";
 import { PiPeer, piEventsVersion, type PiEventsHost } from "./pi-events.js";
 import { imageReply, imagesVersion, parseImageRef, parseImageSubmit, type ImagesHost } from "./images.js";
 export type { ImagesHost } from "./images.js";
@@ -39,6 +42,9 @@ export type HostCapabilities = Readonly<{
   schedules?: SchedulesHost;
   checkpoints?: CheckpointsHost;
   gitDiff?: GitDiffHost;
+  loadedContext?: LoadedContextHost;
+  workspaceFiles?: WorkspaceFilesHost;
+  workspaceSkills?: WorkspaceSkillsHost;
 }>;
 
 export interface ServerOptions {
@@ -159,6 +165,10 @@ class Peer {
   #checkpoints?: CheckpointsHost;
   #gitDiff?: GitDiffHost;
   #gitDiffPending = false;
+  #loadedContext?: LoadedContextHost;
+  #workspaceFiles?: WorkspaceFilesHost;
+  #workspaceSkills?: WorkspaceSkillsHost;
+  readonly #pendingMetadata = new Set<string>();
   #modelCatalog?: { host: ModelCatalogHost; version: ModelCatalogVersion };
   #storeIdentity?: StoreIdentity;
   #runtime?: RuntimeHost;
@@ -221,6 +231,29 @@ class Peer {
     }
   }
 
+  async #submitInput(req: Envelope, input: Record<string, unknown>, hints?: ClientEnvironment, skillToken?: string) {
+    if (Object.hasOwn(input, "images")) {
+      if (!this.#images) throw new WireError("unsupported_capability", "images");
+      return this.adapter.submitImages(parseImageSubmit(input), this.#images, this.#abort.signal, this.#context, hints, skillToken);
+    }
+    const call = { ...req, method: "submit", params: input };
+    if (!validRequest(call) || call.method !== "submit") throw new WireError("invalid_request");
+    const admission = await this.adapter.admit(call, this.#context, !!this.#modelCatalog, hints, skillToken);
+    if (!("result" in admission)) throw new WireError("internal");
+    return admission.result;
+  }
+
+  #metadata(req: Envelope, capability: string, call: () => Promise<object>) {
+    if (this.#pendingMetadata.has(capability)) throw new WireError("limit");
+    this.#pendingMetadata.add(capability);
+    // Keep parsing so EOF cancels the background metadata read.
+    void Promise.resolve().then(call).then(result => {
+      if (!this.socket.destroyed) this.#write(encode({ ...identity(req), ok: true, result }));
+    }).catch(error => {
+      if (!this.socket.destroyed) this.#error(req, error);
+    }).finally(() => this.#pendingMetadata.delete(capability));
+  }
+
   async #request(raw: unknown) {
     if (!object(raw) || raw.type !== "request" || !token(raw.id) || typeof raw.method !== "string" ||
         !raw.method.length || raw.method.length > 320 || [...raw.method].length > 160 ||
@@ -249,6 +282,17 @@ class Peer {
         if (parts[1] === "checkpoints" && this.#checkpoints) {
           const result = await this.#checkpoints.call(parseCheckpoint(parts[2]!, req.params), this.#abort.signal);
           this.#write(encode({ ...identity(req), ok: true, result }));
+          return;
+        }
+        if (parts[1] === "loadedContext" && this.#loadedContext) {
+          if (parts[2] !== "get") throw new WireError("unknown_method");
+          const host = this.#loadedContext, threadId = parseLoadedContext(req.params);
+          this.#metadata(req, parts[1], () => host.get(threadId, this.#abort.signal));
+          return;
+        }
+        if (parts[1] === "workspaceFiles" && this.#workspaceFiles) {
+          const host = this.#workspaceFiles, query = parseWorkspaceFiles(parts[2]!, req.params);
+          this.#metadata(req, parts[1], () => host.call(query, this.#abort.signal));
           return;
         }
         if (parts[1] === "gitDiff" && this.#gitDiff) {
@@ -362,18 +406,20 @@ class Peer {
           if (Object.keys(req.params).length !== 2 || !Object.hasOwn(req.params, "environment") || !object(input)) {
             throw new WireError("invalid_request");
           }
-          const hints = clientEnvironment(environment);
-          let result: object;
-          if (Object.hasOwn(input, "images")) {
-            if (!this.#images) throw new WireError("unsupported_capability", "images");
-            result = await this.adapter.submitImages(parseImageSubmit(input), this.#images, this.#abort.signal, this.#context, hints);
-          } else {
-            const call = { ...req, method: "submit", params: input };
-            if (!validRequest(call) || call.method !== "submit") throw new WireError("invalid_request");
-            const admission = await this.adapter.admit(call, this.#context, !!this.#modelCatalog, hints);
-            if (!("result" in admission)) throw new WireError("internal");
-            result = admission.result;
+          const result = await this.#submitInput(req, input, clientEnvironment(environment));
+          this.#write(encode({ ...identity(req), ok: true, result }));
+          return;
+        }
+        if (parts[1] === "workspaceSkills" && this.#workspaceSkills) {
+          if (parts[2] === "list") {
+            const host = this.#workspaceSkills, threadId = parseWorkspaceSkillList(req.params);
+            this.#metadata(req, parts[1], () => host.list(threadId, this.#abort.signal));
+            return;
           }
+          if (parts[2] !== "submit") throw new WireError("unknown_method");
+          const { input, token, environment } = parseWorkspaceSkillSubmit(req.params);
+          if (environment !== undefined && !this.#clientEnvironment) throw new WireError("unsupported_capability", "clientEnvironment");
+          const result = await this.#submitInput(req, input, environment === undefined ? undefined : clientEnvironment(environment), token);
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
         }
@@ -420,6 +466,18 @@ class Peer {
         if (this.capabilities?.checkpoints && req.params.capabilities?.checkpoints?.includes(checkpointsVersion)) {
           capabilities.checkpoints = checkpointsVersion;
           this.#checkpoints = this.capabilities.checkpoints;
+        }
+        if (this.capabilities?.loadedContext && req.params.capabilities?.loadedContext?.includes(loadedContextVersion)) {
+          capabilities.loadedContext = loadedContextVersion;
+          this.#loadedContext = this.capabilities.loadedContext;
+        }
+        if (this.capabilities?.workspaceSkills && req.params.capabilities?.workspaceSkills?.includes(workspaceSkillsVersion)) {
+          capabilities.workspaceSkills = workspaceSkillsVersion;
+          this.#workspaceSkills = this.capabilities.workspaceSkills;
+        }
+        if (this.capabilities?.workspaceFiles && req.params.capabilities?.workspaceFiles?.includes(workspaceFilesVersion)) {
+          capabilities.workspaceFiles = workspaceFilesVersion;
+          this.#workspaceFiles = this.capabilities.workspaceFiles;
         }
         if (this.capabilities?.gitDiff && req.params.capabilities?.gitDiff?.includes(gitDiffVersion)) {
           capabilities.gitDiff = gitDiffVersion;

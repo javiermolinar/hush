@@ -107,11 +107,15 @@ func (p *promptEditor) cursorByte() int {
 }
 
 func (p *promptEditor) replace(start, end int, value string) {
-	if !byteBoundary(p.text, start) || !byteBoundary(p.text, end) || start > end || len(p.text)-end+start+len(value) > maxPromptBytes {
+	p.replaceAt(start, end, value, len(value))
+}
+
+func (p *promptEditor) replaceAt(start, end int, value string, cursor int) {
+	if !byteBoundary(p.text, start) || !byteBoundary(p.text, end) || !byteBoundary(value, cursor) || start > end || len(p.text)-end+start+len(value) > maxPromptBytes {
 		return
 	}
-	prefix := p.text[:start] + value
-	p.set(prefix + p.text[end:])
+	prefix := p.text[:start] + value[:cursor]
+	p.set(p.text[:start] + value + p.text[end:])
 	row := strings.Count(prefix, "\n")
 	for n := 0; p.area.Line() > row && n < maxPromptBytes; n++ {
 		p.area.CursorUp()
@@ -191,7 +195,7 @@ func (m *Model) resizeEditors() tea.Cmd {
 	}
 	for _, d := range m.overlays {
 		m.resizeDialogEditor(d)
-		if d.review {
+		if d.review || d.loadedContext != nil {
 			d.output.reflowReview(m.dialogWidth(d) - 4)
 		}
 	}
@@ -275,6 +279,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		switch chord {
 		case "esc":
 			m.files.hidden = true
+			m.stopFileRequest()
 			return nil
 		case "up":
 			m.files.selected = max(0, m.files.selected-1)
@@ -286,7 +291,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 			if len(files) > 0 {
 				return m.replaceFile("")
 			}
-			if chord == "tab" || m.files.waiting {
+			if chord == "tab" || m.files.waiting || m.options.Services.Files == nil {
 				return nil
 			}
 		}
@@ -304,7 +309,12 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(k, shellKeys.send):
 		text := m.editor.value()
-		if strings.HasPrefix(text, "/skill:") && m.menuFeatures().Has(extension.Skills) {
+		if strings.HasPrefix(text, "/skill:") && (m.menuFeatures().Has(extension.Skills) || t.stagedSkill.token != "") {
+			if m.nativeSkills && t.stagedSkill.token == "" {
+				if list := m.slashMatches(); len(list) > 0 {
+					return m.runSlash(list[min(m.slashIndex, len(list)-1)])
+				}
+			}
 			return m.sendPrompt(sdk.Steer)
 		}
 		if strings.HasPrefix(text, "/") && !strings.Contains(text, "\n") {
@@ -426,7 +436,7 @@ func (m *Model) slashMatches() []registeredAction {
 			out = append(out, a)
 		}
 	}
-	return out
+	return m.skillSlashMatches(text[1:], out)
 }
 
 func (m *Model) runSlash(a registeredAction) tea.Cmd {
@@ -434,6 +444,10 @@ func (m *Model) runSlash(a registeredAction) tea.Cmd {
 }
 
 func (m *Model) runSlashWithArgs(a registeredAction, args string) tea.Cmd {
+	if a.action.ID == stageSkillID {
+		m.stageSkill(a.skill)
+		return nil
+	}
 	m.editor.set("")
 	m.slashIndex = 0
 	return m.runAction(m.host.byID[a.action.ID], args)
@@ -499,7 +513,12 @@ func (m *Model) completeSlash() {
 		return
 	}
 	if list := m.slashMatches(); len(list) > 0 {
-		m.editor.set("/" + list[min(m.slashIndex, len(list)-1)].action.Slash.Name + " ")
+		a := list[min(m.slashIndex, len(list)-1)]
+		if a.action.ID == stageSkillID {
+			m.stageSkill(a.skill)
+		} else {
+			m.editor.set("/" + a.action.Slash.Name + " ")
+		}
 		m.slashIndex = 0
 		return
 	}
@@ -531,6 +550,7 @@ type localInput struct {
 	id     sdk.ID
 	text   string
 	images []draftImage
+	skill  stagedSkill
 }
 
 func (t *threadState) rememberInput(input localInput) {
@@ -571,6 +591,10 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 		mode = sdk.RejectBusy
 	}
 	backend, options, environment := m.backend, m.options.NewThread, m.options.ClientEnvironment
+	skill := t.stagedSkill
+	if skill.name != skillOf(text) {
+		skill = stagedSkill{}
+	}
 	model, thinking := t.info.Model, t.info.Thinking
 	before := t.info.LastEntryID
 	m.freezeIntro(t)
@@ -618,7 +642,7 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 		var err error
 		out.key = submissionKey()
 		out.receipt, err = backend.Submit(ctx, sdk.Input{
-			ThreadID: out.id, RequestID: out.key, Text: text, WhenBusy: mode, Images: images, Environment: environment,
+			ThreadID: out.id, RequestID: out.key, Text: text, WhenBusy: mode, Images: images, Environment: environment, SkillToken: skill.token,
 		})
 		if err == nil && !out.receipt.SubmissionID.Valid() {
 			err = &sdk.TransportError{Err: sdk.ErrProtocol, Indeterminate: true}
@@ -661,7 +685,7 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 		}
 		dst := m.threads[target]
 		if err == nil && mode != sdk.RejectBusy {
-			dst.rememberInput(localInput{out.receipt.SubmissionID, text, sent})
+			dst.rememberInput(localInput{id: out.receipt.SubmissionID, text: text, images: sent, skill: skill})
 		}
 		if text != "" && err == nil {
 			if len(dst.history) == maxPromptHistory {
@@ -675,6 +699,9 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 			uncertain := isIndeterminate(err)
 			if !uncertain || out.key == "" {
 				m.restoreText(target, text)
+				if skill.token != "" {
+					dst.stagedSkill = skill
+				}
 				dst.addImages(sent)
 				if uncertain {
 					note = "Thread creation unconfirmed; prompt not sent. Check /threads before retrying."
@@ -794,6 +821,7 @@ func (m *Model) finishStop(r ownerRoute, inputs []localInput, evicted bool, out 
 	}
 	left := maxPromptBytes - len(current)
 	var texts, unknown []string
+	var firstSkill stagedSkill
 	restored, tooLarge := 0, 0
 	for i, input := range inputs {
 		if err != nil || i >= len(out.Candidates) || out.Candidates[i].SubmissionID != input.id {
@@ -817,12 +845,18 @@ func (m *Model) finishStop(r ownerRoute, inputs []localInput, evicted bool, out 
 			continue
 		}
 		if input.text != "" {
+			if len(texts) == 0 {
+				firstSkill = input.skill
+			}
 			texts = append(texts, input.text)
 			left -= cost
 		}
 		restored++
 	}
 	m.restoreText(r.owner, strings.Join(texts, "\n"))
+	if len(texts) != 0 {
+		t.stagedSkill = firstSkill
+	}
 	message, tone := "Stopped", extension.Good
 	if err != nil || !out.Stopped {
 		message, tone = "Stop not confirmed", extension.Warning

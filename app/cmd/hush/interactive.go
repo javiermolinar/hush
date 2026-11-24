@@ -43,7 +43,7 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		"modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion},
 		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceVersion},
 		"images": {sdk.ImagesVersion}, "nativeStop": {sdk.NativeStopVersion}, "schedules": {sdk.SchedulesVersion},
-		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion},
+		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "workspaceFiles": {sdk.WorkspaceFilesVersion}, "workspaceSkills": {sdk.WorkspaceSkillsVersion}, "loadedContext": {sdk.LoadedContextVersion},
 	}
 	var environment sdk.ClientEnvironment
 	if profile == backendstart.Pi {
@@ -70,7 +70,11 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 	if err != nil {
 		return err
 	}
-	return m.Run()
+	err = m.Run()
+	if err == nil && profile == backendstart.Hush && o.Socket == "" && os.Getenv("HUSH_SOCKET") == "" {
+		backendstart.ReportServiceAfterExit(ctx, os.Stderr)
+	}
+	return err
 }
 
 func localProviderLogin(o headless.InteractiveOptions) *tui.ProviderLoginOptions {

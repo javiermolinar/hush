@@ -207,6 +207,33 @@ prompt, or Pi resource discovery in this profile. The text goes to the model pro
 history as a message. Prompt text guides the model; it cannot grant tool permissions or weaken host
 policy. Loopback fixtures check the request contents, not whether a model follows the instructions.
 
+## Standalone skills
+
+Skills are off by default. To enable them, create a private (mode 600)
+`~/.hush/skills.json` on the backend host and restart the backend. For example:
+
+```json
+{
+  "personal": true,
+  "projectRoots": [
+    { "workspace": "/absolute/physical/project", "directory": ".agents/skills" }
+  ]
+}
+```
+
+`personal: true` enables `~/.hush/skills`. Each project row selects one relative
+directory for the exact physical workspace; it does not grant trust. Grant work
+trust separately with `hush trust grant --scope work --cwd PATH`. Each enabled
+root uses `NAME/SKILL.md` with matching `name`, a `description`, and a text body
+of at most 32 KiB total. Unreadable files, symlinks, and conflicting names within
+one thread's enabled roots are not eligible. Standalone does not import Pi
+settings, hooks, MCP servers, or a project's Hush configuration.
+
+In an existing thread, choose a suggestion under `/` or use `/skills`. Selection
+only stages `/skill:NAME`; press Enter on the staged draft to submit. Hush
+rechecks the file, workspace, and grant at admission. If an old selection
+changes, review the fresh skill list rather than resending the old selection.
+
 ## Opt-in Pi profile
 
 Select `--profile pi`, `HUSH_PROFILE=pi`, or the legacy explicit `--agent-dir` or
