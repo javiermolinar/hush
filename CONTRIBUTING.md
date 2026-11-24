@@ -79,10 +79,18 @@ Run [Release candidate](.github/workflows/release-candidate.yml) manually from g
 `mise run release` natively for Linux and macOS on amd64 and arm64. Each successful job attaches
 its tested install tarball, checksum, source and build identity, and evidence from Node.js 22.19.0.
 The offline slices separate the default no-Pi install, native recovery, the bundled opt-in Pi profile,
-and optional commands. The installed test records warm attach from process start through `status`
-exit (20 samples) and through the first existing transcript text on a PTY. The evidence includes
-light and dark production-model frames (`evidence/frames/*.ansi`); view each in its matching
-Catppuccin Latte or Mocha palette. These are model fixtures, not terminal-emulator screenshots.
+and optional commands. The blocking installed test covers CLI OAuth, confirms model and thinking
+selection over the native protocol after restart, and records warm attach from process start
+through `status` exit (20 samples). The evidence includes light and dark production-model frames
+(`evidence/frames/*.ansi`); view each in its matching Catppuccin Latte or Mocha palette. These
+are model fixtures, not terminal-emulator screenshots.
+
+After a successful matrix, run [Release PTY compatibility](.github/workflows/release-pty.yml)
+with its numeric run ID. It checks TUI login and model picking against the verified Linux amd64
+archive, measures attach through the first existing transcript text on a PTY, and uploads the
+walkthrough log and transcripts.
+This separate run reports terminal automation failures without changing the release matrix result;
+CLI login, native model selection, resume, and recovery remain blocking on every target.
 
 Shared GitHub runners report the 100 ms warm-attach target, the 2.08 ms TUI frame
 budget, and the 2 ms intro frame budget without failing on timing alone. Look for
