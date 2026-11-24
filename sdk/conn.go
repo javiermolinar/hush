@@ -211,7 +211,7 @@ func (s *session) receive(f map[string]any) error {
 		if version == IntroActionsVersion {
 			key = "successEnvelopeV2"
 		}
-		if err := intros[key].Validate(f); err != nil {
+		if err := intros()[key].Validate(f); err != nil {
 			return fmt.Errorf("%w: intro schema", ErrProtocol)
 		}
 	} else if ok && (method == threadDirectoryList || method == threadDirectoryGet || method == threadDirectoryNew || method == threadDirectoryArchive) {
@@ -231,14 +231,14 @@ func (s *session) receive(f map[string]any) error {
 		} else if version != ThreadDirectoryVersion || method != threadDirectoryList {
 			return fmt.Errorf("%w: thread directory negotiation", ErrProtocol)
 		}
-		if err := threadDirectoryWire[key].Validate(f); err != nil {
+		if err := threadDirectoryWire()[key].Validate(f); err != nil {
 			return fmt.Errorf("%w: thread directory schema", ErrProtocol)
 		}
 	} else if ok && (method == imageSubmit || method == imageGet) {
 		s.mu.Lock()
 		version := s.hello.Capabilities["images"]
 		s.mu.Unlock()
-		if version != ImagesVersion || imagesWire["successEnvelope"].Validate(f) != nil {
+		if version != ImagesVersion || imagesWire()["successEnvelope"].Validate(f) != nil {
 			return fmt.Errorf("%w: images schema or negotiation", ErrProtocol)
 		}
 	} else if ok && method == environmentSubmit {

@@ -84,6 +84,14 @@ exit (20 samples) and through the first existing transcript text on a PTY. The e
 light and dark production-model frames (`evidence/frames/*.ansi`); view each in its matching
 Catppuccin Latte or Mocha palette. These are model fixtures, not terminal-emulator screenshots.
 
+Shared GitHub runners report the 100 ms warm-attach target, the 2.08 ms TUI frame
+budget, and the 2 ms intro frame budget without failing on timing alone. Look for
+`performance target missed (report-only)` in the logs; `evidence/candidate.txt`
+records whether thresholds were enforced. Correctness checks, including SIGKILL
+recovery, still fail the job. For a controlled measurement, run `mise run release`
+on a quiet native host with `HUSH_PERF_MODE` unset. Thresholds are enforced by default;
+a green hosted job is not evidence that a missed performance target passed.
+
 Artifacts expire after 14 days. No tag is created and nothing is signed or published. The checks
 and captures don't replace visual review, authorized live-provider tests, or independent review of the
 exact artifacts before publication; see the [standalone candidate baseline](docs/standalone-release-baseline.md).
