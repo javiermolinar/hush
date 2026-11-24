@@ -17,7 +17,7 @@ export type GitDiffLine = {
   oldLine?: number; newLine?: number; text: string;
 };
 export type GitDiffSummary = {
-  revision: string; range: GitDiffRange; commit: string; checkpoint: boolean; files: GitDiffFile[];
+  revision: string; range: GitDiffRange; commit: string; checkpoint: boolean; branch?: string; files: GitDiffFile[];
 };
 export type GitDiffPatch = { revision: string; file: number; lines: GitDiffLine[]; truncated: boolean };
 export interface GitDiffHost {

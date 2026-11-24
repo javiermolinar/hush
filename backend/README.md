@@ -243,7 +243,9 @@ it after restart. Manual names win. Without the option, no title model is called
 
 In standalone Hush, grant consent explicitly on the backend host with
 `hush trust grant --cwd PATH`. Use `status` to inspect it and `revoke` to remove it.
-Records live in the private `~/.hush/workspace-trust-v1/` directory. Git grants
+The managed local TUI can also show the resolved repository and ask for explicit
+confirmation when opening an untrusted worktree's diff. An attached TUI only
+shows instructions for the backend host. Records live in the private `~/.hush/workspace-trust-v1/` directory. Git grants
 share the canonical common directory across linked checkouts; non-Git grants
 apply to the exact resolved directory. Neither an attach nor repository files
 nor Pi settings can grant Hush trust. The opt-in Pi profile uses Pi's own trust.

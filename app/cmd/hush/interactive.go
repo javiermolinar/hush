@@ -63,6 +63,7 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		Fills: tui.FillMode(o.Fills), Images: tui.ImageMode(o.Images), ReducedMotion: !o.Motion, CustomModels: true,
 		Extensions:        []extension.Registration{inbox.New()},
 		ProviderLogin:     localProviderLogin(o),
+		PrepareGitTrust:   localGitTrust(o),
 		Intro:             &tui.IntroOptions{StatePath: introStatePath()},
 		ClientEnvironment: environment,
 	})

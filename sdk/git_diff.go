@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"path"
 	"strings"
 )
@@ -16,6 +17,17 @@ const (
 	gitDiffLineLimit  = 1500
 )
 
+// GitDiffNeedsTrust reports the gitDiff:1 workspace-trust denial, not a
+// generic invalid request or another Git error.
+func GitDiffNeedsTrust(err error) bool {
+	if err == nil {
+		return false
+	}
+	var wire *ServerError
+	return errors.As(err, &wire) && wire.Code == "invalid_request" &&
+		wire.Message == "Workspace is not trusted by Hush. Run 'hush trust grant --cwd PATH' on the backend host."
+}
+
 // GitDiffSummary describes one live, read-only comparison on the backend.
 // Revision addresses its file list; it does not pin the worktree contents.
 type GitDiffSummary struct {
@@ -23,6 +35,7 @@ type GitDiffSummary struct {
 	Range      string        `json:"range"`
 	Commit     string        `json:"commit"`
 	Checkpoint bool          `json:"checkpoint"`
+	Branch     string        `json:"branch,omitempty"` // local branch; empty for detached HEAD or unavailable metadata
 	Files      []GitDiffFile `json:"files"`
 }
 
@@ -97,7 +110,8 @@ func (c *Client) GitDiffSummary(ctx context.Context, thread ID, baseline string)
 		return GitDiffSummary{}, err
 	}
 	if !scheduleID.MatchString(out.Revision) || out.Range != baseline || !gitCommit.MatchString(out.Commit) ||
-		baseline == GitDiffCheckpoint && !out.Checkpoint || out.Files == nil || len(out.Files) > gitDiffFileLimit {
+		baseline == GitDiffCheckpoint && !out.Checkpoint || out.Files == nil || len(out.Files) > gitDiffFileLimit ||
+		len(out.Branch) > 1024 || strings.ContainsFunc(out.Branch, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 		return GitDiffSummary{}, ErrProtocol
 	}
 	seen := make(map[string]bool, len(out.Files))

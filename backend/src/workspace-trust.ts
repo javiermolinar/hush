@@ -19,6 +19,7 @@ const messages = {
   gitUnsupported: "Git on the backend host does not support workspace discovery.",
   notGit: "Managed checkout requires a Git working tree.",
   grant: "Workspace is not trusted by Hush. Run 'hush trust grant --cwd PATH' on the backend host.",
+  changed: "Workspace changed. Review the repository again before granting trust.",
   storage: "Hush workspace trust storage is unavailable or unsafe.",
 } as const;
 
@@ -92,6 +93,12 @@ const sameDirectory = (a: DirectoryIdentity, b: DirectoryIdentity) =>
 const sameWorkspace = (a: WorkspaceTrustIdentity, b: WorkspaceTrustIdentity) =>
   sameDirectory(a, b) && (a.kind === "directory" ? b.kind === "directory" :
     b.kind === "git" && sameDirectory(a.cwd, b.cwd) && sameDirectory(a.gitDir, b.gitDir));
+
+// A local confirmation must still refer to the same checkout and Git common
+// directory. This fingerprint binds the review, but is not an authorization token.
+const gitReviewIdentity = (identity: Extract<WorkspaceTrustIdentity, { kind: "git" }>) => createHash("sha256").update(
+  JSON.stringify([identity, identity.cwd, identity.gitDir].map(d => [d.path, String(d.device), String(d.inode), String(d.birth)])),
+).digest("hex");
 
 const enoent = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
@@ -226,6 +233,18 @@ export class WorkspaceTrust {
     return this.#access(identity, signal, trusted);
   }
 
+  async reviewGit(workspace: string, signal: AbortSignal) {
+    const identity = await resolveWorkspace(workspace, signal);
+    if (identity.kind !== "git") throw failure("notGit");
+    return { path: identity.path, expected: gitReviewIdentity(identity) };
+  }
+
+  async grantReviewedGit(workspace: string, expected: string, signal: AbortSignal): Promise<void> {
+    const identity = await resolveWorkspace(workspace, signal);
+    if (identity.kind !== "git" || gitReviewIdentity(identity) !== expected) throw failure("changed");
+    this.#access(identity, signal, true);
+  }
+
   // For operations that need a fresh grant, start the action in the same turn
   // as the authoritative read. Pass the initial identity back at a later
   // irreversible boundary to also reject a changed workspace/repository.
@@ -270,15 +289,25 @@ export class WorkspaceTrust {
 export async function runWorkspaceTrustCommand(argv: string[]): Promise<number> {
   try {
     const { values, positionals } = parseArgs({ args: argv, allowPositionals: true,
-      options: { cwd: { type: "string" }, json: { type: "boolean" } } });
+      options: { cwd: { type: "string" }, json: { type: "boolean" }, expect: { type: "string" } } });
     const [action] = positionals;
-    if (positionals.length !== 1 || !["status", "grant", "revoke"].includes(action ?? "") ||
-        values.cwd === "" || process.env.HUSH_SOCKET || process.env.HUSH_PROFILE && process.env.HUSH_PROFILE !== "hush") {
-      throw new Error();
-    }
-    const workspace = resolve(values.cwd ?? ".");
+    if (positionals.length !== 1 || values.cwd === "" || process.env.HUSH_SOCKET ||
+        process.env.HUSH_PROFILE && process.env.HUSH_PROFILE !== "hush") throw new Error();
     const store = new WorkspaceTrust(hushDirectory());
     const signal = AbortSignal.timeout(30_000);
+    // Private entry points for the managed local TUI, never socket methods.
+    if (action === "review-git" || action === "grant-reviewed-git") {
+      const cwd = values.cwd;
+      if (!cwd || !isAbsolute(cwd)) throw new Error();
+      if (action === "review-git" && values.expect === undefined) {
+        process.stdout.write(JSON.stringify(await store.reviewGit(cwd, signal)) + "\n");
+      } else if (action === "grant-reviewed-git" && values.expect && /^[0-9a-f]{64}$/.test(values.expect)) {
+        await store.grantReviewedGit(cwd, values.expect, signal);
+      } else throw new Error();
+      return 0;
+    }
+    if (!["status", "grant", "revoke"].includes(action ?? "") || values.expect !== undefined) throw new Error();
+    const workspace = resolve(values.cwd ?? ".");
     const state = action === "status" ? await store.inspect(workspace, signal) :
       await store.change(workspace, action === "grant", signal);
     process.stdout.write(values.json ? JSON.stringify(state) + "\n" :

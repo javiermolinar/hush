@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -26,8 +27,19 @@ type gitDiffBackend interface {
 
 type gitDiffState struct {
 	summary sdk.GitDiffSummary
-	err     string
+	err     error
 	badge   string
+}
+
+func gitDiffSnapshot(summary sdk.GitDiffSummary, err error) gitDiffState {
+	if err != nil {
+		badge := "± unavailable"
+		if sdk.GitDiffNeedsTrust(err) {
+			badge = "± needs trust"
+		}
+		return gitDiffState{err: err, badge: badge}
+	}
+	return gitDiffState{summary: summary, badge: gitDiffBadge(summary)}
 }
 
 func gitDiffBadge(summary sdk.GitDiffSummary) string {
@@ -62,9 +74,6 @@ func (m *Model) gitDiffBadgeRow(t *threadState, room int) displayRow {
 	label := t.gitDiff.badge
 	if label == "" {
 		label = "± …"
-		if t.gitDiff.err != "" {
-			label = "± unavailable"
-		}
 	}
 	if stringWidth(label) > room {
 		label, _, _ = strings.Cut(label, "  ")
@@ -87,6 +96,7 @@ type gitDiffSummaryMsg struct {
 	lease, dialog, request uint64
 	value                  sdk.GitDiffSummary
 	err                    error
+	afterGrant             bool
 }
 type gitDiffPatchMsg struct {
 	dialog, request uint64
@@ -157,6 +167,17 @@ func (m *Model) receiveGitSummary(msg gitDiffSummaryMsg) tea.Cmd {
 		if d := m.receivingGitDialog(msg.dialog, msg.request); d != nil {
 			d.git.stop()
 			d.git.apply(msg.value, msg.err)
+			if msg.afterGrant && msg.err == nil && d.git.rangeName == sdk.GitDiffHead {
+				m.threads[d.route.owner].gitDiff = gitDiffSnapshot(msg.value, nil)
+				if m.gitDiffFeed.pending {
+					// An older poll may still carry the pre-grant denial.
+					m.stopGitDiff()
+					return m.syncGitDiff()
+				}
+			}
+			if !msg.afterGrant && sdk.GitDiffNeedsTrust(msg.err) {
+				return m.offerGitTrust(d)
+			}
 		}
 		return nil
 	}
@@ -166,13 +187,15 @@ func (m *Model) receiveGitSummary(msg gitDiffSummaryMsg) tea.Cmd {
 	}
 	m.gitDiffFeed.pending = false
 	t := m.threads[f.owner]
-	if msg.err != nil {
-		t.gitDiff = gitDiffState{err: msg.err.Error()}
-	} else {
-		t.gitDiff = gitDiffState{summary: msg.value, badge: gitDiffBadge(msg.value)}
-	}
-	if d := m.focusedDialog(); d != nil && d.git != nil && !d.git.patch && d.git.rangeName == sdk.GitDiffHead && d.git.cancel == nil {
+	t.gitDiff = gitDiffSnapshot(msg.value, msg.err)
+	var offer tea.Cmd
+	if d := m.focusedDialog(); d != nil && d.git != nil && !d.git.patch && d.git.rangeName == sdk.GitDiffHead && d.git.cancel == nil && d.git.trust == nil {
+		newlyDenied := sdk.GitDiffNeedsTrust(msg.err) && !sdk.GitDiffNeedsTrust(d.git.err)
 		d.git.apply(msg.value, msg.err)
+		// Only prompt inside the open review, and not again after a denied retry.
+		if newlyDenied {
+			offer = m.offerGitTrust(d)
+		}
 	}
 	interval := 10 * time.Second
 	if msg.err == nil && threadBusy(t) {
@@ -180,7 +203,7 @@ func (m *Model) receiveGitSummary(msg gitDiffSummaryMsg) tea.Cmd {
 	}
 	tick := m.token()
 	m.gitDiffFeed.tick = tick
-	return tea.Tick(interval, func(time.Time) tea.Msg { return gitDiffTick(tick) })
+	return tea.Batch(offer, tea.Tick(interval, func(time.Time) tea.Msg { return gitDiffTick(tick) }))
 }
 
 type gitReview struct {
@@ -189,7 +212,8 @@ type gitReview struct {
 	selected  int
 	patch     bool
 	view      *gitPatchView
-	err       string
+	err       error
+	trust     *gitTrustReview
 	request   uint64
 	cancel    context.CancelFunc
 }
@@ -203,9 +227,8 @@ func (g *gitReview) stop() {
 }
 
 func (g *gitReview) apply(summary sdk.GitDiffSummary, err error) {
-	g.err = ""
+	g.err = err
 	if err != nil {
-		g.err = err.Error()
 		g.list, g.selected = sdk.GitDiffSummary{}, 0
 		return
 	}
@@ -228,31 +251,51 @@ func (m *Model) openGitDiff(r ownerRoute) tea.Cmd {
 	state := m.threads[r.owner].gitDiff
 	d := &dialog{token: m.token(), route: r, git: &gitReview{rangeName: sdk.GitDiffHead, list: state.summary, err: state.err}}
 	open := m.pushDialog(d)
-	if m.gitDiffFeed.token == 0 {
-		return tea.Batch(open, m.syncGitDiff())
+	if m.focusedDialog() != d {
+		return open
 	}
-	return tea.Batch(open, m.expediteGitDiff())
+	if sdk.GitDiffNeedsTrust(state.err) {
+		// The operator may have granted trust since the last poll.
+		return m.fetchGitSummary(d, false)
+	}
+	if m.gitDiffFeed.token == 0 {
+		return m.syncGitDiff()
+	}
+	return m.expediteGitDiff()
 }
 
-func (m *Model) fetchGitReview(d *dialog, file bool) tea.Cmd {
+func (m *Model) gitReviewRequest(d *dialog, timeout time.Duration) (context.Context, context.CancelFunc, uint64) {
+	d.git.stop()
+	ctx, cancel := context.WithTimeout(m.ctx, timeout)
+	req := m.token()
+	d.git.request, d.git.cancel = req, cancel
+	return ctx, cancel, req
+}
+
+func (m *Model) fetchGitSummary(d *dialog, afterGrant bool) tea.Cmd {
+	backend, ok := m.backend.(gitDiffBackend)
+	if !ok {
+		return nil
+	}
+	d.git.err, d.git.trust = nil, nil
+	ctx, cancel, req := m.gitReviewRequest(d, gitDiffTimeout)
+	token, owner, rangeName := d.token, d.route.owner, d.git.rangeName
+	return func() tea.Msg {
+		defer cancel()
+		v, err := backend.GitDiffSummary(ctx, owner, rangeName)
+		return gitDiffSummaryMsg{dialog: token, request: req, value: v, err: err, afterGrant: afterGrant}
+	}
+}
+
+func (m *Model) fetchGitPatch(d *dialog) tea.Cmd {
 	backend, ok := m.backend.(gitDiffBackend)
 	if !ok {
 		return nil
 	}
 	g, owner := d.git, d.route.owner
-	g.stop()
-	g.err = ""
-	ctx, cancel := context.WithTimeout(m.ctx, gitDiffTimeout)
-	req, token := m.token(), d.token
-	g.request, g.cancel = req, cancel
-	if !file {
-		rangeName := g.rangeName
-		return func() tea.Msg {
-			defer cancel()
-			v, err := backend.GitDiffSummary(ctx, owner, rangeName)
-			return gitDiffSummaryMsg{dialog: token, request: req, value: v, err: err}
-		}
-	}
+	g.err = nil
+	ctx, cancel, req := m.gitReviewRequest(d, gitDiffTimeout)
+	token := d.token
 	g.patch, g.view = true, nil
 	revision, selected := g.list.Revision, g.selected
 	return func() tea.Msg {
@@ -262,28 +305,35 @@ func (m *Model) fetchGitReview(d *dialog, file bool) tea.Cmd {
 	}
 }
 
-func (m *Model) receiveGitPatch(msg gitDiffPatchMsg) {
+func (m *Model) receiveGitPatch(msg gitDiffPatchMsg) tea.Cmd {
 	d := m.receivingGitDialog(msg.dialog, msg.request)
 	if d == nil {
-		return
+		return nil
 	}
 	g := d.git
 	g.stop()
 	if msg.err != nil {
-		g.err = msg.err.Error()
-		if e, ok := msg.err.(*sdk.ServerError); ok && e.Code == "invalid_cursor" {
-			g.err = "File changed or list expired · esc back, u refresh"
+		g.err = msg.err
+		if sdk.GitDiffNeedsTrust(msg.err) {
+			return m.offerGitTrust(d)
 		}
-		return
+		if sdk.IsCode(msg.err, "invalid_cursor") {
+			g.err = errors.New("File changed or list expired · esc back, u refresh")
+		}
+		return nil
 	}
 	g.view = newGitPatchView(msg.value)
+	return nil
 }
 
 func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 	g := d.git
+	if g.trust != nil {
+		return m.gitTrustKey(d, chord)
+	}
 	if chord == "esc" && g.patch {
 		g.stop()
-		g.patch, g.view, g.err = false, nil, ""
+		g.patch, g.view, g.err = false, nil, nil
 		if g.rangeName == sdk.GitDiffHead {
 			state := m.threads[d.route.owner].gitDiff
 			if state.summary.Revision != "" {
@@ -293,7 +343,7 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 		return nil
 	}
 	if chord == "u" && !g.patch {
-		return m.fetchGitReview(d, false)
+		return m.fetchGitSummary(d, false)
 	}
 	if chord == "tab" && !g.patch && (g.list.Checkpoint || g.rangeName == sdk.GitDiffCheckpoint) {
 		if g.rangeName == sdk.GitDiffHead {
@@ -301,7 +351,7 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 		} else {
 			g.rangeName = sdk.GitDiffHead
 		}
-		return m.fetchGitReview(d, false)
+		return m.fetchGitSummary(d, false)
 	}
 	if g.patch {
 		switch chord {
@@ -312,12 +362,16 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 			}
 			if i := g.selected + delta; i >= 0 && i < len(g.list.Files) {
 				g.selected = i
-				return m.fetchGitReview(d, true)
+				return m.fetchGitPatch(d)
 			}
 		case "up", "down", "pgup", "pgdown":
 			step := 1
 			if chord == "pgup" || chord == "pgdown" {
-				step = max(1, m.frame.dialogHeight-4)
+				step = m.frame.dialogHeight - 4
+				if m.gitReviewCWD(d) != "" || g.list.Branch != "" {
+					step-- // workspace context row
+				}
+				step = max(1, step)
 			}
 			if chord == "pgup" || chord == "up" {
 				step = -step
@@ -335,7 +389,7 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 		g.selected = max(0, min(len(g.list.Files)-1, g.selected+delta))
 	case "enter":
 		if g.cancel == nil && g.selected < len(g.list.Files) {
-			return m.fetchGitReview(d, true)
+			return m.fetchGitPatch(d)
 		}
 	}
 	return nil
@@ -348,6 +402,9 @@ func (m *Model) gitDiffMouse(d *dialog, msg tea.Msg, row int) tea.Cmd {
 			return nil
 		}
 		target := m.frame.dialogChoices[row]
+		if target == gitTrustTarget {
+			return m.gitTrustKey(d, "t")
+		}
 		if target == gitRangeTarget {
 			return m.gitDiffKey(d, "tab")
 		}
@@ -356,6 +413,9 @@ func (m *Model) gitDiffMouse(d *dialog, msg tea.Msg, row int) tea.Cmd {
 			return m.gitDiffKey(d, "enter")
 		}
 	case tea.MouseWheelMsg:
+		if d.git.trust != nil {
+			return nil
+		}
 		if v.Button == tea.MouseWheelUp {
 			m.scrollGitDiff(d, -3)
 		} else if v.Button == tea.MouseWheelDown {
@@ -379,9 +439,51 @@ func (m *Model) scrollGitDiff(d *dialog, delta int) {
 	}
 }
 
-func (m *Model) gitReviewRows(g *gitReview, w, h int) ([]string, []int) {
+func (m *Model) gitReviewCWD(d *dialog) string {
+	if t := m.threads[d.route.owner]; t != nil {
+		return t.info.Workspace
+	}
+	return ""
+}
+
+func gitReviewScope(cwd, branch string, w int) string {
+	path := oneLine(cwd)
+	ref := ""
+	if branch != "" {
+		ref = "⎇ " + oneLine(branch)
+	}
+	if path == "" {
+		return ref
+	}
+	room := w
+	if ref != "" {
+		if stringWidth(path)+2+stringWidth(ref) > w {
+			ref = ansi.Truncate(ref, w/2, "…")
+		}
+		room -= 2 + stringWidth(ref)
+	}
+	if width := stringWidth(path); room > 0 && width > room {
+		// Keep the trailing directory visible without splitting a wide grapheme.
+		for skip := width - room + 1; skip > 0 && path != ""; {
+			cluster, cells := ansi.FirstGraphemeCluster(path, ansi.GraphemeWidth)
+			path = path[len(cluster):]
+			skip -= cells
+		}
+		path = "…" + path
+	}
+	if ref != "" {
+		return path + "  " + ref
+	}
+	return path
+}
+
+func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 	if h <= 0 {
 		return nil, nil
+	}
+	g := d.git
+	if g.trust != nil {
+		return m.gitTrustRows(d, w, h)
 	}
 	var rows []string
 	var targets []int
@@ -404,21 +506,31 @@ func (m *Model) gitReviewRows(g *gitReview, w, h int) ([]string, []int) {
 		title += " ▾"
 		target = gitRangeTarget
 		footer += "  " + m.keyHint("tab", "range")
+	} else if sdk.GitDiffNeedsTrust(g.err) {
+		footer = m.keyHint("esc", "close")
 	}
 	if !g.patch {
 		footer += "  " + m.keyHint("u", "refresh")
 	}
 	add(paint(x.Accent, title), target)
-	body := h - 1
-	if body >= 2 {
+	if h >= 3 {
+		if scope := gitReviewScope(m.gitReviewCWD(d), g.list.Branch, w); scope != "" {
+			add(paint(x.Muted, scope), -1)
+		}
+	}
+	body := h - len(rows)
+	showFooter := body >= 2 // leave small views one useful body row
+	if showFooter {
 		body--
-	} // leave the smallest views one useful body row
+	}
 	if body > 0 {
 		switch {
-		case g.cancel != nil || !g.patch && g.err == "" && g.list.Revision == "":
+		case g.cancel != nil || !g.patch && g.err == nil && g.list.Revision == "":
 			add(m.control("Loading…"), -1)
-		case g.err != "":
-			add(paint(x.Warning, oneLine(g.err)), -1)
+		case sdk.GitDiffNeedsTrust(g.err):
+			add(paint(x.Warning, "Workspace trust required"), -1)
+		case g.err != nil:
+			add(paint(x.Warning, oneLine(g.err.Error())), -1)
 		case g.patch && g.view != nil:
 			for _, row := range m.gitPatchRows(g.view, w, body) {
 				add(row, -1)
@@ -463,7 +575,7 @@ func (m *Model) gitReviewRows(g *gitReview, w, h int) ([]string, []int) {
 			add("", -1)
 		}
 	}
-	if len(rows) < h && h >= 3 {
+	if showFooter {
 		add(m.hintRow(w, footer, m.keyHint("esc", "back"), ""), -1)
 	} else if g.patch && len(rows) < h {
 		add("", -1)

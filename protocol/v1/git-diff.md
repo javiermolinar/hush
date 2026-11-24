@@ -6,22 +6,28 @@ or Pi compatibility. A peer without the selected capability cannot call it.
 
 | Request | Fields | Result |
 | --- | --- | --- |
-| `ext.gitDiff.summary` | `threadId`, `range` (`head` or `checkpoint`) | `{revision, range, commit, checkpoint, files}` |
+| `ext.gitDiff.summary` | `threadId`, `range` (`head` or `checkpoint`) | `{revision, range, commit, checkpoint, branch?, files}` |
 | `ext.gitDiff.file` | `threadId`, `revision`, `file` (zero-based index from that summary) | `{revision, file, lines, truncated}` |
 
 The backend resolves the repository from the stored working directory of the
 specified ownerless conversation. It compares at that checkout's Git root,
 not at the client's path or the repository's primary checkout. Both operations
 require current Hush workspace trust; a grant does not isolate shared checkouts.
-Rows describe the worktree, not changes attributed to the agent or thread.
+A missing grant is reported as `invalid_request` with the fixed message
+`Workspace is not trusted by Hush. Run 'hush trust grant --cwd PATH' on the backend host.`
+Clients may use that denial to offer local operator guidance; this extension has
+no way to grant trust over the wire. Rows describe the worktree, not changes
+attributed to the agent or thread.
 
 `head` compares committed HEAD with the working tree. `checkpoint` uses the
 latest native file checkpoint on this thread, verifying its exact pinned commit
 and repository by the [checkpoint contract](checkpoints.md). It never substitutes
 HEAD for missing file evidence. `commit` is the full lowercase Git object ID
 (40 or 64 characters). `checkpoint` indicates that a recorded file checkpoint
-exists; its evidence may no longer verify. The backend does not accept paths,
-refs, or an arbitrary commit ID from the client.
+exists; its evidence may no longer verify. `branch`, when available, is the
+checkout's current local branch name (at most 1024 UTF-8 bytes). It is omitted
+for detached HEAD. The backend does not accept paths, refs, or an arbitrary
+commit ID from the client.
 
 `files` has at most 128 paths, each at most 1024 UTF-8 bytes, sorted by path.
 A row has `path` (repository-relative), `status` (`A`, `D`, `M`, `T`, `U`, or `?`

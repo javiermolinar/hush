@@ -679,7 +679,7 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	if available < minOverlayFrameRows {
 		// At short heights, prefer usable body rows to a border.
 		if d.git != nil {
-			return m.gitReviewRows(d.git, w, available)
+			return m.gitReviewRows(d, w, available)
 		}
 		if d.output != nil {
 			return m.outputRows(d, w, available)
@@ -693,10 +693,12 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	var choices []int
 	if d.git != nil {
 		height := available - 2
-		if !d.git.patch {
+		if d.git.trust != nil {
+			height = min(12, height)
+		} else if !d.git.patch {
 			height = min(12, height-1) // keep some chat visible behind the popover
 		}
-		body, choices = m.gitReviewRows(d.git, w-4, height)
+		body, choices = m.gitReviewRows(d, w-4, height)
 	} else if d.palette {
 		body, choices = m.paletteRows(d, w-4, min(paletteMaxHeight, available)-2)
 	} else if d.output != nil {

@@ -35,6 +35,9 @@ type Options struct {
 	CustomModels    bool
 	// ProviderLogin enables /login for a host that can authenticate locally.
 	ProviderLogin *ProviderLoginOptions
+	// PrepareGitTrust resolves a repository for local operator confirmation.
+	// Leave unset when attaching to a backend, even with WorkspaceLocal set.
+	PrepareGitTrust func(context.Context, string) (GitTrustPreview, error)
 	// Intro enables a local startup block in the initial thread.
 	Intro *IntroOptions
 	// ClientEnvironment describes this invocation, only for user-entered input.
@@ -308,7 +311,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitDiffSummaryMsg:
 		cmd = m.receiveGitSummary(v)
 	case gitDiffPatchMsg:
-		m.receiveGitPatch(v)
+		cmd = m.receiveGitPatch(v)
+	case gitTrustMsg:
+		cmd = m.receiveGitTrust(v)
 	case directoryFeedMsg:
 		cmd = m.receiveDirectory(v)
 	case tea.FocusMsg:

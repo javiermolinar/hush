@@ -38,8 +38,12 @@ func TestGitDiffNegotiationAndScope(t *testing.T) {
 					if q.Params["range"] != GitDiffHead {
 						t.Errorf("unexpected range %+v", q.Params)
 					}
+					branch := ""
+					if mode == "negotiated" {
+						branch = "feature/review"
+					}
 					reply(c, q, GitDiffSummary{Revision: revision, Range: GitDiffHead, Commit: "1111111111111111111111111111111111111111",
-						Files: []GitDiffFile{{Path: "src/main.go", Status: "M", Text: true}}})
+						Branch: branch, Files: []GitDiffFile{{Path: "src/main.go", Status: "M", Text: true}}})
 				case gitDiffPrefix + "file":
 					if q.Params["revision"] != revision || q.Params["file"] != float64(0) {
 						t.Errorf("unexpected file selector %+v", q.Params)
@@ -65,6 +69,9 @@ func TestGitDiffNegotiationAndScope(t *testing.T) {
 			}
 			if err != nil || len(summary.Files) != 1 || summary.Files[0].Path != "src/main.go" {
 				t.Fatalf("summary: %+v %v", summary, err)
+			}
+			if mode == "negotiated" && summary.Branch != "feature/review" || mode == "wrong patch" && summary.Branch != "" {
+				t.Fatalf("summary branch: %q", summary.Branch)
 			}
 			patch, err := client.GitDiffFile(ctx, "1", summary.Revision, 0)
 			if mode == "wrong patch" {

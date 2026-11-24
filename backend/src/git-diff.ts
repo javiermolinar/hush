@@ -190,11 +190,14 @@ export class GitDiffService implements GitDiffHost {
           : await this.#trackedPatch(root, commit, file.path, signal);
         return await finish({ revision: q.revision, file: q.file, ...boundedPatch(patch) });
       }
-      const [diff, index, others] = await Promise.all([
+      const [diff, index, others, ref] = await Promise.all([
         git(root, signal, "diff", ...diffFlags, "--raw", "--numstat", "-z", commit, "--"),
         git(root, signal, "diff", ...diffFlags, "--cached", "--name-only", "-z", head, "--"),
         git(root, signal, "ls-files", "--others", "--exclude-standard", "-z", "--"),
+        git(root, signal, "rev-parse", "--symbolic-full-name", "HEAD").catch(() => ""),
       ]);
+      // Detached HEAD is not a local branch. Treat unavailable metadata as optional.
+      const branch = /^refs\/heads\/([^\x00-\x20\x7f]+)\n$/.exec(ref)?.[1];
       const rows = parseRows(diff, new Set(nulList(index)));
       for (const path of nulList(others)) {
         if (rows.has(path)) continue;
@@ -205,7 +208,9 @@ export class GitDiffService implements GitDiffHost {
           ...(content !== undefined && { added: textLines(content).length, removed: 0 }) });
       }
       const files = [...rows.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0), revision = randomUUID();
-      return await finish({ revision, range, commit, checkpoint, files }).then(result => {
+      return await finish({ revision, range, commit, checkpoint, files,
+        ...(branch && Buffer.byteLength(branch) <= 1024 && { branch }),
+      }).then(result => {
         while (this.#seen.size >= maxObservations) this.#seen.delete(this.#seen.keys().next().value!);
         this.#seen.set(revision, { threadId: q.threadId, cwd, identity, root, range, commit, files, expires: Date.now() + lifetime });
         return result;

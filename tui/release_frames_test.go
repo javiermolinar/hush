@@ -138,6 +138,26 @@ func TestReleaseFrames(t *testing.T) {
 				!strings.Contains(m.frame.rows[m.height-1], m.palette.activeTab) {
 				t.Fatal("tab band or active tab did not retain its separate surface")
 			}
+
+			enableGitDiffFixture(m, s)
+			s.info.Branch = s.gitDiff.summary.Branch
+			m.openGitDiff(m.route(m.active, coreID))
+			if body := shot("git-diff-scope"); !strings.Contains(body, "/work/project/src  ⎇ feature/review") {
+				t.Fatal("Git review did not show its workspace and branch")
+			}
+			press(m, tea.KeyEscape, 0)
+			setupGitTrustFixture(m, s)
+			m.options.PrepareGitTrust = gitTrustPreviewFixture("/work/project/.git")
+			openGitTrustFixture(t, m)
+			if body := shot("git-trust-confirm"); !strings.Contains(body, "Trust this repository?") {
+				t.Fatal("no local trust confirmation")
+			}
+			press(m, tea.KeyEscape, 0)
+			m.options.PrepareGitTrust = nil
+			openGitTrustFixture(t, m)
+			if body := shot("git-trust-attached"); !strings.Contains(body, "hush trust grant --cwd PATH") {
+				t.Fatal("no backend-host instructions")
+			}
 		})
 	}
 }

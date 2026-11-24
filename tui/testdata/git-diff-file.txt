@@ -1,5 +1,6 @@
 ╭──────────────────────────────────────────────────────────────────────────╮
 │ src/auth/session.ts · 1/4 · HEAD                                         │
+│ /work/project/src  ⎇ feature/review                                      │
 │ @@ -41,2 +41,2 @@ refreshSession()                                       │
 │     41     const token = await refresh();                                │
 │     42 −   if (!lock) lock = acquire();                                  │
@@ -10,9 +11,8 @@
 │                                                                          │
 │                                                                          │
 │                                                                          │
-│                                                                          │
 │ n/p next/previous file  esc back                                         │
 ╰──────────────────────────────────────────────────────────────────────────╯
   ◌ Working ────────────────────────────────────────── ± 4 files  +82 −18*
   you › keep this draft
-  dir workspace
+  dir src

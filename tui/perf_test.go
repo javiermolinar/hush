@@ -27,7 +27,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "image-preview", "queued-inputs"} {
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "git-trust", "image-preview", "queued-inputs"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -95,6 +95,11 @@ func TestFrameBudget(t *testing.T) {
 					p.Lines = append(p.Lines, sdk.GitDiffLine{Kind: "add", NewLine: i + 1, Text: "  // newly added line of code, with metadata"})
 				}
 				d.git.patch, d.git.view = true, newGitPatchView(p)
+			}
+			if which == "git-trust" {
+				setupGitTrustFixture(m, s)
+				m.options.PrepareGitTrust = gitTrustPreviewFixture("/work/" + strings.Repeat("wide界", 18) + "/project/.git")
+				openGitTrustFixture(t, m)
 			}
 			if which == "rewind-preview" {
 				b := maxEffects

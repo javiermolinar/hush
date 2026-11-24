@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ const diffFixtureRevision = "129cb6d4-9d9b-4757-a711-b7b1fd839a5f"
 
 func diffFixtureSummary(rangeName string) sdk.GitDiffSummary {
 	add, remove := int64(41), int64(9)
-	return sdk.GitDiffSummary{Revision: diffFixtureRevision, Range: rangeName, Checkpoint: true,
+	return sdk.GitDiffSummary{Revision: diffFixtureRevision, Range: rangeName, Checkpoint: true, Branch: "feature/review",
 		Files: []sdk.GitDiffFile{{Path: "src/auth/session.ts", Status: "M", Added: &add, Removed: &remove, Staged: true, Text: true},
 			{Path: "src/auth/lock.ts", Status: "A", Added: &add, Removed: new(int64), Text: true},
 			{Path: "src/auth/legacy.ts", Status: "D", Added: new(int64), Removed: &remove, Text: true},
@@ -46,6 +47,7 @@ func enableGitDiffFixture(m *Model, s *threadState) {
 	m.backend = gitDiffFixtureBackend{}
 	m.menuFeaturesFromBackend |= x.GitDiff
 	m.gitDiffFeed = gitDiffPoll{feedLease: feedLease{token: m.token(), owner: s.info.ID, ctx: m.ctx}, pending: true}
+	s.info.Workspace = "/work/project/src"
 	s.gitDiff.summary = diffFixtureSummary(sdk.GitDiffHead)
 	s.gitDiff.badge = gitDiffBadge(s.gitDiff.summary)
 }
@@ -100,7 +102,7 @@ func TestGitDiffReviewFlow(t *testing.T) {
 	}
 	m.Update(cmd())
 	body := ansi.Strip(assertFrame(t, m))
-	for _, want := range []string{"src/auth/session.ts · 1/4 · last checkpoint", "42 −   if (!lock)", "42 +   const lock", "␛[31m", "unsent draft", "± 4 files"} {
+	for _, want := range []string{"src/auth/session.ts · 1/4 · last checkpoint", "/work/project/src  ⎇ feature/review", "42 −   if (!lock)", "42 +   const lock", "␛[31m", "unsent draft", "± 4 files"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in\n%s", want, body)
 		}
@@ -127,6 +129,33 @@ func TestGitDiffReviewFlow(t *testing.T) {
 	m.Update(gitDiffSummaryMsg{lease: oldLease, value: diffFixtureSummary(sdk.GitDiffHead)})
 	if m.threads["2"].gitDiff.badge != "" || m.threads["2"].gitDiff.summary.Revision != "" {
 		t.Fatal("late summary leaked across tabs")
+	}
+}
+
+func TestGitDiffScopeWithoutBranch(t *testing.T) {
+	m, s := demo(t, Options{Fills: FillOff})
+	enableGitDiffFixture(m, s)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.openGitDiff(m.route(m.active, coreID))
+	d := m.focusedDialog()
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "No changes"},
+		{errors.New("This directory is not a Git worktree."), "This directory is not a Git worktree."},
+	} {
+		d.git.apply(sdk.GitDiffSummary{Revision: diffFixtureRevision}, tc.err)
+		rows, _ := m.gitReviewRows(d, 70, 6)
+		text := ansi.Strip(strings.Join(rows, "\n"))
+		if !strings.Contains(text, "/work/project/src\n"+tc.want) || strings.Contains(text, "⎇") {
+			t.Fatalf("unexpected review scope:\n%s", text)
+		}
+	}
+	const width = 28
+	scope := gitReviewScope("/work/"+strings.Repeat("界", 20)+"/src", "main", width)
+	if !strings.HasPrefix(scope, "…") || !strings.HasSuffix(scope, "/src  ⎇ main") || stringWidth(scope) > width {
+		t.Fatalf("narrow review scope: %q", scope)
 	}
 }
 
