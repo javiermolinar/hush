@@ -170,6 +170,43 @@ func TestPromptLayoutCacheTracksEdits(t *testing.T) {
 	check()
 }
 
+func TestPlainTypingMatchesTextarea(t *testing.T) {
+	fast, reference := newPrompt(), newPrompt()
+	for _, p := range []*promptEditor{&fast, &reference} {
+		p.area.SetVirtualCursor(false)
+		p.area.SetWidth(9)
+		p.area.SetHeight(3)
+		p.area.Focus()
+	}
+	check := func(k tea.KeyPressMsg) {
+		t.Helper()
+		fast.update(k, true)
+		reference.area, _ = reference.area.Update(k)
+		reference.text = reference.area.Value()
+		rows, caret := fast.layout(3)
+		want := reference.rows(9, 3)
+		wantCaret := reference.area.Cursor()
+		if fast.text != reference.text || !slices.Equal(rows, want) || caret == nil || wantCaret == nil || caret.Position != wantCaret.Position {
+			t.Fatalf("key %q: text %q vs %q, rows %q vs %q, caret %v vs %v", k.String(), fast.text, reference.text, rows, want, caret, wantCaret)
+		}
+	}
+	// Cross two wrap boundaries and then exceed the viewport; Bubbles must
+	// take over before a printable key would move the caret out of view.
+	for _, ch := range "ABCDEFGHIJKLMNOPQRSTUVWXYZab" {
+		check(tea.KeyPressMsg{Code: ch, Text: string(ch)})
+	}
+	for _, p := range []*promptEditor{&fast, &reference} {
+		p.set("a b")
+	}
+	for _, k := range []tea.KeyPressMsg{
+		{Code: tea.KeyLeft}, {Code: 'c', Text: "C", Mod: tea.ModShift},
+		{Code: tea.KeyLeft, Mod: tea.ModShift}, {Code: 'd', Text: "d"},
+		{Code: '界', Text: "界"}, {Code: 'x', Text: "x"},
+	} {
+		check(k)
+	}
+}
+
 func TestProseWrapKeepsEveryCellAndLinkAfterResize(t *testing.T) {
 	m, s := demo(t, Options{Fills: FillOff, ReducedMotion: true})
 	token := strings.Repeat("x", 76)

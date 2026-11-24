@@ -146,9 +146,20 @@ func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
 		p.revision++
 		return nil
 	}
-	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+v" {
-		return nil
-	} // terminal bracketed paste is handled above
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		if k.String() == "ctrl+v" { // terminal bracketed paste is handled above
+			return nil
+		}
+		if p.area.Focused() && k.Mod&^tea.ModShift == 0 && k.Code >= ' ' && k.Code <= '~' &&
+			len(k.Text) == 1 && p.plainWidth(k.Text) > 0 {
+			// A plain insertion that still fits needs no viewport scroll.
+			// Update would lay out the entire textarea before View runs.
+			p.area.InsertString(k.Text)
+			p.text = p.area.Value()
+			p.revision++
+			return nil
+		}
+	}
 	var cmd tea.Cmd
 	p.area, cmd = p.area.Update(msg)
 	if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -189,28 +200,46 @@ func (p *promptEditor) syncViewport() {
 func (p *promptEditor) layout(limit int) ([]string, *tea.Cursor) {
 	key := promptLayoutKey{p.area.Width(), p.area.Height(), limit, p.area.Focused()}
 	if p.memo.rows == nil || p.memo.key != key {
-		rows := p.plainRow(key.width)
-		if rows == nil {
-			rows = p.rows(key.width, limit)
+		var rows []string
+		var caret *tea.Cursor
+		if width := p.plainWidth(""); width > 0 {
+			rows = make([]string, max(1, min(limit, (len(p.text)+width-1)/width)))
+			for i := range rows {
+				part := p.text[i*width : min(len(p.text), (i+1)*width)]
+				rows[i] = part + strings.Repeat(" ", width-len(part))
+			}
+			if key.focused {
+				col := p.area.Column()
+				caret = tea.NewCursor(col%width, col/width)
+				style := p.area.Styles().Cursor
+				caret.Color, caret.Shape, caret.Blink = style.Color, style.Shape, style.Blink
+			}
+		} else {
+			rows, caret = p.rows(key.width, limit), p.area.Cursor()
 		}
-		*p.memo = promptLayout{key, rows, p.area.Cursor()}
+		*p.memo = promptLayout{key, rows, caret}
 	}
 	return p.memo.rows, p.memo.cursor
 }
 
-// A short printable ASCII draft has no wrapping, styling or viewport scroll.
-// Avoid painting the unused viewport padding again after every such keypress.
-// Editing and the caret still belong to the textarea.
-func (p *promptEditor) plainRow(width int) []string {
-	if len(p.text) >= width || p.area.HasSelection() || p.area.Placeholder != "" {
-		return nil
+// Printable ASCII in an unstyled single logical line needs no word layout if
+// it fits on one row or has no break opportunities. Leave room for the caret
+// and defer selection, scrolling, word wraps and Unicode to the textarea.
+func (p *promptEditor) plainWidth(extra string) int {
+	width, size := p.area.Width(), len(p.text)+len(extra)
+	if size > maxPromptBytes || width <= 0 || size/width >= p.area.Height() || p.area.ScrollYOffset() != 0 ||
+		p.area.VirtualCursor() || p.area.HasSelection() || p.area.Placeholder != "" {
+		return 0
 	}
-	for i := range len(p.text) {
-		if c := p.text[i]; c < ' ' || c > '~' {
-			return nil
+	for _, s := range [...]string{p.text, extra} {
+		for i := range len(s) {
+			c := s[i]
+			if c < ' ' || c > '~' || size >= width && (c == ' ' || c == '-') {
+				return 0
+			}
 		}
 	}
-	return []string{p.text + strings.Repeat(" ", width-len(p.text))}
+	return width
 }
 
 func (p *promptEditor) rows(width, maxRows int) []string {
