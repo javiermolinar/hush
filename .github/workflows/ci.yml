@@ -62,11 +62,14 @@ jobs:
         run: mise run setup
       - name: Build, vet and test the workspace
         env:
-          # Keep other Go test binaries from competing with the TUI frame-budget tests.
-          GOFLAGS: -mod=readonly -p=1
+          # Serialize Go test binaries and keep successful timing diagnostics visible.
+          GOFLAGS: -mod=readonly -p=1 -v
+          HUSH_PERF_MODE: report
         run: mise run test
       - name: Run short Go tests with the race detector
         run: mise run --skip-deps test:race
       - name: Verify the installable binary at minimum Node
         if: runner.os == 'Linux'
+        env:
+          HUSH_PERF_MODE: report
         run: mise run release

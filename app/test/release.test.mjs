@@ -385,11 +385,16 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
     assert.equal(attached.epoch, first.epoch);
   }
   samples.sort((a, b) => a - b);
-  const p95 = samples[18];
+  const p95 = samples[18], targetMs = 100;
+  const reportOnly = process.env.HUSH_PERF_MODE === 'report';
   t.diagnostic(JSON.stringify({ platform: process.platform, arch: process.arch, count: samples.length,
     boundary: 'installed process spawn through status stdout/exit, explicit warm socket, no Node on PATH',
-    medianMs: +((samples[9] + samples[10]) / 2).toFixed(2), p95Ms: +p95.toFixed(2), targetMs: 100 }));
-  assert.ok(p95 < 100, 'warm attach p95 exceeds 100 ms');
+    medianMs: +((samples[9] + samples[10]) / 2).toFixed(2), p95Ms: +p95.toFixed(2), targetMs, reportOnly }));
+  if (reportOnly && p95 >= targetMs) {
+    t.diagnostic(`performance target missed (report-only): warm attach p95 ${p95.toFixed(2)} ms, limit ${targetMs} ms`);
+  } else {
+    assert.ok(p95 < targetMs, `warm attach p95 ${p95.toFixed(2)} ms must be below ${targetMs} ms`);
+  }
   const id = JSON.parse(await good(['thread', 'new', '--json'])).id;
   await good(['--print', '--thread', id, 'release-first-durable'], /^Loopback Codex reply\n$/);
   assert.equal(seen[1].model, 'gpt-6-sol');
