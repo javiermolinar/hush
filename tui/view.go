@@ -342,6 +342,7 @@ func (m *Model) View() tea.View {
 	}
 	for i, d := range m.overlays {
 		rows, choices := m.overlayRows(d, f.transcriptHeight)
+		framed := f.transcriptHeight >= minOverlayFrameRows
 		width := m.dialogWidth(d)
 		left := max(0, (m.width-width)/2)
 		space := max(0, f.transcriptHeight-len(rows))
@@ -352,18 +353,20 @@ func (m *Model) View() tea.View {
 		top := min(space, anchorSpace/3+2*i)
 		for j, row := range rows {
 			y := top + j
-			body := fit(row, width)
+			if !framed && d.output == nil {
+				row = fit(row, width)
+			}
 			if f.rows[y] == "" {
-				f.rows[y] = padding[:left] + body + padding[left+width:]
+				f.rows[y] = padding[:left] + row + padding[left+width:]
 				continue
 			}
 			base := fit(f.rows[y], m.width)
-			f.rows[y] = ansi.Cut(base, 0, left) + body + ansi.Cut(base, left+width, m.width)
+			f.rows[y] = ansi.Cut(base, 0, left) + row + ansi.Cut(base, left+width, m.width)
 		}
 		if i == len(m.overlays)-1 {
 			f.dialogToken, f.dialogX, f.dialogY = d.token, left, top
 			f.dialogWidth, f.dialogHeight = width, len(rows)
-			f.dialogFramed = f.transcriptHeight >= minOverlayFrameRows
+			f.dialogFramed = framed
 			f.dialogChoices = choices
 			if d.palette && m.focused {
 				v.Cursor = m.paletteCursor(d, left, top, width, len(rows), f.dialogFramed)

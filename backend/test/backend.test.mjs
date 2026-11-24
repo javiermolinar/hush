@@ -366,8 +366,16 @@ test("thread directory keeps friendly titles and pages by last committed message
   t.after(() => reopened.close());
   ok(await reopened.send("hello", { versions: [1], capabilities: { threadDirectory: [1] } }));
   code(await reopened.send(method, { limit: 10, cursor: first.nextCursor }), "invalid_cursor");
-  const loaded = ok(await reopened.send(method, { limit: 10 }));
-  assert.equal(loaded.indexing, false);
+  // The first list after startup may be a partial page until the disposable
+  // index is rebuilt. Check the contract while waiting for a complete page.
+  const deadline = performance.now() + 5_000;
+  let loaded = ok(await reopened.send(method, { limit: 10 }));
+  while (loaded.indexing && performance.now() < deadline) {
+    assert.equal(loaded.nextCursor, null, "a partial index cannot issue cursors");
+    await setTimeout(20);
+    loaded = ok(await reopened.send(method, { limit: 10 }));
+  }
+  assert.equal(loaded.indexing, false, "directory index did not finish rebuilding");
   assert.deepEqual(loaded.threads[0], first.threads[0], "directory is rebuilt from retained history");
 });
 
