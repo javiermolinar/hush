@@ -75,6 +75,20 @@ type imagePreview struct {
 	pixels *image.NRGBA
 	used   uint64
 	placed imagePlacement
+	blocks pixelLayout
+}
+
+type pixelLayout struct {
+	cols, rows  int
+	backgrounds bool
+	lines       []string
+}
+
+func (p *imagePreview) blockRows(cols, rows int, backgrounds bool) []string {
+	if memo := p.blocks; memo.cols != cols || memo.rows != rows || memo.backgrounds != backgrounds {
+		p.blocks = pixelLayout{cols, rows, backgrounds, halfBlockPreview(p.pixels, cols, rows, backgrounds)}
+	}
+	return p.blocks.lines
 }
 
 type imageCapability bool
@@ -167,7 +181,8 @@ func (m *Model) imageRows(ref sdk.ImageRef, w int, prefix string, expanded bool)
 		}
 		lines = kittyPlaceholders(p.id, cols, rows)
 	} else {
-		lines = halfBlockPreview(asset.pixels, cols, rows, m.options.Fills != FillOff)
+		// A resize often still fits the same capped pixel grid.
+		lines = asset.blockRows(cols, rows, m.options.Fills != FillOff)
 	}
 	out := make([]displayRow, len(lines))
 	for i, line := range lines {

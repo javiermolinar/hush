@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -120,6 +121,53 @@ func TestFrameGeometry(t *testing.T) {
 		m.openDialog(m.route(m.active, coreID), x.InputDialog{Title: "Edit", Initial: "value"}, &b)
 		assertFrame(t, m)
 	}
+}
+
+func TestPromptLayoutCacheTracksEdits(t *testing.T) {
+	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	check := func() tea.View {
+		t.Helper()
+		editor, limit := &m.editor, max(1, m.height/4)
+		rows, caret := editor.layout(limit)
+		if want := editor.rows(editor.area.Width(), limit); !slices.Equal(rows, want) {
+			t.Fatalf("memoized editor rows %q differ from the textarea view %q", rows, want)
+		}
+		wantCaret := editor.area.Cursor()
+		if (caret == nil) != (wantCaret == nil) || caret != nil && caret.Position != wantCaret.Position {
+			t.Fatal("memoized caret differs from the textarea cursor")
+		}
+		got, again := m.View(), m.View()
+		if got.Content != again.Content || (got.Cursor == nil) != (again.Cursor == nil) ||
+			got.Cursor != nil && got.Cursor.Position != again.Cursor.Position {
+			t.Fatal("repeated frames changed the prompt or its cursor position")
+		}
+		return got
+	}
+	check()
+	m.Update(tea.PasteMsg{Content: strings.Repeat("line 界👩‍💻 é\n", 18) + "tail"})
+	before := check()
+	press(m, tea.KeyLeft, 0)
+	left := check()
+	if left.Cursor == nil || before.Cursor == nil || left.Cursor.Position.X != before.Cursor.Position.X-1 {
+		t.Fatalf("moving the caret without editing the draft did not move the rendered cursor")
+	}
+	press(m, tea.KeyLeft, tea.ModShift)
+	check()
+	m.Update(tea.WindowSizeMsg{Width: 50, Height: 16})
+	check()
+	m.editor.area.Blur()
+	if check().Cursor != nil {
+		t.Fatal("blurred editor still shows a memoized cursor")
+	}
+	m.editor.area.Focus()
+	m.editor.set("replacement draft ")
+	check()
+	press(m, tea.KeyLeft, tea.ModShift)
+	check()
+	m.editor.set(strings.Repeat("a", m.editor.area.Width()))
+	check()
+	m.editor.newline()
+	check()
 }
 
 func TestProseWrapKeepsEveryCellAndLinkAfterResize(t *testing.T) {

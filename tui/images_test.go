@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,6 +81,21 @@ func TestKittyTransmitHasDimensionsAndErrorReplies(t *testing.T) {
 			if w := ansi.StringWidth(line); w != 18 {
 				t.Fatalf("preview row width %d, want 18: %q", w, line)
 			}
+		}
+	}
+}
+
+func TestBlockPreviewLayoutTracksSizeAndFills(t *testing.T) {
+	preview := imagePreview{pixels: sampleImage(320, 180)}
+	for _, tc := range []struct {
+		cols, rows int
+		fills      bool
+	}{
+		{36, 10, true}, {36, 10, true}, {36, 10, false}, {17, 5, false}, {36, 10, true},
+	} {
+		got := preview.blockRows(tc.cols, tc.rows, tc.fills)
+		if want := halfBlockPreview(preview.pixels, tc.cols, tc.rows, tc.fills); !slices.Equal(got, want) {
+			t.Fatalf("memoized preview differed at %+v", tc)
 		}
 	}
 }
