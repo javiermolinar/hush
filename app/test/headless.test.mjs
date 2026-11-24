@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as httpServer } from "node:http";
 import { createConnection, createServer as unixServer } from "node:net";
@@ -222,7 +223,7 @@ test("native thread CLI persists checkout ownership, titles, done status and arc
   assert.equal(await git(checkout.cwd, "branch", "--show-current"), checkout.branch);
 });
 
-test("standalone workspace trust is explicit, scoped, and durable across clients and restart", { timeout: 35_000 }, async t => {
+test("standalone workspace trust uses one exact-directory grant across operations and restart", { timeout: 35_000 }, async t => {
   const cfg = await layout(t);
   delete cfg.env.PI_CODING_AGENT_DIR;
   cfg.env.HUSH_PROFILE = "hush";
@@ -246,10 +247,9 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
     lines.close();
     return { ...host, socket };
   };
-  const trust = async (op, path = cwd, scope = "git") => value(await cli(t, cfg,
-    ["--backend", bundle, "trust", op, "--scope", scope, "--cwd", path, "--json"]).exit);
-  const common = join(cwd, ".git");
-  assert.deepEqual(await trust("status"), { kind: "git", path: common, trusted: false });
+  const trust = async (op, path = cwd) => value(await cli(t, cfg,
+    ["--backend", bundle, "trust", op, "--cwd", path, "--json"]).exit);
+  assert.deepEqual(await trust("status"), { kind: "directory", path: cwd, trusted: false, dismissed: false });
   assert.deepEqual(await readdir(cfg.dir), ["agent", "project", "tmp"]); // No daemon or profile creates on status.
   let h = await boot();
   t.after(async () => { if (h.child.exitCode === null) h.child.kill("SIGTERM"); await h.exit; });
@@ -265,7 +265,17 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
   await mkdir(project);
   new ProjectTrustStore(pi).set(cwd, true);
   await writeFile(join(project, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+  // A valid grant from the old Git-only store must not become a workspace grant.
+  const common = join(cwd, ".git"), gitGrantDir = join(cfg.dir, ".hush", "workspace-trust-v1");
+  const { dev, ino, birthtimeNs } = await lstat(common, { bigint: true });
+  const oldGrant = JSON.stringify(["git", common, String(dev), String(ino), String(birthtimeNs)]) + "\n";
+  await mkdir(gitGrantDir, { mode: 0o700 });
+  await writeFile(join(gitGrantDir, createHash("sha256").update(oldGrant).digest("hex")), oldGrant, { mode: 0o600 });
+  for (const scope of ["git", "browse"]) {
+    failed(await cli(t, cfg, ["trust", "grant", "--scope", scope, "--cwd", cwd]).exit, /use --cwd PATH for workspace trust/);
+  }
   await deny();
+  assert.equal((await trust("status")).trusted, false);
   const piConfigState = await readFile(join(project, "settings.json"));
   failed(await cli(t, cfg, ["--socket", h.socket, "trust", "grant", "--cwd", cwd]).exit, /local to the Hush backend host/);
   failed(await cli(t, { ...cfg, env: { ...cfg.env, HUSH_SOCKET: h.socket } }, ["trust", "grant"]).exit, /local to the Hush backend host/);
@@ -277,13 +287,13 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
   } finally { wire.close(); }
 
   const plain = await realpath(join(cfg.dir, "agent"));
-  assert.deepEqual(await trust("grant", plain), { kind: "directory", path: plain, trusted: true });
+  assert.deepEqual(await trust("grant", plain), { kind: "directory", path: plain, trusted: true, dismissed: false });
   failed(await cli(t, cfg, wt(plain)).exit, /requires a Git working tree/);
   await deny();
   const alias = join(cfg.dir, "alias");
   await symlink(cwd, alias);
-  assert.deepEqual(await trust("grant", alias), { kind: "git", path: common, trusted: true });
-  const grantDir = join(cfg.dir, ".hush", "workspace-trust-v1");
+  assert.deepEqual(await trust("grant", alias), { kind: "directory", path: cwd, trusted: true, dismissed: false });
+  const grantDir = join(cfg.dir, ".hush", "workspace-work-v1");
   assert.equal((await lstat(grantDir)).mode & 0o777, 0o700);
   for (const name of await readdir(grantDir))
     assert.equal((await lstat(join(grantDir, name))).mode & 0o777, 0o600);
@@ -292,18 +302,18 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
   assert.equal(await git(created.checkout.cwd, "rev-parse", "HEAD"), head);
   assert.equal(await readFile(join(created.checkout.cwd, "file"), "utf8"), "committed\n");
   await writeFile(join(created.checkout.cwd, "file"), "keep isolated edits\n");
-  assert.equal((await trust("status", created.checkout.cwd)).trusted, true);
+  assert.equal((await trust("status", created.checkout.cwd)).trusted, false);
   const prompt = (id, text) => cli(t, cfg, ["--socket", h.socket, "--thread", id, text]).exit;
-  await assert.rejects(lstat(join(cfg.dir, ".hush", "workspace-work-v1")), { code: "ENOENT" });
-  failed(await prompt(created.id, "Git-only is not tool trust"), /not trusted for tool execution/);
-  assert.equal((await trust("grant", alias, "work")).path, cwd);
+  const source = value(await cli(t, cfg, ["--socket", h.socket, "thread", "new", "--cwd", cwd, "--json"]).exit);
+  success(await prompt(source.id, "one grant"), "Faux: one grant\n");
   failed(await prompt(created.id, "does not inherit the source grant"), /not trusted for tool execution/);
+  await deny(created.checkout.cwd);
   assert.deepEqual(await trust("grant", created.checkout.cwd, "work"), {
     kind: "directory", path: await realpath(created.checkout.cwd), trusted: true, dismissed: false,
   });
-  assert.equal((await trust("revoke", created.checkout.cwd)).trusted, false);
+  assert.equal((await trust("revoke", alias)).trusted, false);
   await deny(alias);
-  await deny(created.checkout.cwd);
+  failed(await prompt(source.id, "revoked"), /not trusted for tool execution/);
   const revoked = await snapshot();
   h.child.kill("SIGTERM");
   assert.equal((await h.exit).code, 0);
@@ -311,8 +321,9 @@ test("standalone workspace trust is explicit, scoped, and durable across clients
   await deny();
   assert.equal((await trust("status", alias)).trusted, false);
   success(await prompt(created.id, "still usable"), "Faux: still usable\n");
-  assert.equal((await trust("revoke", created.checkout.cwd, "work")).trusted, false);
+  assert.equal((await trust("revoke", created.checkout.cwd)).trusted, false);
   failed(await prompt(created.id, "revoked"), /not trusted for tool execution/);
+  await deny(created.checkout.cwd);
   value(await cli(t, cfg, ["--socket", h.socket, "thread", "archive", "--thread", created.id, "--json"]).exit);
   assert.deepEqual(await snapshot(), revoked);
   assert.deepEqual(await readFile(join(cwd, ".git", "index")), index);

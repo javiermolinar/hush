@@ -37,7 +37,7 @@ func builtins(workspaceTrust bool) x.Registration {
 		local("quit", "Quit", "", "d", "quit", x.Quit),
 	}}
 	if workspaceTrust {
-		r.Actions = append(r.Actions, local("trust", "Workspace tool trust", "", "i t", "trust", openWorkspaceTrustOp))
+		r.Actions = append(r.Actions, local("trust", "Workspace trust", "", "i t", "trust", openWorkspaceTrustOp))
 	}
 	if runtime.GOOS == "darwin" {
 		r.Actions = append(r.Actions, local("paste-image", "Paste clipboard image", "ctrl+v", "i p", "", pasteImageOp))

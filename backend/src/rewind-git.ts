@@ -3,13 +3,12 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSy
   realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { WireError } from "../../server/src/wire.js";
-import { workspaceGit, type WorkspaceTrust, type WorkspaceTrustIdentity } from "./workspace-trust.js";
+import { workspaceGit, type WorkspaceTrust, type GitWorkspaceIdentity } from "./workspace-trust.js";
 
 export type GitSnapshot = Readonly<{ repository: string; fingerprint: string; commit: string; ref: string }>;
 // branch is the short local branch name, not refs/heads/… .
 export type RewindStage = Readonly<{ cwd: string; branch: string; repository: string }>;
 
-type GitIdentity = Extract<WorkspaceTrustIdentity, { kind: "git" }>;
 type Worktree = { cwd: string; fields: Map<string, string> };
 type BaseState = { dataDir: string; privateDir: string | undefined };
 type Inspection = { base: BaseState; matches: Worktree[] };
@@ -119,7 +118,7 @@ function marker(path: string, expected: string) {
   } finally { closeSync(fd); }
 }
 
-const fingerprint = ({ path, device, inode, birth }: GitIdentity) =>
+const fingerprint = ({ path, device, inode, birth }: GitWorkspaceIdentity) =>
   createHash("sha256").update(JSON.stringify([path, String(device), String(inode), String(birth)])).digest("hex");
 
 function git(cwd: string, signal: AbortSignal, ...args: string[]) {
@@ -233,11 +232,11 @@ export class RewindGit {
       const commit = head.slice(0, -1);
       if (!head.endsWith("\n") || !oid.test(commit) || await git(cwd, signal, "cat-file", "-t", commit) !== "commit\n") failure("snapshot");
       const ref = checkpointPrefix + checkpointId;
-      await this.#trust.withTrust(workspace, signal, () => {
+      await this.#trust.withGit(workspace, signal, () => {
         if (metadata(identity.path, ref) || metadata(identity.path, `${ref}.lock`) ||
             metadata(identity.path, `logs/${ref}`)) failure("conflict");
         return git(cwd, signal, "-c", "core.logAllRefUpdates=false", "update-ref", "--no-deref", ref, commit, "0".repeat(commit.length));
-      }, { git: true, expected: identity });
+      }, identity);
       await exactRef(cwd, signal, ref, commit, "snapshot");
       return Object.freeze({ repository: identity.path, fingerprint: fingerprint(identity), commit, ref });
     });
@@ -261,11 +260,11 @@ export class RewindGit {
       const identity = await this.#identity(workspace, signal, input);
       const state = await this.#inspect(identity, input, plan, signal);
       if (state.matches.length || await this.#branchExists(identity, plan, signal)) failure("conflict");
-      return this.#trust.withTrust(workspace, signal, () => {
+      return this.#trust.withGit(workspace, signal, () => {
         this.#unchangedBase(state.base);
         this.#vacant(identity, plan, operationId);
         return plan;
-      }, { git: true, expected: identity });
+      }, identity);
     });
   }
 
@@ -283,7 +282,7 @@ export class RewindGit {
       if (await this.#branchExists(identity, plan, signal)) failure("conflict");
       await this.#snapshot(identity, input, signal);
       let privateDir = state.base.privateDir;
-      await this.#trust.withTrust(workspace, signal, () => {
+      await this.#trust.withGit(workspace, signal, () => {
         // No await between the authoritative grant, the final local fences,
         // and starting Git. -b without --force asks Git to create the branch.
         this.#unchangedBase(state.base);
@@ -295,9 +294,8 @@ export class RewindGit {
         return git(identity.cwd.path, signal, ...checkoutConfig, "-c", "worktree.useRelativePaths=false",
           "-c", "core.logAllRefUpdates=false", "worktree", "add", "--quiet", "--no-track",
           "-b", plan.branch, "--", plan.cwd, input.commit);
-      }, { git: true, expected: identity });
-      const staged = await this.#trust.withTrust(workspace, signal, () => this.#inspect(identity, input, plan, signal),
-        { git: true, expected: identity });
+      }, identity);
+      const staged = await this.#trust.withGit(workspace, signal, () => this.#inspect(identity, input, plan, signal), identity);
       if (staged.base.dataDir !== state.base.dataDir || staged.base.privateDir !== privateDir) failure("base");
       return this.#verified(workspace, identity, input, plan, operationId, staged, signal);
     });
@@ -326,14 +324,13 @@ export class RewindGit {
   }
 
   #identity(workspace: string, signal: AbortSignal, snapshot?: GitSnapshot) {
-    return this.#trust.withTrust(workspace, signal, identity => {
-      if (identity.kind !== "git") failure("snapshot");
+    return this.#trust.withGit(workspace, signal, identity => {
       if (snapshot && (snapshot.repository !== identity.path || snapshot.fingerprint !== fingerprint(identity))) failure("snapshot");
       return identity;
-    }, { git: true });
+    });
   }
 
-  #snapshot(identity: GitIdentity, snapshot: GitSnapshot, signal: AbortSignal) {
+  #snapshot(identity: GitWorkspaceIdentity, snapshot: GitSnapshot, signal: AbortSignal) {
     metadata(identity.path, snapshot.ref);
     return exactRef(identity.cwd.path, signal, snapshot.ref, snapshot.commit, "snapshot");
   }
@@ -364,7 +361,7 @@ export class RewindGit {
     if (current.dataDir !== state.dataDir || current.privateDir !== state.privateDir) failure("base");
   }
 
-  async #inspect(identity: GitIdentity, snapshot: GitSnapshot, plan: RewindStage, signal: AbortSignal): Promise<Inspection> {
+  async #inspect(identity: GitWorkspaceIdentity, snapshot: GitSnapshot, plan: RewindStage, signal: AbortSignal): Promise<Inspection> {
     const base = this.#baseState();
     if (overlaps(identity.path, this.#base) || overlaps(identity.gitDir.path, this.#base)) failure("base");
     const cwd = identity.cwd.path;
@@ -386,20 +383,20 @@ export class RewindGit {
     return { base, matches: sourceRegistration(registrations, plan) };
   }
 
-  async #branchExists(identity: GitIdentity, stage: RewindStage, signal: AbortSignal) {
+  async #branchExists(identity: GitWorkspaceIdentity, stage: RewindStage, signal: AbortSignal) {
     const ref = `refs/heads/${stage.branch}`;
     const refs = await git(identity.cwd.path, signal, "for-each-ref", "--format=%(refname)", "--", "refs/heads/hush");
     return refs.split("\n").some(name => name && (name === ref || ref.startsWith(name + "/") || name.startsWith(ref + "/")));
   }
 
-  #vacant(identity: GitIdentity, plan: RewindStage, id: string) {
+  #vacant(identity: GitWorkspaceIdentity, plan: RewindStage, id: string) {
     const admin = metadata(identity.path, "worktrees");
     const ref = `refs/heads/${plan.branch}`;
     if (named(plan.cwd) || (admin && !admin.isDirectory()) || metadata(identity.path, `worktrees/${id}`) ||
         metadata(identity.path, ref) || metadata(identity.path, `${ref}.lock`) || metadata(identity.path, `logs/${ref}`)) failure("conflict");
   }
 
-  #checkoutStamp(identity: GitIdentity, plan: RewindStage, id: string) {
+  #checkoutStamp(identity: GitWorkspaceIdentity, plan: RewindStage, id: string) {
     const gitDir = join(identity.path, "worktrees", id);
     const admin = metadata(identity.path, `worktrees/${id}`);
     const index = metadata(identity.path, `worktrees/${id}/index`);
@@ -412,7 +409,7 @@ export class RewindGit {
     return { gitDir, stamp: `${checkout}/${admin.dev}:${admin.ino}:${admin.birthtimeNs}/${markerId}/${backlinkId}/${index.dev}:${index.ino}:${index.mtimeNs}:${index.ctimeNs}` };
   }
 
-  async #verified(workspace: string, identity: GitIdentity, snapshot: GitSnapshot, plan: RewindStage, id: string,
+  async #verified(workspace: string, identity: GitWorkspaceIdentity, snapshot: GitSnapshot, plan: RewindStage, id: string,
       state: Inspection, signal: AbortSignal) {
     const [registered] = state.matches;
     const branch = `refs/heads/${plan.branch}`;
@@ -435,10 +432,10 @@ export class RewindGit {
     if (await git(plan.cwd, signal, "symbolic-ref", "--no-recurse", "HEAD") !== `${branch}\n`) failure("changed");
     await exactRef(plan.cwd, signal, branch, snapshot.commit, "changed");
     await this.#snapshot(identity, snapshot, signal);
-    return this.#trust.withTrust(workspace, signal, () => {
+    return this.#trust.withGit(workspace, signal, () => {
       this.#unchangedBase(state.base);
       if (this.#checkoutStamp(identity, plan, id).stamp !== stamp) failure("changed");
       return plan;
-    }, { git: true, expected: identity });
+    }, identity);
   }
 }

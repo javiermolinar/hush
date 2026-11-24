@@ -3,15 +3,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync,
   writeFileSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseArgs, promisify } from "node:util";
 import { WireError } from "../../server/src/wire.js";
 import { hushDirectory } from "./config.js";
 
-export type WorkspaceTrustStatus = { kind: "git" | "directory"; path: string; trusted: boolean };
 export type DirectoryIdentity = { path: string; device: bigint; inode: bigint; birth: bigint };
-export type WorkspaceTrustIdentity = DirectoryIdentity & ({ kind: "directory" } |
-  { kind: "git"; cwd: DirectoryIdentity; gitDir: DirectoryIdentity });
+export type GitWorkspaceIdentity = DirectoryIdentity & { cwd: DirectoryIdentity; root: DirectoryIdentity; gitDir: DirectoryIdentity };
 
 const messages = {
   workspace: "Invalid workspace on the backend host.",
@@ -19,7 +17,7 @@ const messages = {
   gitUnsupported: "Git on the backend host does not support workspace discovery.",
   notGit: "Managed checkout requires a Git working tree.",
   grant: "Workspace is not trusted by Hush. Run 'hush trust grant --cwd PATH' on the backend host.",
-  work: "Workspace is not trusted for tool execution. Run 'hush trust grant --scope work --cwd PATH' on the backend host.",
+  work: "Workspace is not trusted for tool execution. Run 'hush trust grant --cwd PATH' on the backend host.",
   changed: "Workspace changed. Review the directory again before trusting it.",
   storage: "Hush workspace trust storage is unavailable or unsafe.",
 } as const;
@@ -28,10 +26,6 @@ function failure(reason: keyof typeof messages) {
   const error = new WireError("invalid_request");
   error.message = messages[reason];
   return error;
-}
-
-class NotGitWorkspace extends WireError {
-  constructor() { super("invalid_request"); this.message = messages.notGit; }
 }
 
 const run = promisify(execFile);
@@ -70,7 +64,7 @@ export async function workspaceGit(cwd: string, signal: AbortSignal, ...args: st
     if (code === 128) {
       if (diagnostic === "fatal: not a git repository (or any of the parent directories): .git\n" ||
           /^fatal: not a git repository \(or any parent up to mount point [^\r\n]*\)\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.\n$/.test(diagnostic)) {
-        throw new NotGitWorkspace();
+        throw failure("notGit");
       }
       if (diagnostic === "fatal: this operation must be run in a work tree\n") throw failure("notGit");
     }
@@ -91,55 +85,38 @@ async function directory(path: string): Promise<DirectoryIdentity> {
 
 const sameDirectory = (a: DirectoryIdentity, b: DirectoryIdentity) =>
   a.path === b.path && a.device === b.device && a.inode === b.inode && a.birth === b.birth;
-const sameWorkspace = (a: WorkspaceTrustIdentity, b: WorkspaceTrustIdentity) =>
-  sameDirectory(a, b) && (a.kind === "directory" ? b.kind === "directory" :
-    b.kind === "git" && sameDirectory(a.cwd, b.cwd) && sameDirectory(a.gitDir, b.gitDir));
+const sameWorkspace = (a: GitWorkspaceIdentity, b: GitWorkspaceIdentity) =>
+  sameDirectory(a, b) && sameDirectory(a.cwd, b.cwd) && sameDirectory(a.root, b.root) && sameDirectory(a.gitDir, b.gitDir);
 
 const enoent = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
-async function resolveWorkspace(workspace: string, signal: AbortSignal): Promise<WorkspaceTrustIdentity> {
-  try {
-    signal.throwIfAborted();
-    const cwd = await directory(workspace);
-    let identity: WorkspaceTrustIdentity;
-    let result: string | undefined;
-    try {
-      result = await workspaceGit(cwd.path, signal, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir");
-    } catch (error) {
-      if (!(error instanceof NotGitWorkspace)) throw error;
+async function gitCheckout(cwd: DirectoryIdentity, signal: AbortSignal) {
+  const result = await workspaceGit(cwd.path, signal, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir");
+  const paths = result.slice(0, -1).split("\n");
+  if (paths[0] === "--path-format=absolute") throw failure("gitUnsupported");
+  if (!result.endsWith("\n") || paths.length !== 3 || !paths.every(path => validPath(path) && isAbsolute(path))) throw failure("workspace");
+  const [top, admin, shared] = paths as [string, string, string];
+  const root = await directory(top);
+  const fromRoot = relative(root.path, cwd.path);
+  if (top !== root.path || fromRoot === ".." || fromRoot.startsWith(".." + sep) || isAbsolute(fromRoot)) throw failure("workspace");
+  const gitDir = await directory(admin);
+  const common = admin === shared ? gitDir : await directory(shared);
+  // A linked worktree's private Git directory must belong to the common directory.
+  if (!sameDirectory(gitDir, common) && dirname(gitDir.path) !== join(common.path, "worktrees")) throw failure("workspace");
+  return { root, gitDir, common };
+}
+
+async function resolveGitWorkspace(cwd: DirectoryIdentity, signal: AbortSignal): Promise<GitWorkspaceIdentity> {
+  const { root, gitDir, common } = await gitCheckout(cwd, signal);
+  if (root.path !== cwd.path) {
+    // A nested repository can point core.worktree at an ancestor. Git invoked
+    // at the reported root must select the same checkout as the workspace.
+    const atRoot = await gitCheckout(root, signal);
+    if (!sameDirectory(root, atRoot.root) || !sameDirectory(gitDir, atRoot.gitDir) || !sameDirectory(common, atRoot.common)) {
+      throw failure("workspace");
     }
-    if (result !== undefined) {
-      const paths = result.replace(/\n$/, "").split("\n");
-      if (paths[0] === "--path-format=absolute") throw failure("gitUnsupported");
-      if (paths.length !== 2 || !paths.every(path => validPath(path) && isAbsolute(path))) throw failure("workspace");
-      const gitDir = await directory(paths[0]!);
-      const common = paths[0] === paths[1] ? gitDir : await directory(paths[1]!);
-      // A linked worktree's private Git directory is in the common directory.
-      // Don't let a foreign Git dir borrow trust just by writing a commondir file.
-      if (!sameDirectory(gitDir, common) && dirname(gitDir.path) !== join(common.path, "worktrees")) {
-        throw failure("workspace");
-      }
-      identity = { ...common, kind: "git", cwd, gitDir };
-    } else {
-      // Git may also report "not a git repository" for broken metadata. Don't
-      // turn an unresolved repository into a directory grant. In particular,
-      // a symlink or dangling gitfile is still a marker, not an absence.
-      for (let path = cwd.path;; path = dirname(path)) {
-        signal.throwIfAborted();
-        const marker = await lstat(join(path, ".git")).catch(error => { if (!enoent(error)) throw error; });
-        if (marker) throw failure("workspace");
-        if (dirname(path) === path) break;
-      }
-      identity = { ...cwd, kind: "directory" };
-    }
-    if (!sameDirectory(cwd, await directory(workspace))) throw failure("workspace");
-    signal.throwIfAborted();
-    return identity;
-  } catch (error) {
-    signal.throwIfAborted();
-    if (error instanceof WireError) throw error;
-    throw failure("workspace");
   }
+  return { ...common, cwd, root, gitDir };
 }
 
 function privateDir(path: string, create: boolean) {
@@ -244,46 +221,13 @@ function access(agentDir: string, area: string, data: Buffer, signal?: AbortSign
   } catch { throw failure("storage"); }
 }
 
+// One exact-directory grant authorizes tools, workspace browsing, and Git in
+// that workspace. Keep the existing work records; never promote old Git-only
+// or browse-only grants, and never inherit trust to another checkout or cwd.
+const workArea = "workspace-work-v1", homeArea = "workspace-browse-v1";
+
 // Backend-host authority only: never take the agent directory from a peer.
-// Git trust keeps its existing scope and never authorizes agent tools.
 export class WorkspaceTrust {
-  private readonly agentDir: string;
-
-  constructor(agentDir: string) { this.agentDir = trustDirectory(agentDir); }
-
-  async inspect(workspace: string, signal: AbortSignal): Promise<WorkspaceTrustStatus> {
-    const identity = await resolveWorkspace(workspace, signal);
-    return this.#access(identity, signal);
-  }
-
-  async change(workspace: string, trusted: boolean, signal: AbortSignal): Promise<WorkspaceTrustStatus> {
-    signal.throwIfAborted();
-    if (typeof trusted !== "boolean") throw new WireError("invalid_request");
-    const identity = await resolveWorkspace(workspace, signal);
-    return this.#access(identity, signal, trusted);
-  }
-
-  // For operations that need a fresh grant, start the action in the same turn
-  // as the authoritative read. Pass the initial identity back at a later
-  // irreversible boundary to also reject a changed workspace/repository.
-  async withTrust<T>(workspace: string, signal: AbortSignal, action: (identity: WorkspaceTrustIdentity) => T | Promise<T>,
-      options?: { git?: boolean; expected?: WorkspaceTrustIdentity }): Promise<T> {
-    const identity = await resolveWorkspace(workspace, signal);
-    if (options?.git && identity.kind !== "git") throw failure("notGit");
-    if (options?.expected && !sameWorkspace(identity, options.expected)) throw failure("workspace");
-    if (!this.#access(identity, signal).trusted) throw failure("grant");
-    return action(identity);
-  }
-
-  #access(identity: WorkspaceTrustIdentity, signal: AbortSignal, change?: boolean): WorkspaceTrustStatus {
-    const { kind, path } = identity;
-    return { kind, path, trusted: access(this.agentDir, "workspace-trust-v1", record(kind, identity), signal, change) };
-  }
-}
-
-// Work grants bind the exact canonical directory, with no parent or linked
-// checkout inheritance and no Git discovery. A dismissal is not a grant.
-export class WorkspaceWorkTrust {
   private readonly agentDir: string;
 
   constructor(agentDir: string) { this.agentDir = trustDirectory(agentDir); }
@@ -311,11 +255,42 @@ export class WorkspaceWorkTrust {
   async binding(workspace: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const identity = await directory(workspace);
-    let stamp: string | undefined;
-    try { stamp = storedGrant(this.agentDir, "workspace-work-v1", record("work", identity), signal); }
-    catch (error) { signal?.throwIfAborted(); throw failure("storage"); }
+    const stamp = this.#stamp(identity, signal);
     if (!stamp) throw failure("work");
     return { ...identity, stamp };
+  }
+
+  // Recheck the directory, repository and grant at the operation boundary.
+  // Start the action in the same turn as the final authoritative grant read.
+  async withGit<T>(workspace: string, signal: AbortSignal, action: (identity: GitWorkspaceIdentity) => T | Promise<T>,
+      expected?: GitWorkspaceIdentity): Promise<T> {
+    signal.throwIfAborted();
+    const cwd = await directory(workspace);
+    if (!this.#stamp(cwd, signal)) throw failure("grant");
+    const identity = await resolveGitWorkspace(cwd, signal);
+    if ((expected && !sameWorkspace(identity, expected)) || !sameDirectory(cwd, await directory(workspace))) throw failure("workspace");
+    if (!this.#stamp(cwd, signal)) throw failure("grant");
+    return action(identity);
+  }
+
+  // Home browsing is separate and never admits tools or Git. Its root is
+  // fixed by the backend profile, not by the requester or the workspace.
+  async homeBinding(signal: AbortSignal) {
+    signal.throwIfAborted();
+    const identity = await directory(dirname(this.agentDir));
+    const stamp = storedGrant(this.agentDir, homeArea, record("home", identity), signal);
+    return stamp === undefined ? undefined : { ...identity, stamp };
+  }
+
+  async changeHome(signal: AbortSignal, change?: boolean) {
+    const identity = await directory(dirname(this.agentDir));
+    return { kind: "directory" as const, path: identity.path,
+      trusted: access(this.agentDir, homeArea, record("home", identity), signal, change) };
+  }
+
+  #stamp(identity: DirectoryIdentity, signal?: AbortSignal) {
+    try { return storedGrant(this.agentDir, workArea, record("work", identity), signal); }
+    catch { signal?.throwIfAborted(); throw failure("storage"); }
   }
 
   #status(identity: DirectoryIdentity, signal?: AbortSignal) {
@@ -324,26 +299,7 @@ export class WorkspaceWorkTrust {
   }
 
   #access(identity: DirectoryIdentity, purpose: "work" | "dismissed", signal?: AbortSignal, change?: boolean) {
-    return access(this.agentDir, "workspace-work-v1", record(purpose, identity), signal, change);
-  }
-}
-
-// Browse grants use separate records from Git and tool execution. Home is a
-// separate purpose and can never be selected by supplying a path over the wire.
-export class WorkspaceBrowseTrust {
-  constructor(private readonly agentDir: string) {}
-
-  async root(kind: "browse" | "home", workspace: string, signal: AbortSignal) {
-    signal.throwIfAborted();
-    const identity = await directory(kind === "home" ? dirname(this.agentDir) : workspace);
-    const stamp = storedGrant(this.agentDir, "workspace-browse-v1", record(kind, identity), signal);
-    return stamp === undefined ? undefined : { ...identity, stamp };
-  }
-
-  async change(kind: "browse" | "home", workspace: string, signal: AbortSignal, change?: boolean): Promise<WorkspaceTrustStatus> {
-    const identity = await directory(kind === "home" ? dirname(this.agentDir) : workspace);
-    return { kind: "directory", path: identity.path,
-      trusted: access(this.agentDir, "workspace-browse-v1", record(kind, identity), signal, change) };
+    return access(this.agentDir, workArea, record(purpose, identity), signal, change);
   }
 }
 
@@ -355,10 +311,10 @@ export async function runWorkspaceTrustCommand(argv: string[]): Promise<number> 
     const [action] = positionals;
     if (positionals.length !== 1 || values.cwd === "" || process.env.HUSH_SOCKET ||
         process.env.HUSH_PROFILE && process.env.HUSH_PROFILE !== "hush") throw new Error();
-    const signal = AbortSignal.timeout(30_000), agentDir = hushDirectory();
+    const signal = AbortSignal.timeout(30_000), store = new WorkspaceTrust(hushDirectory());
     // Private entry points for the managed local TUI, never socket methods.
     if (action === "review-work" || action === "grant-reviewed-work" || action === "dismiss-reviewed-work") {
-      const cwd = values.cwd, store = new WorkspaceWorkTrust(agentDir);
+      const cwd = values.cwd;
       if (!cwd || !isAbsolute(cwd) || values.scope !== undefined) throw new Error();
       if (action === "review-work" && values.expect === undefined) {
         process.stdout.write(JSON.stringify(await store.review(cwd, signal)) + "\n");
@@ -367,30 +323,21 @@ export async function runWorkspaceTrustCommand(argv: string[]): Promise<number> 
       } else throw new Error();
       return 0;
     }
-    const scope = values.scope ?? "git";
+    const scope = values.scope;
     if (action !== "status" && action !== "grant" && action !== "revoke" || values.expect !== undefined ||
-        scope !== "git" && scope !== "work" && scope !== "browse" && scope !== "home" ||
-        scope === "home" && values.cwd !== undefined) throw new Error();
+        scope !== undefined && scope !== "work" && scope !== "home" || scope === "home" && values.cwd !== undefined) throw new Error();
     const workspace = resolve(values.cwd ?? ".");
-    let state: WorkspaceTrustStatus & { dismissed?: boolean };
-    if (scope === "work") {
-      const store = new WorkspaceWorkTrust(agentDir);
-      // The reviewed identity stays internal to the local confirmation flow.
-      const { kind, path, trusted, dismissed } = action === "status" ? await store.review(workspace, signal) :
-        await store.change(workspace, action, signal);
-      state = { kind, path, trusted, dismissed };
-    } else if (scope === "browse" || scope === "home") {
-      state = await new WorkspaceBrowseTrust(agentDir).change(scope, workspace, signal, action === "status" ? undefined : action === "grant");
-    } else {
-      const store = new WorkspaceTrust(agentDir);
-      state = action === "status" ? await store.inspect(workspace, signal) : await store.change(workspace, action === "grant", signal);
-    }
-    process.stdout.write(values.json ? JSON.stringify(state) + "\n" :
-      `${state.trusted ? "trusted" : "not trusted"} ${state.kind} ${JSON.stringify(state.path)}\n`);
+    // --scope work is a compatibility alias. The reviewed identity stays
+    // internal to the local confirmation flow.
+    const state = scope === "home" ? await store.changeHome(signal, action === "status" ? undefined : action === "grant") :
+      action === "status" ? await store.review(workspace, signal) : await store.change(workspace, action, signal);
+    const { kind, path, trusted } = state;
+    process.stdout.write(values.json ? JSON.stringify({ kind, path, trusted, ...("dismissed" in state && { dismissed: state.dismissed }) }) + "\n" :
+      `${trusted ? "trusted" : "not trusted"} ${kind} ${JSON.stringify(path)}\n`);
     return 0;
   } catch (error) {
     process.stderr.write("hush: " + (error instanceof WireError ? error.message :
-      "Use trust status, grant, or revoke [--scope git|work|browse|home] on the Hush backend host.") + "\n");
+      "Use trust status, grant, or revoke with --cwd PATH for a workspace or --scope home for home browsing, on the Hush backend host.") + "\n");
     return 1;
   }
 }

@@ -9,7 +9,7 @@ import { skillCommand, skillName, type WorkspaceSkill, type WorkspaceSkillsHost 
 import { threadWorkspace } from "./thread-workspace.js";
 import { readStoreJSON, statStorePath } from "./store-files.js";
 import { readScopedText } from "./workspace-file.js";
-import type { WorkspaceWorkTrust } from "./workspace-trust.js";
+import type { WorkspaceTrust } from "./workspace-trust.js";
 
 const sourceLimit = 32 * 1024;
 const maxDirectoryEntries = 64;
@@ -57,7 +57,7 @@ export class StandaloneSkills implements WorkspaceSkillsHost {
   readonly #cursors = new Cursors();
   #pending = 0;
 
-  constructor(private readonly h: () => Harness, private readonly agent: string, private readonly trust: WorkspaceWorkTrust) {}
+  constructor(private readonly h: () => Harness, private readonly agent: string, private readonly trust: WorkspaceTrust) {}
 
   async #scope(thread: string, signal: AbortSignal): Promise<Scope> {
     const cwd = await threadWorkspace(this.h(), thread, signal);

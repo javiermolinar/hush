@@ -1,6 +1,6 @@
 # Contributing to hush
 
-Read [AGENTS.md](AGENTS.md) for project and TUI constraints. From the checkout root, with
+Use [AGENTS.md](AGENTS.md) to find the guide for your change. From the checkout root, with
 [Mise](https://mise.jdx.dev/), Python 3 and a C compiler:
 
 ```sh
@@ -11,7 +11,8 @@ mise run test:race
 ```
 
 [CI](.github/workflows/ci.yml) runs these checks on Linux amd64 and macOS arm64, including the TUI
-geometry, golden frames and frame budgets. Linux also checks Go formatting, verifies the SDK schema
+geometry, golden frames and frame budgets. The Go race run uses `-short` to skip timing checks.
+Linux also checks Go formatting, verifies the SDK schema
 copies (`go generate ./sdk`), and verifies the embedded release binary at the minimum supported Node
 version. The normal tests use local fixtures and don't need API keys. Live provider and real OS
 keyring checks remain opt-in.
@@ -33,6 +34,13 @@ mise --env security exec -- npm audit --audit-level=high
 Treat new secret findings as real until verified. Rotate exposed credentials and clean up the affected
 history before sharing it. Don't add broad path or rule exclusions for fixtures or plan metadata. Use
 [private reporting](SECURITY.md) for suspected vulnerabilities.
+
+## Visual changes
+
+Inspect light and dark captures in Catppuccin Latte and Mocha. `TestReleaseFrames` writes sample
+production-model captures when `HUSH_RELEASE_FRAMES` points to an existing directory. Capture the
+changed flow separately if it isn't covered. Regenerate goldens with `go test ./tui -run Golden -update`
+only for an intended change, and review the frame diffs.
 
 ## Measure host integration latency
 

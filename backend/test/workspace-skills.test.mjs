@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } fr
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { dial } from '../../server/test/client.mjs';
-import { WorkspaceWorkTrust } from '../../dist/backend/src/workspace-trust.js';
+import { WorkspaceTrust } from '../../dist/backend/src/workspace-trust.js';
 import { startBackend } from '../../dist/hush-backend.mjs';
 
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
@@ -27,7 +27,7 @@ test('standalone skills opt in, isolate workspaces, and bind a staged input to t
     wire = await dial(socket);
     return ok(await wire.send('hello', { versions: [1], capabilities: { workspaceSkills: [1], intro: [2] } })).capabilities;
   };
-  const trust = new WorkspaceWorkTrust(agentDir), grant = (cwd, action = 'grant') => trust.change(cwd, action, AbortSignal.timeout(5000));
+  const trust = new WorkspaceTrust(agentDir), grant = (cwd, action = 'grant') => trust.change(cwd, action, AbortSignal.timeout(5000));
   await grant(a);
   await addSkill(join(a, '.pi', 'skills'), 'pi-only', 'Pi skill', 'PI body must not load');
   const first = await addSkill(join(a, '.agents/skills'), 'review', 'Review FIRST', 'FIRST body');

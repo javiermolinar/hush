@@ -117,8 +117,7 @@ try {
   await put(entry, `process.env.NODE_NO_WARNINGS = '1';\nif (process.argv.includes('--supervisor')) process.argv.push('--faux');\n${await readFile(bundle, 'utf8')}`);
   const token = randomUUID();
   await invoke(process.execPath, [entry, '--hush-internal-service-claim', token]);
-  for (const cwd of [work, sub]) await cli('trust', 'grant', '--scope', 'work', '--cwd', cwd);
-  await cli('trust', 'grant', '--scope', 'browse', '--cwd', work);
+  for (const cwd of [work, sub]) await cli('trust', 'grant', '--cwd', cwd);
   await boot(token);
   const { id: small } = await request('thread.new', { cwd: work });
   const { id: large } = await request('thread.new', { cwd: sub });

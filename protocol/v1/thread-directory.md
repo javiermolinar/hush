@@ -38,12 +38,13 @@ whose recent activity moved them ahead of the fence.
   passive wait per connection. Reconnect without `after`.
 - `ext.threadDirectory.new`: optional `cwd`, `title` and `worktree` (defaults to false).
   Paths are on the backend. Omitting `cwd` uses the backend's project directory.
-  An opted-in worktree requires Git, host-authorized repository trust and a committed HEAD.
-  A standalone Hush host checks its private Hush grants before checkout; the
-  legacy Pi host uses Pi trust. The connection cannot grant or change trust.
+  An opted-in worktree requires Git, a trusted source, and a committed HEAD.
+  A standalone Hush host checks the source directory's workspace grant before
+  checkout; the legacy Pi host uses Pi trust. The connection cannot grant or change trust.
   It creates a private checkout and unique branch from committed HEAD, not from
   working files, then creates a conversation with its `cwd` and allocation metadata
-  in one Durable commit. Creation is not keyed; do not retry an uncertain reply.
+  in one Durable commit. The new checkout does not inherit a Hush workspace grant.
+  Creation is not keyed; do not retry an uncertain reply.
 - `ext.threadDirectory.archive`: set `{threadId, archived}`; returns `{}`. A live
   native run or compaction rejects archive as `busy`. Archive is presentation, not
   deletion, permission enforcement, or cancellation. History and explicit attachment

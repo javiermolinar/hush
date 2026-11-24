@@ -35,7 +35,7 @@ func gitDiffSnapshot(summary sdk.GitDiffSummary, err error) gitDiffState {
 	if err != nil {
 		badge := "± unavailable"
 		if sdk.GitDiffNeedsTrust(err) {
-			badge = "± needs Git trust"
+			badge = "± needs trust"
 		}
 		return gitDiffState{err: err, badge: badge}
 	}
@@ -239,7 +239,7 @@ func (m *Model) openGitDiff(r ownerRoute) tea.Cmd {
 		return open
 	}
 	if sdk.GitDiffNeedsTrust(state.err) {
-		// The operator may have granted Git trust since the last poll.
+		// The operator may have trusted this workspace since the last poll.
 		return m.fetchGitSummary(d)
 	}
 	if m.gitDiffFeed.token == 0 {
@@ -497,7 +497,7 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 		case g.cancel != nil || !g.patch && g.err == nil && g.list.Revision == "":
 			add(m.control("Loading…"), -1)
 		case sdk.GitDiffNeedsTrust(g.err):
-			add(paint(x.Warning, "Git trust required for review"), -1)
+			add(paint(x.Warning, "Workspace trust required for Git review"), -1)
 			if body >= 3 {
 				add(m.control("On the backend host, run:"), -1)
 			}

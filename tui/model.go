@@ -35,7 +35,7 @@ type Options struct {
 	CustomModels    bool
 	// ProviderLogin enables /login for a host that can authenticate locally.
 	ProviderLogin *ProviderLoginOptions
-	// WorkspaceTrust enables the workspace-level tool permission dialog.
+	// WorkspaceTrust enables the workspace permission dialog.
 	WorkspaceTrust *WorkspaceTrustOptions
 	// Intro enables a local startup block in the initial thread.
 	Intro *IntroOptions

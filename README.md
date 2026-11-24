@@ -18,8 +18,9 @@ Unpack `hush-<os>-<arch>.tar.gz` for your machine. From the directory containing
 mkdir -p "$HOME/.local/bin" && install -m 755 ./hush "$HOME/.local/bin/hush"
 ```
 
-Run `~/.local/bin/hush` in your project. The local TUI asks before allowing tools
-in a new workspace; you can choose **Not now** and change your mind with `/trust`.
+Run `~/.local/bin/hush` in your project. The local TUI asks before trusting a new
+workspace for tools, `@` file browsing, and Git. You can choose **Not now** and
+change your mind with `/trust`.
 Type `/login` to choose an [OAuth provider](backend/README.md#host-local-provider-login), then use `/model` to select a model. The binary embeds the backend. You need Node.js 22.19.0 or newer, but not a separate Pi installation.
 [Codemode](backend/README.md#standalone-codemode) is an optional host setting for batching workspace reads.
 
@@ -33,7 +34,7 @@ This is from a run against Hush’s scripted test model. I restarted the backend
 between the first prompt and `thread list`.
 
 ```console
-$ hush trust grant --scope work --cwd .
+$ hush trust grant --cwd .
 $ hush --print 'Check the release notes'
 Faux: Check the release notes
 $ hush thread list
@@ -53,15 +54,13 @@ On a supported standalone backend, click the `±` badge or use `/diff` or
 shows the thread’s working directory and, when available, the local Git branch.
 Open a file with Enter, go back with Esc, or use Tab in the list to compare with
 the last file checkpoint. Review is read-only; it does not stage or restore files.
-Git review explains missing Git permission but cannot grant it. On the backend
-host, use `hush trust grant --cwd PATH` for Git operations. This is separate from
-[permission to run agent tools](backend/README.md#workspace-tool-trust).
+Git review and `@` use the same [workspace grant](backend/README.md#workspace-trust)
+as agent tools. Use `/trust` in the local TUI or `hush trust grant --cwd PATH`
+on the backend host.
 
-On supported hosts, type `@` to browse the active thread’s authorized
-workspace, then Tab or Enter to complete a path without submitting. Use
-`hush trust grant --scope browse --cwd PATH` on the backend host to enable it.
-`@~/` browses the backend’s home only after a separate
-`hush trust grant --scope home`. Neither grant permits tool execution.
+Type `@` to browse the active thread’s trusted workspace, then Tab or Enter to
+complete a path without submitting. `@~/` browses the backend’s home only after a
+separate `hush trust grant --scope home`, which does not permit tool execution.
 
 Open `?` → **Show loaded context** to see the instruction files the backend
 resolves for the active thread’s next submission. The inspector lists paths,

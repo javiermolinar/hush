@@ -16,8 +16,9 @@ Hush checkpoints and rewind operations have lowercase UUID v4 IDs.
 
 A checkpoint has `atEntryId`, `label`, `kind`, and an `id` for native records.
 An imported `pi.label` projects as `imported_label` without an ID and never
-provides file evidence. Native file records pin only committed Git HEAD in a
-trusted repository, at the latest visible committed entry of an idle thread.
+provides file evidence. Native file records pin only committed Git HEAD, require
+trust for the thread's workspace, and use the latest visible committed entry of
+an idle thread.
 They never stage or include local edits, untracked files or submodule contents.
 Bookmark records can refer to any visible entry and don't use Git. Text fields
 are single-line, at most 192 UTF-8 bytes and contain no control/format characters.
@@ -42,6 +43,7 @@ or repeat the exact confirmation; don't create a new operation to recover a
 lost reply. Transcript-only is a fork with files left alone. File restore uses
 the fixed private path and unique branch, rechecks current Hush trust, and
 publishes the fork and its checkout metadata together only after verification.
+The fork's new checkout does not inherit a workspace grant.
 After restart the same task verifies and reuses a fully staged clean checkout,
 rather than creating a second one. Unsafe or changed leftovers fail closed and
 are retained for host-operator inspection. No original/shared checkout is reset,

@@ -71,9 +71,11 @@ def wait_for(text):
     raise AssertionError('Did not observe ' + repr(text) + ': ' + repr(ansi.sub(b'', output)[-1000:]))
 try:
     if action == 'trust':
-        wait_for('Allow Hush to run tools in:')
+        wait_for('Trust this workspace?')
         os.write(master, b't')
-        wait_for('Workspace trusted for tools')
+        wait_for('Workspace trusted')
+        os.write(master, b'@AGENTS')
+        wait_for('AGENTS.md')
     else:
         wait_for(previous)
         print('pty_attach_ms=' + str(round((time.monotonic() - start) * 1000, 2)))
@@ -399,7 +401,7 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   await bad(['--print', '--thread', id, 'release-denied'], /not trusted for tool execution/);
   const trust = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, '', 'trust'], { cwd, env });
   assert.equal(trust.code, 0, trust.stdout + trust.stderr);
-  assert.equal(JSON.parse(await good(['trust', 'status', '--scope', 'work', '--json'])).trusted, true);
+  assert.equal(JSON.parse(await good(['trust', 'status', '--json'])).trusted, true);
   await good(['--print', '--thread', id, 'release-first-durable'], /^Loopback Codex reply\n$/);
   assert.equal(seen[1].model, 'gpt-6-sol');
   const directTools = ['read', 'bash', 'edit', 'write'];

@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { startBackend } from "../../dist/hush-backend.mjs";
-import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
+import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
 import { dial } from "../../server/test/client.mjs";
 
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
 const range = { kind: "before", beforeEntryId: null };
 const denied = { code: "invalid_request",
-  message: "Workspace is not trusted for tool execution. Run 'hush trust grant --scope work --cwd PATH' on the backend host." };
+  message: "Workspace is not trusted for tool execution. Run 'hush trust grant --cwd PATH' on the backend host." };
 
 async function fixture(t) {
   const home = await realpath(await mkdtemp("/tmp/hush-work-"));
@@ -23,7 +23,7 @@ async function fixture(t) {
   peer = await dial(socket);
   const hello = ok(await peer.send("hello", { versions: [1], capabilities: { threadDirectory: [2], images: [1], workspaceWorkTrust: [1] } }));
   assert.equal(hello.capabilities.workspaceWorkTrust, 1);
-  const trust = new WorkspaceWorkTrust(agentDir);
+  const trust = new WorkspaceTrust(agentDir);
   const call = async (method, params) => ok(await peer.send(method, params));
   const newThread = async path => (await call("thread.new", { cwd: path })).id;
   const history = async threadId => (await call("history", { threadId, range, limit: 30 })).entries;

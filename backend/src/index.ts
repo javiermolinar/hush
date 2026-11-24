@@ -30,7 +30,7 @@ import { skillUnavailable, StandaloneSkills, standaloneSkillsConfigured } from "
 import { readStandaloneSettings, StandaloneSettingsHost, standaloneModelDefault, standaloneSettingsView } from "./standalone-settings.js";
 import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
-import { runWorkspaceTrustCommand, WorkspaceTrust, WorkspaceWorkTrust } from "./workspace-trust.js";
+import { runWorkspaceTrustCommand, WorkspaceTrust } from "./workspace-trust.js";
 import { ImageFitter } from "./images.js";
 import { BackendError, parseConfig, type BackendConfig } from "./config.js";
 import { fauxModel, fauxTools, makeFaux } from "./faux.js";
@@ -174,19 +174,18 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const { models: modelRegistry, runtime } = models = await loadModels(config);
     const sources = config.piEvents ? new PiSources(runtime) : undefined;
     const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral, sources?.tapTool, standalone);
-    const workTrust = standalone && !config.ephemeral ? new WorkspaceWorkTrust(config.agentDir) : undefined;
-    const workspaceSkills = workTrust && config.dataDir && await standaloneSkillsConfigured(config.agentDir)
-      ? new StandaloneSkills(() => h!, config.agentDir, workTrust) : undefined;
-    const authorizeWork = workTrust && ((cwd: string | undefined, ctx: Context) =>
-      workTrust.require(dirs.directory(cwd), ctx.abortSignal));
-    const prompt = dirs.extension(() => h, !!workTrust);
+    const trust = standalone && !config.ephemeral ? new WorkspaceTrust(config.agentDir) : undefined;
+    const workspaceSkills = trust && config.dataDir && await standaloneSkillsConfigured(config.agentDir)
+      ? new StandaloneSkills(() => h!, config.agentDir, trust) : undefined;
+    const authorizeWork = trust && ((cwd: string | undefined, ctx: Context) =>
+      trust.require(dirs.directory(cwd), ctx.abortSignal));
+    const prompt = dirs.extension(() => h, !!trust);
     const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;
     const builtin = tap(standalone ? standaloneCoding : coding), fauxExtension = tap(fauxTools);
     if (standalone && config.dataDir && localSettings.codemode === true) codemode = await workspaceCodemode();
     const base = config.ephemeral ? [prompt] : [prompt, builtin,
       ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxExtension] : [])];
     const ordered = sources?.extensions(() => h!) ?? [];
-    const trust = standalone && config.dataDir ? new WorkspaceTrust(config.agentDir) : undefined;
     const schedules = standalone && config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork) : undefined;
     const checkpoints = trust && config.dataDir ? new CheckpointService(() => h!, config.dataDir, trust) : undefined;
     for (const extension of [...base, ...ordered]) registry.install(extension);
@@ -358,14 +357,14 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }
     const modelCatalog = standalone ? nativeModelCatalog(harness, runtime, modelRegistry, nativeDefault) : undefined;
     const gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
-    const browser = standalone && config.dataDir ? await workspaceFileHelper() : undefined;
-    workspaceFiles = browser ? new WorkspaceFiles(harness, config.agentDir, browser) : undefined;
-    const loadedContext = workTrust && config.dataDir ? new LoadedContext(harness, dirs, workTrust) : undefined;
+    const browser = trust && config.dataDir ? await workspaceFileHelper() : undefined;
+    workspaceFiles = trust && browser ? new WorkspaceFiles(harness, trust, browser) : undefined;
+    const loadedContext = trust && config.dataDir ? new LoadedContext(harness, dirs, trust) : undefined;
     const settingsHost = standalone && config.dataDir && !config.faux && !config.model
       ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff, workspaceFiles, workspaceSkills, loadedContext,
       hushProfile: standalone ? 1 : undefined, nativeStop: standalone ? 1 : undefined,
-      workspaceWorkTrust: workTrust ? 1 : undefined, settings: settingsHost,
+      workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost,
       clientEnvironment: standalone ? 1 : undefined, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });
     await server.listen(config.socket);

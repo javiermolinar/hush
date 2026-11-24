@@ -3,12 +3,12 @@ import type { LoadedContextHost } from "../../server/src/loaded-context.js";
 import { WireError } from "../../server/src/wire.js";
 import type { ProjectResources } from "./resources.js";
 import { threadWorkspace } from "./thread-workspace.js";
-import type { WorkspaceWorkTrust } from "./workspace-trust.js";
+import type { WorkspaceTrust } from "./workspace-trust.js";
 
 export class LoadedContext implements LoadedContextHost {
   #pending = 0;
 
-  constructor(private readonly h: Harness, private readonly resources: ProjectResources, private readonly work: WorkspaceWorkTrust) {}
+  constructor(private readonly h: Harness, private readonly resources: ProjectResources, private readonly work: WorkspaceTrust) {}
 
   async get(threadId: string, peer: AbortSignal) {
     if (this.#pending >= 8) throw new WireError("limit");

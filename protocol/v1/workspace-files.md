@@ -24,9 +24,10 @@ an ancestor with a symlink, or changing a directory invalidates continuation. An
 unknown or unauthorized first page returns `not_found`; an invalid continuation
 returns `invalid_cursor`.
 
-Use `hush trust grant|revoke --scope browse --cwd PATH` or
-`hush trust grant|revoke --scope home` on the backend host. Neither tool trust nor
-Git trust is a browse grant. Socket peers cannot create or change these grants.
+The workspace root uses the same grant as agent tools and Git operations:
+`hush trust grant|revoke --cwd PATH` on the backend host. The home root uses a
+separate `hush trust grant|revoke --scope home` grant for browsing only. Socket
+peers cannot create or change these grants.
 The Go CLI passes the absolute helper when launching Hush. The backend keeps one
 private helper process warm once a granted root is available; every page still
 reauthorizes and rescans the exact directory. A custom standalone

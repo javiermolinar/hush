@@ -23,8 +23,8 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     const env = { HOME: home, PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
     const git = async (...args) => (await run("git", args, { cwd, env })).stdout.trim();
     const commit = msg => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", msg);
-    const trust = (op, workspace = cwd, ...args) =>
-      run(process.execPath, [bundle, "trust", op, "--cwd", workspace, ...args], { cwd, env });
+    const trust = (op, workspace = sub) =>
+      run(process.execPath, [bundle, "trust", op, "--cwd", workspace], { cwd, env });
     await git("init", "-q", "-b", "main");
     await writeFile(join(cwd, "main"), "base\n");
     await writeFile(join(sub, "nested"), "neighbor\n");
@@ -43,9 +43,7 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     assert.equal((await legacy.send("ext.gitDiff.summary", { threadId, range: "head" })).error.code, "unsupported_capability");
     const deny = async () => assert.deepEqual((await peer.send("ext.gitDiff.summary", { threadId, range: "head" })).error, needsTrust);
     await deny();
-    await trust("grant", sub, "--scope=work");
-    await deny(); // an agent workspace grant does not grant Git inspection
-    await trust("grant");
+    await trust("grant"); // The subdirectory grant enables Git review of this checkout and agent work.
     const clean = await summary();
     assert.deepEqual(clean.files, []);
     assert.equal(clean.branch, "main");
@@ -93,9 +91,12 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     assert.deepEqual(await readFile(join(cwd, ".git", "index")), index);
     assert.equal(await git("rev-parse", "HEAD"), latest);
     assert.equal(await readFile(join(cwd, "main"), "utf8"), "working\n\x1b[0mline\n");
-    const isolated = await call("ext.threadDirectory.new", { cwd, worktree: true });
+    const isolated = await call("ext.threadDirectory.new", { cwd: sub, worktree: true });
     assert.notEqual(isolated.checkout.cwd, cwd);
-    const isolatedSummary = await call("ext.gitDiff.summary", { threadId: isolated.id, range: "head" });
+    const isolatedRequest = { threadId: isolated.id, range: "head" };
+    assert.deepEqual((await peer.send("ext.gitDiff.summary", isolatedRequest)).error, needsTrust);
+    await trust("grant", isolated.checkout.cwd);
+    const isolatedSummary = await call("ext.gitDiff.summary", isolatedRequest);
     assert.deepEqual(isolatedSummary.files, []);
     assert.equal(isolatedSummary.branch, isolated.checkout.branch);
     assert.equal((await peer.send("ext.gitDiff.file", { threadId: isolated.id, revision: worktree.revision, file: 0 })).error.code, "invalid_cursor");
@@ -105,7 +106,7 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     await git("-C", nested, "config", "core.worktree", cwd);
     await trust("grant", nested);
     const { id: nestedId } = await call("thread.new", { cwd: nested });
-    assert.match((await peer.send("ext.gitDiff.summary", { threadId: nestedId, range: "head" })).error.message, /review is unavailable/);
+    assert.match((await peer.send("ext.gitDiff.summary", { threadId: nestedId, range: "head" })).error.message, /Invalid workspace/);
     await trust("revoke");
     assert.deepEqual((await peer.send("ext.gitDiff.file", { threadId, revision: worktree.revision, file: 0 })).error, needsTrust);
   } finally {

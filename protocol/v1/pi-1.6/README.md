@@ -15,6 +15,12 @@ Two Pi wire details matter:
 
 ## Modes, flags and I/O
 
+Print, JSON, and RPC paths never start Bubble Tea, issue terminal queries or controls, or prompt.
+Keep stdout for the final answer in print, JSONL in JSON/RPC, or a command's `--json` result;
+diagnostics go to stderr. Preserve Pi's output formats and exit statuses within this profile.
+Where approvals are supported, a run that needs one must exit with a distinct status and stay
+parked for another client.
+
 | Profile input | Rule | Reference fixture |
 | --- | --- | --- |
 | No explicit mode; either stdin or stdout not a TTY | Print, not an alternate screen or prompt. | `cli:redirected-flags-and-input`; terminal-only behavior from pinned `cli-integration.md`. |
@@ -94,4 +100,4 @@ commit and tool taps, including a blocked watch, exact compaction placement, and
 and native print through the Go binary, uses stock Pi's `RpcClient`, and checks real loss and invocation-private
 exit/kill behavior. See [the capability boundary](pi-events.md) for services that this release does not advertise.
 
-Sources: Pi [`cli-integration.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/cli-integration.md), [`cli.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/cli.md), [`json.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/json.md), [`rpc.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/rpc.md) and [`rpc-commands.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/rpc-commands.md); distributions and declarations from this repository's lockfile. Durable API references are in `AGENTS.md`.
+Sources: Pi [`cli-integration.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/cli-integration.md), [`cli.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/cli.md), [`json.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/json.md), [`rpc.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/rpc.md) and [`rpc-commands.md`](https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/rpc-commands.md); distributions and declarations from this repository's lockfile. See the [pinned Durable references](../../../backend/README.md#pi-durable-references) for backend behavior. Update these links with the Pi pin.

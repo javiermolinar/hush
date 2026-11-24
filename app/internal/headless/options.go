@@ -23,7 +23,7 @@ const usage = `Usage:
   hush service status|pause|resume|restart|uninstall
   hush stop [--socket PATH] [--json | -q]
   hush auth login|status|logout [PROVIDER] [--backend BUNDLE]
-  hush trust status|grant|revoke [--scope git|work|browse|home] [--cwd PATH] [--json]
+  hush trust status|grant|revoke [--cwd PATH | --scope home] [--json]
   hush store inspect|activate|rollback [--backend BUNDLE]
   hush store prepare --from PINNED-HUSH [--backend BUNDLE]
   hush wait --thread ID [--json]
@@ -212,9 +212,11 @@ func parse(args []string) (options, error) {
 			f.Changed("profile") && o.ui.Profile != "hush" || f.Changed("cwd") && o.create.CWD == "" {
 			return o, errors.New("trust is local to the Hush backend host and accepts only --backend, --profile hush, --cwd, --json and --scope")
 		}
-		if f.Changed("scope") && !slices.Contains([]string{"git", "work", "browse", "home"}, o.trustScope) ||
+		// Keep --scope work as an alias; never broaden a command asking for
+		// the old Git-only or browse-only permission.
+		if f.Changed("scope") && o.trustScope != "home" && o.trustScope != "work" ||
 			o.trustScope == "home" && f.Changed("cwd") {
-			return o, errors.New("use --scope git, work, browse, or home (home does not accept --cwd)")
+			return o, errors.New("use --cwd PATH for workspace trust or --scope home for home browsing (not both)")
 		}
 		o.command, o.trustAction = localTrust, rest[1]
 		return o, nil

@@ -42,12 +42,11 @@ export class ThreadWorktrees {
         if (!value || /[\0\r\n]/.test(value)) throw new WireError("invalid_request");
         return value;
       };
-      // Bind discovery and all checkout commands to the same source. In the
-      // Hush path this can be a subdirectory of the granted Git worktree.
-      const identity = await this.workspaceTrust?.withTrust(workspace, signal, value => value, { git: true });
-      const topLevel = async (cwd: string) => existingDirectory(line(await git(cwd, "rev-parse", "--show-toplevel")));
-      const root = await topLevel(identity?.kind === "git" ? identity.cwd.path : workspace);
-      const source = identity?.kind === "git" ? identity.cwd.path : root;
+      // Bind discovery and all checkout commands to the same authorized
+      // source. The workspace can be a directory within the checkout.
+      const identity = await this.workspaceTrust?.withGit(workspace, signal, value => value);
+      const root = identity?.root.path ?? await existingDirectory(line(await git(workspace, "rev-parse", "--show-toplevel")));
+      const source = identity?.cwd.path ?? root;
       const common = identity?.path ?? await existingDirectory(line(await git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")));
       const first = (await git(source, "worktree", "list", "--porcelain", "-z")).split("\0", 1)[0];
       if (!first?.startsWith("worktree ")) throw new WireError("invalid_request");
@@ -67,8 +66,8 @@ export class ThreadWorktrees {
       if (Array.from(cwd).length > 4096) throw new WireError("invalid_request");
       const checkout = () => git(source, "worktree", "add", "-b", branch, "--", cwd, head);
       if (this.workspaceTrust) {
-        if (identity?.kind !== "git" || await topLevel(source) !== root) throw new WireError("invalid_request");
-        await this.workspaceTrust.withTrust(workspace, signal, checkout, { git: true, expected: identity });
+        if (!identity) throw new WireError("invalid_request");
+        await this.workspaceTrust.withGit(workspace, signal, checkout, identity);
       } else await checkout();
       return { cwd, branch, repository: primary };
     } catch (error) {

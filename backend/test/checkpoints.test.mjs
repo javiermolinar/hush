@@ -11,7 +11,6 @@ import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { dial } from "../../server/test/client.mjs";
 import { startBackend } from "../../dist/hush-backend.mjs";
-import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const run = promisify(execFile);
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
@@ -26,17 +25,14 @@ async function fixture(t) {
   const env = { HOME: home, PATH: process.env.PATH, NODE_NO_WARNINGS: "1", LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
   const git = async (dir, ...args) => (await run("git", args, { cwd: dir, env })).stdout.trim();
-  const trust = op => run(process.execPath, [bundle, "trust", op, "--cwd", cwd, "--json"], { cwd, env });
-  const work = new WorkspaceWorkTrust(agentDir);
-  const grantWork = path => work.change(path, "grant", AbortSignal.timeout(5000));
-  await grantWork(cwd);
+  const trust = (op, path = cwd) => run(process.execPath, [bundle, "trust", op, "--cwd", path, "--json"], { cwd, env });
   const commit = msg => git(cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", msg);
   await git(cwd, "init", "-q");
   await writeFile(join(cwd, "main"), "at checkpoint\n");
   await writeFile(join(cwd, ".gitignore"), "private\n");
   await git(cwd, "add", "main", ".gitignore");
   await commit("seed");
-  return { home, agentDir, dataDir, cwd, git, trust, grantWork, commit, env, socket: join(dataDir, "hush.sock") };
+  return { home, agentDir, dataDir, cwd, git, trust, commit, env, socket: join(dataDir, "hush.sock") };
 }
 
 async function view(f) {
@@ -74,11 +70,10 @@ test("checkpoint restore forks two shared dirty threads into an isolated committ
   const w = await view(f);
   try {
     const threadId = await w.newThread(f.cwd), shared = await w.newThread(f.cwd);
+    await f.trust("grant");
     const atEntryId = await w.seed(threadId, "before");
     const snapshotCommit = await f.git(f.cwd, "rev-parse", "HEAD");
     const record = { threadId, kind: "files", atEntryId, label: "Before changes" };
-    assert.match((await w.peer.send("ext.checkpoints.record", record)).error.message, /not trusted/);
-    await f.trust("grant");
     const checkpoint = await w.cp("record", record);
     await w.cp("effect", { threadId, text: "Published fixture release outside Git" });
     await writeFile(join(f.cwd, "main"), "later commit\n");
@@ -124,8 +119,11 @@ test("checkpoint restore forks two shared dirty threads into an isolated committ
     for (const name of ["untracked", "private"]) await assert.rejects(lstat(join(p.files.cwd, name)), { code: "ENOENT" });
     assert.deepEqual(await files(f, f.cwd), original);
 
-    // A managed checkout can be checkpointed and rewound without changing it.
-    const isolated = await w.cp("record", { threadId: fork.id, kind: "files" });
+    // A managed checkout needs its own grant, then can be checkpointed and rewound without changing it.
+    const isolatedRecord = { threadId: fork.id, kind: "files" };
+    assert.match((await w.peer.send("ext.checkpoints.record", isolatedRecord)).error.message, /not trusted/);
+    await f.trust("grant", p.files.cwd);
+    const isolated = await w.cp("record", isolatedRecord);
     const isolatedP = await w.cp("preview", { threadId: fork.id, checkpointId: isolated.id, mode: "files" });
     assert.equal(isolatedP.mode, "files", JSON.stringify(isolatedP));
     await w.cp("confirm", { threadId: fork.id, id: isolatedP.id, mode: "files" });
@@ -171,7 +169,7 @@ test("checkpoint restore forks two shared dirty threads into an isolated committ
     const plain = join(f.home, "plain");
     await mkdir(plain);
     const nonGit = await w.newThread(plain);
-    await f.grantWork(plain);
+    await f.trust("grant", plain);
     const plainEntry = await w.seed(nonGit, "non-git");
     const plainRecord = await w.peer.send("ext.checkpoints.record", { threadId: nonGit, kind: "files", atEntryId: plainEntry });
     assert.match(plainRecord.error.message, /requires a Git working tree/);

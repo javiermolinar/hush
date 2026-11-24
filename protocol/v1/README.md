@@ -12,7 +12,7 @@ This is the native contract for the Go SDK, TUI, and native headless CLI. [The s
 - The reference backend selects `hushProfile:1` only on the standalone Hush profile, if offered.
   It marks a runtime profile, not a boot or store identity, and has no operations.
 - `workspaceWorkTrust:1`, if offered, identifies a persistent Hush host that enforces
-  [workspace tool trust](../../backend/README.md#workspace-tool-trust). Enforcement
+  [workspace trust for tool execution](../../backend/README.md#workspace-trust). Enforcement
   does not depend on negotiation. The capability has no socket operations.
 - [`storeIdentity:1`](store-identity.md) optionally verifies persistent store and restore-generation continuity; it does not change the core hello shape.
 - [`runtime:1`](runtime.md) optionally requests an orderly backend shutdown; it is not a run abort or proof of settlement.

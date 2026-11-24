@@ -104,7 +104,7 @@ export class CheckpointService implements CheckpointsHost {
         try {
           // Bind the publication to one more authoritative grant check. The
           // fork and its owned checkout metadata appear in one Durable commit.
-          return await this.trust.withTrust(workspace, signal, finish, { git: true });
+          return await this.trust.withGit(workspace, signal, finish);
         } catch (e) {
           signal.throwIfAborted();
           if (!(e instanceof WireError)) throw e;
@@ -214,7 +214,7 @@ export class CheckpointService implements CheckpointsHost {
         `◇ ${snapshot ? "File checkpoint" : "Bookmark"} · ${label} · entry #${row.atEntryId}`));
       return row;
     }, ctx);
-    return snapshot ? this.trust.withTrust(initial.cwd!, signal, persist, { git: true }) : persist();
+    return snapshot ? this.trust.withGit(initial.cwd!, signal, persist) : persist();
   }
 
   async #preview(source: Conversation, q: Extract<CheckpointRequest, { op: "preview" }>, signal: AbortSignal, ctx: Context) {

@@ -116,7 +116,7 @@ func TestLocalWorkspaceTrustHelper(t *testing.T) {
 	if err := review.Decide(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runWorkspaceTrust(t.Context(), bundle, "status", "--scope=work", "--cwd="+cwd, "--json")
+	out, err := runWorkspaceTrust(t.Context(), bundle, "status", "--cwd="+cwd, "--json")
 	var status struct{ Trusted bool }
 	if err != nil || json.Unmarshal(out, &status) != nil || !status.Trusted {
 		t.Fatalf("host grant not visible: %s (%v)", out, err)

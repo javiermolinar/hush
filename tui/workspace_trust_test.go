@@ -62,7 +62,7 @@ func TestWorkspaceTrustOnFirstEntry(t *testing.T) {
 	workspaceTrustStep(t, m, m.syncWorkspaceTrust())
 	m.editor.set("keep this draft")
 	frame := ansi.Strip(assertFrame(t, m))
-	for _, want := range []string{"Allow Hush to run tools in:", `"/work/a folder"`, "t trust", "n not now"} {
+	for _, want := range []string{"Trust this workspace?", "Tools, file browsing, and Git (whole checkout)", `"/work/a folder"`, "t trust", "n not now"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("missing %q in confirmation:\n%s", want, frame)
 		}
@@ -135,7 +135,7 @@ func TestWorkspaceTrustAttachedHostInstructions(t *testing.T) {
 	}
 	m.openWorkspaceTrust(m.route(m.active, coreID))
 	frame := ansi.Strip(assertFrame(t, m))
-	for _, want := range []string{"On the backend host, run:", "hush trust grant --scope work --cwd PATH", "PATH = /workspace"} {
+	for _, want := range []string{"On the backend host, run:", "hush trust grant --cwd PATH", "PATH = /workspace"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("missing %q in instructions:\n%s", want, frame)
 		}
@@ -158,8 +158,8 @@ func TestGitDiffTrustDenialIsReadOnly(t *testing.T) {
 	s.gitDiff = gitDiffSnapshot(sdk.GitDiffSummary{}, gitTrustDenied)
 	workspaceTrustStep(t, m, m.openGitDiff(m.route(m.active, coreID)))
 	frame := ansi.Strip(assertFrame(t, m))
-	if !strings.Contains(frame, "Git trust required for review") || !strings.Contains(frame, "hush trust grant --cwd PATH") ||
-		!strings.Contains(frame, "± needs Git trust") || press(m, 't', 0) != nil || checks != 0 {
+	if !strings.Contains(frame, "Workspace trust required for Git review") || !strings.Contains(frame, "hush trust grant --cwd PATH") ||
+		!strings.Contains(frame, "± needs trust") || press(m, 't', 0) != nil || checks != 0 {
 		t.Fatalf("Git review must only explain access restrictions:\n%s", frame)
 	}
 	workspaceTrustStep(t, m, press(m, 'u', 0))

@@ -6,7 +6,7 @@ import type { Harness } from "@earendil-works/pi-durable";
 import { Cursors } from "../../server/src/cursor.js";
 import { browseName, type WorkspaceFileQuery, type WorkspaceFilesHost } from "../../server/src/workspace-files.js";
 import { object, WireError } from "../../server/src/wire.js";
-import { WorkspaceBrowseTrust } from "./workspace-trust.js";
+import type { WorkspaceTrust } from "./workspace-trust.js";
 import { threadWorkspace } from "./thread-workspace.js";
 import { FileListWorker } from "./file-list-worker.js";
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -21,19 +21,17 @@ export async function workspaceFileHelper() {
 
 export class WorkspaceFiles implements WorkspaceFilesHost {
   readonly #cursors = new Cursors();
-  readonly #grants: WorkspaceBrowseTrust;
   readonly #worker: FileListWorker;
   #pending = 0;
 
-  constructor(private readonly harness: Harness, agent: string, helper: string) {
-    this.#grants = new WorkspaceBrowseTrust(agent);
+  constructor(private readonly harness: Harness, private readonly trust: WorkspaceTrust, helper: string) {
     this.#worker = new FileListWorker(helper);
   }
 
   close() { return this.#worker.close(); }
 
   async #root(kind: "workspace" | "home", cwd: string, signal: AbortSignal) {
-    try { return await this.#grants.root(kind === "workspace" ? "browse" : "home", cwd, signal); }
+    try { return await (kind === "workspace" ? this.trust.binding(cwd, signal) : this.trust.homeBinding(signal)); }
     catch { signal.throwIfAborted(); return undefined; }
   }
 

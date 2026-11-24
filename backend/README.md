@@ -31,6 +31,14 @@ The Hush profile uses a pinned model default, the built-in coding tools, and no
 project executable configuration. Tools run with the backend user's permissions;
 a thread's working directory is not a sandbox.
 
+## Pi Durable references
+
+Use the pinned [spec](https://github.com/earendil-works/pi/blob/v1.6.0/packages/durable/docs/spec.md)
+as the authority on Durable behavior. See the [README](https://github.com/earendil-works/pi/blob/v1.6.0/packages/durable/README.md)
+for concepts and APIs, and the [changelog](https://github.com/earendil-works/pi/blob/v1.6.0/packages/durable/CHANGELOG.md)
+for version changes. `node_modules/@earendil-works/pi-durable/` includes the matching README and changelog
+after dependency setup. Update the links when bumping the pin.
+
 ## Standalone store compatibility and restore
 
 A new standalone runtime initializes a format-2 `store-profile`. Its logical
@@ -260,8 +268,8 @@ Skills are off by default. To enable them, create a private (mode 600)
 ```
 
 `personal: true` enables `~/.hush/skills`. Each project row selects one relative
-directory for the exact physical workspace; it does not grant trust. Grant work
-trust separately with `hush trust grant --scope work --cwd PATH`. Each enabled
+directory for the exact physical workspace; it does not grant trust. Use
+`hush trust grant --cwd PATH` to trust the workspace. Each enabled
 root uses `NAME/SKILL.md` with matching `name`, a `description`, and a text body
 of at most 32 KiB total. Unreadable files, symlinks, and conflicting names within
 one thread's enabled roots are not eligible. Standalone does not import Pi
@@ -306,46 +314,45 @@ configured provider. No tools, system context, or image bytes are sent. The requ
 is best-effort: new native chats can claim one attempt in Durable, and do not replay
 it after restart. Manual names win. Without the option, no title model is called.
 
-For Git operations in standalone Hush, grant consent explicitly on the backend
-host with `hush trust grant --cwd PATH` (`--scope git` is the default). Use `status`
-to inspect it and `revoke` to remove it. The read-only diff explains a missing
-Git grant without prompting for one. Records live in the private
-`~/.hush/workspace-trust-v1/` directory. Git grants share the canonical common
-directory across linked checkouts; non-Git records apply to the exact resolved
-directory. These records never authorize agent tools. Checkout rechecks the grant
-before starting Git; revocation doesn't undo a checkout already admitted.
-
-A native `thread new --worktree` request requires a trusted repository and a
-committed HEAD. It allocates `worktrees/<unique-id>` inside
-the private data directory, with a new `hush/<unique-id>` branch. The data directory
+A native `thread new --worktree` request requires a trusted source workspace
+and a committed Git HEAD. It allocates `worktrees/<unique-id>` inside the private
+data directory, with a new `hush/<unique-id>` branch. Hush rechecks trust before
+starting Git; revocation doesn't undo a checkout already admitted. The new
+checkout needs its own workspace grant. The data directory
 must be outside the source checkout and Git directory. Hush copies no uncommitted
 files and does not switch the original branch. If Git or Durable fails mid-create,
 inspect the directory before retrying; Hush will not delete potentially populated files.
 Archive only changes visibility. Close/open and transcript forks never remove a Git
 worktree, main or otherwise. See [the directory API](../protocol/v1/thread-directory.md).
 
-## Workspace tool trust
+## Workspace trust
 
-The managed local TUI asks before letting Hush run tools in a workspace for the
-first time. It shows the exact resolved directory, including for plain folders.
-**Not now** remembers the dismissal without granting anything. Use `/trust` to
-review the active workspace later. Browsing the thread list and opening Git
-review do not request tool trust. Attached clients give instructions, not a grant button.
-On the backend host, use:
+One workspace grant covers agent tools, `@` file browsing, and Git operations
+such as diff, managed checkout, and file checkpoints/rewind. The managed local
+TUI shows the exact resolved directory before granting it, including for plain
+folders. **Not now** remembers the dismissal without granting anything. Use
+`/trust` to review the active workspace later. Attached clients give instructions,
+not a grant button. On the backend host, use:
 
 ```sh
-hush trust status --scope work --cwd PATH
-hush trust grant --scope work --cwd PATH
-hush trust revoke --scope work --cwd PATH
+hush trust status --cwd PATH
+hush trust grant --cwd PATH
+hush trust revoke --cwd PATH
 ```
 
-Each work grant is bound to one canonical directory and its filesystem identity.
-A repository root, a nested workspace, and a linked worktree need their own
-grants. Existing Git grants are not promoted. Work grants and dismissals live
-in the private `~/.hush/workspace-work-v1/` directory. Socket peers, project files,
-and Pi settings cannot grant Hush tool trust.
+`PATH` defaults to the current directory. Each grant is bound to one canonical
+workspace directory and its filesystem identity. `@` lists below that directory;
+Git operations use the whole associated checkout. Trust does not carry across
+thread working directories, even if they're nested or share Git metadata. Home
+browsing via `@~/` is a separate `hush trust grant --scope home` decision.
+Socket peers, project files, and Pi settings cannot grant trust.
 
-Persistent Hush checks work trust before accepting new agent input and again
+Existing tool grants and dismissals in `~/.hush/workspace-work-v1/` carry over;
+`--scope work` remains an alias. Older Git-only and browse-only records do not
+carry over: review the workspace and grant it explicitly to use the new policy.
+The old `--scope git` and `--scope browse` flags are no longer accepted.
+
+Persistent Hush checks workspace trust before accepting new agent input and again
 before each tool attempt, including after a park or process restart. Headless
 commands return a diagnostic instead of prompting. Previously admitted model
 work may still finish without tools; revocation does not kill a command that
@@ -353,7 +360,8 @@ already started. Scheduled work without trust parks for an explicit retry.
 Trust is consent to run with your user's permissions, **not a filesystem sandbox**.
 The opt-in Pi profile retains Pi's behavior, and standalone `--no-session` runs
 remain tool-free. If upgrading a managed Hush backend, run `hush stop` before
-opening the new client so it doesn't use a daemon without tool trust.
+opening the new client (or `hush service restart` for a supervised backend)
+so the running host uses the new trust policy.
 
 ## User-scheduled work
 
@@ -367,7 +375,7 @@ decision. The service does not install or start an OS daemon.
 
 ## Checkpoints and file rewind
 
-File checkpoints pin committed HEAD and require a Hush repository grant.
+File checkpoints pin committed HEAD and require a trusted Hush workspace.
 A rewind preview identifies the commit, ref, exact new checkout/branch and
 recorded external effects. Only confirmation admits the restore, and only a
 verified checkout publishes a new fork. Existing checkouts are never reset.

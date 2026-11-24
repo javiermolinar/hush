@@ -24,7 +24,7 @@ type WorkspaceTrustOptions struct {
 	Review func(context.Context, string) (WorkspaceTrustPreview, error)
 }
 
-// WorkspaceTrustPreview describes permission to run tools in one exact directory.
+// WorkspaceTrustPreview describes the grant for one exact workspace directory.
 // Decide must reject a changed directory, and persist either trust or Not now.
 type WorkspaceTrustPreview struct {
 	Path               string
@@ -188,7 +188,11 @@ func (m *Model) receiveWorkspaceTrust(msg workspaceTrustMsg) tea.Cmd {
 	}
 	closed := m.closeDialog(d, nil, false)
 	if msg.granted {
-		return tea.Batch(closed, m.notifyRoute(d.route, "Workspace trusted for tools", x.Good))
+		// Invalidate in-flight reads so permissions appear without waiting for
+		// either poll and a reply from the old lease cannot hide them again.
+		m.stopFileScope() // Update starts a fresh lease for the active thread.
+		m.stopGitDiff()
+		return tea.Batch(closed, m.syncGitDiff(), m.notifyRoute(d.route, "Workspace trusted", x.Good))
 	}
 	return closed
 }
@@ -241,11 +245,16 @@ func (m *Model) workspaceTrustRows(wt *workspaceTrustDialog, w, h int) (rows []s
 		}
 		add(m.control(status), -1)
 	case wt.decide != nil || wt.trusted:
-		label, tone, reserved := "Allow Hush to run tools in:", x.Warning, 3
+		label, tone := "Trust this workspace?", x.Warning
+		access := strings.Split(ansi.Wrap("Tools, file browsing, and Git (whole checkout)", w, ""), "\n")
+		reserved := len(access) + 3 // heading, trust action, and dismissal
 		if wt.trusted {
-			label, tone, reserved = "Hush may run tools in:", x.Good, 2
+			label, tone, reserved = "Trusted workspace", x.Good, reserved-1
 		}
 		add(paint(tone, label), -1)
+		for _, line := range access {
+			add(m.control(line), -1)
+		}
 		var path []string
 		if w > 0 && wt.pathCells <= w*(h-reserved) {
 			path = strings.Split(ansi.Hardwrap(wt.path, w, true), "\n")
@@ -265,12 +274,12 @@ func (m *Model) workspaceTrustRows(wt *workspaceTrustDialog, w, h int) (rows []s
 			return rows, targets
 		}
 	default:
-		add(paint(x.Warning, "Workspace tool trust"), -1)
+		add(paint(x.Warning, "Workspace trust"), -1)
 		if wt.notice != "" {
 			add(paint(x.Warning, wt.notice), -1)
 		}
 		add(m.control("On the backend host, run:"), -1)
-		for _, line := range strings.Split(ansi.Wrap("hush trust grant --scope work --cwd PATH", w, ""), "\n") {
+		for _, line := range strings.Split(ansi.Wrap("hush trust grant --cwd PATH", w, ""), "\n") {
 			add(m.control(line), -1)
 		}
 		if wt.cwd != "" {

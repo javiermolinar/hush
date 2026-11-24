@@ -10,7 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { assertFrame } from "../../protocol/v1/replay.mjs";
 import { dial } from "../../server/test/client.mjs";
-import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
+import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const bundle = new URL("../../dist/hush-backend.mjs", import.meta.url);
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
@@ -33,7 +33,7 @@ async function setup(t) {
   for (const dir of [cwd, tmp, agent, pi, join(cwd, ".hush"), join(cwd, ".pi")])
     await mkdir(dir, { mode: 0o700, recursive: true });
   await copyFile(bundle, entry);
-  const trust = new WorkspaceWorkTrust(agent);
+  const trust = new WorkspaceTrust(agent);
   await trust.change(cwd, "grant", AbortSignal.timeout(5000));
   const save = (path, data) => writeFile(path, data, { mode: 0o600 });
   async function settings(value, dir = agent) { await save(join(dir, "settings.json"), JSON.stringify({ codemode: value })); }

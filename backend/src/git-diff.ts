@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import { gitDiffFiles, gitDiffLines, type GitDiffFile, type GitDiffHost, type GitDiffLine, type GitDiffRange,
@@ -8,7 +6,7 @@ import { gitDiffFiles, gitDiffLines, type GitDiffFile, type GitDiffHost, type Gi
 import { WireError } from "../../server/src/wire.js";
 import type { CheckpointService } from "./checkpoints.js";
 import { checkFilters } from "./rewind-git.js";
-import { workspaceGit, type WorkspaceTrust, type WorkspaceTrustIdentity } from "./workspace-trust.js";
+import { workspaceGit, type WorkspaceTrust, type GitWorkspaceIdentity } from "./workspace-trust.js";
 import { inspectWorkspaceText } from "./workspace-file.js";
 
 const maxObservations = 128;
@@ -113,20 +111,7 @@ async function untrackedText(root: string, path: string, signal: AbortSignal) {
   catch { signal.throwIfAborted(); return undefined; }
 }
 
-async function checkoutRoot(cwd: string, signal: AbortSignal) {
-  const output = await git(cwd, signal, "rev-parse", "--show-toplevel");
-  const root = output.slice(0, -1);
-  if (!output.endsWith("\n") || !isAbsolute(root) || /[\r\n\0]/.test(root) || await realpath(root) !== root) unavailable();
-  const fromRoot = relative(root, cwd);
-  if (fromRoot === ".." || fromRoot.startsWith(".." + sep) || isAbsolute(fromRoot)) unavailable();
-  return root;
-}
-
-type GitIdentity = Extract<WorkspaceTrustIdentity, { kind: "git" }>;
-const sameDirectory = (a: GitIdentity["gitDir"], b: GitIdentity["gitDir"]) =>
-  a.path === b.path && a.device === b.device && a.inode === b.inode && a.birth === b.birth;
-
-type Observation = { threadId: string; cwd: string; identity: GitIdentity; root: string; range: GitDiffRange;
+type Observation = { threadId: string; cwd: string; identity: GitWorkspaceIdentity; range: GitDiffRange;
   commit: string; files: GitDiffFile[]; expires: number };
 
 export class GitDiffService implements GitDiffHost {
@@ -162,24 +147,12 @@ export class GitDiffService implements GitDiffHost {
       }, ctx);
       if (!cwd) unavailable("This thread has no worktree.");
       if (input && cwd !== input.cwd) throw new WireError("invalid_cursor");
-      const identity = await this.trust.withTrust(cwd, signal, value => value, { git: true, ...(input && { expected: input.identity }) });
-      if (identity.kind !== "git") unavailable();
-      const root = await checkoutRoot(identity.cwd.path, signal);
-      if (input && root !== input.root) throw new WireError("invalid_cursor");
-      // A nested Git directory can configure an ancestor as core.worktree.
-      // Running Git from that root must still select the granted checkout.
-      const rootIdentity = root === identity.cwd.path ? identity : await this.trust.withTrust(root, signal, candidate => {
-        if (candidate.kind !== "git" || !sameDirectory(identity, candidate) || !sameDirectory(identity.gitDir, candidate.gitDir))
-          unavailable();
-        return candidate;
-      }, { git: true });
+      const identity = await this.trust.withGit(cwd, signal, value => value, input?.identity);
+      const root = identity.root.path;
       await checkFilters(root, signal);
       const finish = async <T>(result: T) => {
         if ((await this.h.snapshot(AgentDoc, id, ctx))?.cwd !== cwd) throw new WireError("invalid_cursor");
-        if (root !== identity.cwd.path) {
-          await this.trust.withTrust(root, signal, () => {}, { git: true, expected: rootIdentity });
-        }
-        return this.trust.withTrust(cwd, signal, () => result, { git: true, expected: identity });
+        return this.trust.withGit(cwd, signal, () => result, identity);
       };
       const range = input?.range ?? (q.op === "summary" ? q.range : "head");
       const { commit, head, checkpoint } = await this.#base(id, cwd, root, range, ctx, signal);
@@ -212,7 +185,7 @@ export class GitDiffService implements GitDiffHost {
         ...(branch && Buffer.byteLength(branch) <= 1024 && { branch }),
       }).then(result => {
         while (this.#seen.size >= maxObservations) this.#seen.delete(this.#seen.keys().next().value!);
-        this.#seen.set(revision, { threadId: q.threadId, cwd, identity, root, range, commit, files, expires: Date.now() + lifetime });
+        this.#seen.set(revision, { threadId: q.threadId, cwd, identity, range, commit, files, expires: Date.now() + lifetime });
         return result;
       });
     } catch (error) {

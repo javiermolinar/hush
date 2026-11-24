@@ -8,14 +8,14 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { dial } from "../../server/test/client.mjs";
-import { WorkspaceWorkTrust } from "../../dist/backend/src/workspace-trust.js";
+import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
 
 test("durable occurrence: deadlines, exact prerequisite, user decisions, and atomic receipts/reports", { timeout: 35_000 }, async () => {
   const home = await mkdtemp("/tmp/hush-schedule-test-");
-  const trust = new WorkspaceWorkTrust(join(home, ".hush"));
+  const trust = new WorkspaceTrust(join(home, ".hush"));
   const work = action => trust.change(home, action, AbortSignal.timeout(5000));
   let host, exit, peer, other, stderr, socket;
   const offer = () => ({ versions: [1], capabilities: { schedules: [1], threadDirectory: [2] } });
