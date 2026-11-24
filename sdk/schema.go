@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -24,11 +25,18 @@ var threadDirectorySchema []byte
 //go:embed internal/images.schema.json
 var imagesSchema []byte
 
-var imagesWire = loadSchema(imagesSchema, "urn:hush:protocol:images:1", "successEnvelope")
-var threadDirectoryWire = loadSchema(threadDirectorySchema, "urn:hush:protocol:thread-directory:1", "successEnvelope", "successEnvelopeV2", "successWorkspace")
-var intros = loadSchema(introSchema, "urn:hush:protocol:intro:1", "successEnvelope", "successEnvelopeV2")
-var wireSchema = loadSchema(coreSchema, "urn:hush:protocol:core:1", "request", "success", "failureReply", "state", "stateEnd", "patch")
-var orderedSchema = loadSchema(piSchema, "urn:hush:protocol:pi-events:1", "successEnvelope", "open", "command", "ready", "frame", "end", "callResult", "catalogResult")
+// An attach that only uses native hello (such as hush status) should not
+// compile validators for Pi events or other negotiated features. Compile each
+// group once on first use and share the immutable validators across clients.
+var imagesWire = lazySchema(imagesSchema, "urn:hush:protocol:images:1", "successEnvelope")
+var threadDirectoryWire = lazySchema(threadDirectorySchema, "urn:hush:protocol:thread-directory:1", "successEnvelope", "successEnvelopeV2", "successWorkspace")
+var intros = lazySchema(introSchema, "urn:hush:protocol:intro:1", "successEnvelope", "successEnvelopeV2")
+var wireSchema = lazySchema(coreSchema, "urn:hush:protocol:core:1", "request", "success", "failureReply", "state", "stateEnd", "patch")
+var orderedSchema = lazySchema(piSchema, "urn:hush:protocol:pi-events:1", "successEnvelope", "open", "command", "ready", "frame", "end", "callResult", "catalogResult")
+
+func lazySchema(data []byte, url string, keys ...string) func() map[string]*jsonschema.Schema {
+	return sync.OnceValue(func() map[string]*jsonschema.Schema { return loadSchema(data, url, keys...) })
+}
 
 func loadSchema(data []byte, url string, keys ...string) map[string]*jsonschema.Schema {
 	c := jsonschema.NewCompiler()
@@ -50,14 +58,14 @@ func loadSchema(data []byte, url string, keys ...string) map[string]*jsonschema.
 }
 
 func schemaCheck(name string, value any) error {
-	if err := wireSchema[name].Validate(value); err != nil {
+	if err := wireSchema()[name].Validate(value); err != nil {
 		return fmt.Errorf("%w: schema %s", ErrProtocol, name)
 	}
 	return nil
 }
 
 func piSchemaCheck(name string, value any) error {
-	if err := orderedSchema[name].Validate(value); err != nil {
+	if err := orderedSchema()[name].Validate(value); err != nil {
 		return fmt.Errorf("%w: piEvents schema %s", ErrProtocol, name)
 	}
 	return nil

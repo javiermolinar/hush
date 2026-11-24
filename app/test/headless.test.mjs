@@ -75,11 +75,13 @@ function value(r) {
 }
 
 async function nextLine(lines, exit) {
-  const result = await Promise.race([lines.next(), exit.then(x => {
+  // readline can see EOF before the child's close event. In either order,
+  // wait for the exit status and captured stderr to diagnose a failed startup.
+  const exited = exit.then(x => {
     throw new Error("process exited before the expected line: " + JSON.stringify(x));
-  })]);
-  assert.equal(result.done, false);
-  return result.value;
+  });
+  const result = await Promise.race([lines.next(), exited]);
+  return result.done ? await exited : result.value;
 }
 
 async function faux(t, pi = false, cfg) {
