@@ -1,5 +1,6 @@
 import { build } from "esbuild";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -35,26 +36,42 @@ function check(result) {
 
 // Keep the backend a single deployable file. Worker assets are available even
 // after the launcher removes the extracted backend and its directory.
-async function workerURL(entry, define) {
-  const worker = check(await build({ ...common, entryPoints: [entry], write: false, define,
+async function worker(entry, define, plugins = common.plugins) {
+  const result = check(await build({ ...common, entryPoints: [entry], write: false, define, plugins,
     // In a data: URL worker, import.meta.url is not a valid createRequire base.
     banner: { js: 'import { createRequire as hushCreateRequire } from "node:module"; const require = hushCreateRequire(process.execPath);' },
   }));
-  return "data:text/javascript;base64," + Buffer.from(worker.outputFiles[0].contents).toString("base64");
+  return {
+    url: "data:text/javascript;base64," + Buffer.from(result.outputFiles[0].contents).toString("base64"),
+    meta: result.metafile,
+  };
 }
-const require = createRequire(import.meta.url);
-const durable = createRequire(require.resolve("@earendil-works/pi-durable/images"));
-const photon = readFileSync(durable.resolve("@silvia-odwyer/photon/photon_rs_bg.wasm"));
+
+// Use the verified source build, including its own wasm-bindgen glue. The
+// registry WASM has no build inventory tied to its bytes. See app/wasm/README.md.
+const glue = fileURLToPath(new URL("wasm/photon_rs.js", import.meta.url));
+function pinned(path, want) {
+  const bytes = readFileSync(path);
+  if (createHash("sha256").update(bytes).digest("hex") !== want) throw new Error(`unexpected Photon asset: ${path}`);
+  return bytes;
+}
+pinned(glue, "f69b97e56075b43a6f0a73447a405afe3f02f1903d056fb10e732dd1c9f52d46");
+const photon = pinned(new URL("wasm/photon_rs_bg.wasm", import.meta.url),
+  "65f13dd50eade4c615794aca1f9e689374e08a3bf563902eba57ce570c89ba21");
+const photonGlue = { name: "pinned-photon-glue", setup(builder) {
+  builder.onResolve({ filter: /^@silvia-odwyer\/photon\/photon_rs\.js$/ }, () => ({ path: glue }));
+} };
 const codemode = createRequire(import.meta.resolve("@earendil-works/pi-codemode"));
 const quickjs = readFileSync(codemode.resolve("quickjs-wasi/quickjs.wasm"));
 const [imageWorker, codemodeWorker] = await Promise.all([
-  workerURL("backend/src/image-worker.ts", { HUSH_PHOTON_WASM: JSON.stringify(photon.toString("base64")) }),
-  workerURL(fileURLToPath(import.meta.resolve("@earendil-works/pi-codemode/worker"))),
+  worker("backend/src/image-worker.ts", { HUSH_PHOTON_WASM: JSON.stringify(photon.toString("base64")) }, [...common.plugins, photonGlue]),
+  worker(fileURLToPath(import.meta.resolve("@earendil-works/pi-codemode/worker"))),
 ]);
-check(await build({ ...common, entryPoints: ["backend/src/index.ts"], outfile: "dist/hush-backend.mjs",
+const main = check(await build({ ...common, entryPoints: ["backend/src/index.ts"], outfile: "dist/hush-backend.mjs",
   define: {
-    HUSH_IMAGE_WORKER: JSON.stringify(imageWorker),
-    HUSH_CODEMODE_WORKER: JSON.stringify(codemodeWorker),
+    HUSH_IMAGE_WORKER: JSON.stringify(imageWorker.url),
+    HUSH_CODEMODE_WORKER: JSON.stringify(codemodeWorker.url),
     HUSH_QUICKJS_WASM: JSON.stringify(quickjs.toString("base64")),
     HUSH_SYSTEM_PROMPT: JSON.stringify(readFileSync("backend/src/prompts/system.md", "utf8")),
   } }));
+writeFileSync("dist/hush-backend-inputs.json", JSON.stringify({ main: main.metafile, image: imageWorker.meta, codemode: codemodeWorker.meta }));
