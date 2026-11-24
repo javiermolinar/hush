@@ -42,10 +42,13 @@ if [ "${1:-verify}" = verify ]; then
   evidence="$stage/evidence"
   archive="hush-$os-$arch.tar.gz"
   mkdir -p "$evidence/frames" "$stage/install"
-  tar -czf "$stage/$archive" -C "$stage" hush
+  cp LICENSE "$stage/LICENSE"
+  cp -R app/redistribution/THIRD_PARTY_NOTICES "$stage/THIRD_PARTY_NOTICES"
+  COPYFILE_DISABLE=1 tar -czf "$stage/$archive" -C "$stage" hush LICENSE THIRD_PARTY_NOTICES
   printf '%s  %s\n' "$(sha256 "$stage/$archive")" "$archive" > "$stage/$archive.sha256"
   tar -xzf "$stage/$archive" -C "$stage/install"
   test "$(sha256 "$stage/install/hush")" = "$artifact_sha"
+  node app/test/release-notices.mjs "$stage/install" "$os" > "$evidence/redistribution.json"
   perf_mode=enforced
   if [ "${HUSH_PERF_MODE:-}" = report ]; then perf_mode=report-only; fi
   {

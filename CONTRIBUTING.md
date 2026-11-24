@@ -102,4 +102,8 @@ a green hosted job is not evidence that a missed performance target passed.
 
 Artifacts expire after 14 days. No tag is created and nothing is signed or published. The checks
 and captures don't replace visual review, authorized live-provider tests, or independent review of the
-exact artifacts before publication; see the [standalone candidate baseline](docs/standalone-release-baseline.md).
+exact artifacts before publication; see the [standalone candidate baseline](docs/standalone-release-baseline.md)
+and [operator runbook](docs/store-cutover.md). The tarballs carry Hush's license
+and hash-indexed third-party notices. If linked Go modules, npm contributors or
+WASM inputs change, refresh the [redistribution inventory](app/redistribution/README.md)
+and review the new archives before publishing.

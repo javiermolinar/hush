@@ -507,6 +507,30 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
     await good(['auth', 'logout'], /no Hush-managed credential/);
     await stop();
   });
+  await t.test('installed image worker decodes and resizes an attachment', async () => {
+    const signin = await invoke(python.stdout.trim(), ['-c', pty, binary], { cwd, env });
+    assert.equal(signin.code, 0, signin.stdout + signin.stderr);
+    const threadId = JSON.parse(await good(['thread', 'new', '--json'])).id;
+    // A 4100×8 solid RGB PNG exceeds the host's 4096-pixel axis cap for
+    // fitted output, but is within the accepted input bounds.
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAEAQAAAAICAIAAAD/pw2ZAAAAkUlEQVR42u3bQQkAMAzAwHqplmqZfwfTETg4Bfln9h4AAAAAAAAAAAAAABAyEgAAAAAAAAAAAAAAQIsZAAAAAAAAAAAAAAAAYswAAAAAAAAAAAAAAAAQYwYAAAAAAAAAAAAAAIAYMwAAAAAAAAAAAAAAAMSYAQAAAAAAAAAAAAAAIMYMAAAAAAAAAAAAAAAAMR+6l5/qSnJ7ugAAAABJRU5ErkJggg==';
+    const caption = 'release-fitted-image';
+    await native(socket, async call => {
+      const hello = await call('hello', { versions: [1], capabilities: { images: [1] } });
+      assert.deepEqual(hello.capabilities, { images: 1 });
+      const { submissionId } = await call('ext.images.submit', {
+        threadId, requestId: caption, whenBusy: 'reject', text: caption, images: [{ mimeType: 'image/png', data }],
+      });
+      const settled = await call('submission.wait', { threadId, submissionId });
+      assert.equal(settled.status, 'done', JSON.stringify(settled));
+    });
+    const request = seen.at(-1);
+    const content = request.input.find(m => m.role === 'user' && m.content.some(p => p.text === caption)).content;
+    const fitted = content.find(p => p.type === 'input_image')?.image_url;
+    assert.match(fitted, /^data:image\/(?:png|jpeg);base64,/);
+    assert.notEqual(fitted, `data:image/png;base64,${data}`);
+    await stop();
+  });
   assert.deepEqual(unexpected, []);
   await absent(join(home, '.pi'));
   const records = await launches();

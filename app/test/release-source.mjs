@@ -8,7 +8,7 @@ const git = args => execFileSync('git', args, { encoding: 'utf8' });
 const sha = data => createHash('sha256').update(data).digest('hex');
 const inputs = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--',
   'app/', 'backend/', 'protocol/', 'sdk/', 'server/', 'tui/', 'go.work', 'go.work.sum',
-  'package.json', 'package-lock.json', 'tsconfig.json', 'mise.toml', '.github/workflows/release-candidate.yml']);
+  'package.json', 'package-lock.json', 'tsconfig.json', 'mise.toml', 'LICENSE', '.github/workflows/release-candidate.yml']);
 const files = Array.from(new Set(inputs.split('\0').filter(Boolean))).sort().map(path => {
   try {
     const st = lstatSync(path);
