@@ -475,7 +475,7 @@ func TestBackendRefusesIncompatibleHistoryAndLeavesSocket(t *testing.T) {
 			case "unsupported-format":
 				var m map[string]any
 				checkStoreFixture(t, json.Unmarshal(readStoreFixture(t, marker), &m))
-				m["format"] = 2
+				m["format"] = 999
 				data, err := json.Marshal(m)
 				checkStoreFixture(t, err)
 				checkStoreFixture(t, os.WriteFile(marker, data, 0600))

@@ -145,6 +145,28 @@ func TestParseLocalAuth(t *testing.T) {
 	}
 }
 
+func TestParseStoreCutover(t *testing.T) {
+	for _, action := range []string{"inspect", "prepare", "activate", "rollback"} {
+		args := []string{"store", action, "--backend", "fixture.mjs"}
+		if action == "prepare" {
+			args = append(args, "--from", "pinned-hush")
+		}
+		o, err := parse(args)
+		if err != nil || o.command != localStore || o.storeAction != action || o.bundle != "fixture.mjs" || o.interactive(true, true) {
+			t.Errorf("store %s: options=%+v error=%v", action, o, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"store", "upgrade"}, {"store", "prepare"}, {"store", "prepare", "--from="},
+		{"store", "rollback", "--from=other"}, {"store", "activate", "--socket=/tmp/peer"},
+		{"store", "inspect", "--profile=pi"}, {"--mode=rpc", "store", "inspect"}, {"--from=other", "status"},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Errorf("expected store syntax to be rejected: %v", args)
+		}
+	}
+}
+
 // Fixture-only PTY driver. It sends input only after the matching prompt and
 // checks both hidden input and restoration of the original terminal flags.
 const codexPTY = `

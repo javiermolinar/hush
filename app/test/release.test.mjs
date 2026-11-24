@@ -1,6 +1,6 @@
 // Standalone fixture: only Node builtins, a candidate binary and Python 3 for PTY.
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
@@ -54,6 +54,7 @@ import fcntl, os, re, select, signal, struct, subprocess, sys, termios, time
 binary, thread, previous, action, *args = sys.argv[1:]
 master, slave = os.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 35, 125, 0, 0))
+start = time.monotonic()
 child = subprocess.Popen([binary, '--thread', thread, '--motion=false', '--fills=off'], stdin=slave, stdout=slave, stderr=slave)
 output = b''
 ansi = re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]')
@@ -70,6 +71,7 @@ def wait_for(text):
     raise AssertionError('Did not observe ' + repr(text) + ': ' + repr(ansi.sub(b'', output)[-1000:]))
 try:
     wait_for(previous)
+    print('pty_attach_ms=' + str(round((time.monotonic() - start) * 1000, 2)))
     os.write(master, ('/' + action).encode())
     time.sleep(.12)
     os.write(master, b'\r')
@@ -213,6 +215,7 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   const account = 'release-fixture-account';
   const token = 'fixture.' + Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: account } })).toString('base64') + '.fixture';
   const seen = [], unexpected = [];
+  const privateRequested = Promise.withResolvers(), privateClosed = Promise.withResolvers();
   let exchanges = 0;
   const provider = createServer(async (req, res) => {
     const chunks = [];
@@ -230,6 +233,13 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
     if (req.method === 'POST' && req.url === '/fixture/responses' && req.headers.authorization === 'Bearer ' + token && req.headers['chatgpt-account-id'] === account) {
       try {
         const request = JSON.parse(body);
+        if (JSON.stringify(request.input).includes('release-private-kill-only')) {
+          res.once('close', privateClosed.resolve);
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.flushHeaders();
+          privateRequested.resolve(request);
+          return;
+        }
         seen.push(request);
         const batch = JSON.stringify(request.input).includes(batchPrompt) &&
           !request.input.some(item => item.call_id === 'call_release_batch');
@@ -288,14 +298,14 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   const profile = join(home, '.hush'), auth = join(profile, 'auth.json');
   const socket = join(profile, 'runtime', 'hush.sock');
   const launches = async () => (await readFile(log, 'utf8')).trimEnd().split('\n').map(s => JSON.parse(s));
-  const daemonPIDs = new Set();
-  stopRemaining = async () => {
-    for (const { args, pid } of await launches().catch(() => [])) {
-      if (args.includes('--startup-fd') && !daemonPIDs.has(pid)) {
-        try { process.kill(pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
-      }
-    }
+  // Use the negotiated shutdown on this isolated socket. In a concurrent
+  // start the last PID in the launch log can be a lock loser, not the writer.
+  const stop = async () => {
+    const result = await good(['stop', '--socket', socket, '--json']);
+    assert.deepEqual(JSON.parse(result), { stopped: true });
+    await absent(socket);
   };
+  stopRemaining = async () => { await run(['stop', '--socket', socket]); };
   await bad(['status'], /Node\.js 22\.19\.0.*on PATH/, { PATH: empty });
   await bad(['status'], /found v22\.18\.9/, { PATH: old });
   await bad(['status', '--socket', join(root, 'absent.sock')], /socket|connect/i, { PATH: empty });
@@ -333,10 +343,53 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   assert.match(JSON.stringify(seen[0]), /release-private-only/);
   assert.deepEqual(requestTools(seen[0]), []);
 
+  await t.test('installed invocation-private host stops on client SIGKILL', async () => {
+    // Do not substitute a --backend override for the released embedded bytes.
+    const child = spawn(binary, ['--no-session', '--print', 'release-private-kill-only'], { cwd, env, stdio: 'ignore' });
+    const exit = once(child, 'exit');
+    const bounded = async (promise, label) => {
+      const timer = new AbortController();
+      try {
+        return await Promise.race([promise, delay(7000, null, { signal: timer.signal }).then(() => assert.fail(label))]);
+      } finally { timer.abort(); }
+    };
+    try {
+      const request = await bounded(Promise.race([privateRequested.promise, exit.then(code => assert.fail(`early exit: ${code}`))]),
+        'private CLI did not reach loopback provider');
+      assert.deepEqual(requestTools(request), []);
+    } finally { child.kill('SIGKILL'); await exit; }
+    assert.deepEqual(await exit, [null, 'SIGKILL']);
+    await bounded(privateClosed.promise, 'provider connection outlived private CLI');
+    await absent(join(profile, 'runtime'));
+    assert.deepEqual(await readFile(auth), authBefore);
+    // A killed parent cannot unlink its directory. Only an inert socket inode
+    // may remain briefly; neither the store nor the extracted bundle can remain.
+    for (const name of await readdir(tmp)) {
+      for (const entry of await readdir(join(tmp, name)).catch(e => e.code === 'ENOENT' ? [] : Promise.reject(e))) {
+        assert.equal(entry, 'hush.sock');
+        assert.ok(await lstat(join(tmp, name, entry)).then(s => s.isSocket(), e => e.code === 'ENOENT'));
+      }
+    }
+  });
+
   const status = () => good(['status', '--json']).then(JSON.parse);
-  const first = await status();
-  const attached = JSON.parse(await good(['status', '--json', '--socket', socket], null, { PATH: empty }));
-  assert.equal(attached.epoch, first.epoch);
+  const [first, ...arrivals] = await Promise.all(Array.from({ length: 4 }, status));
+  for (const arrival of arrivals) assert.deepEqual(arrival, first);
+  const lifecycle = await readFile(join(profile, 'runtime', 'hush.log'), 'utf8');
+  assert.equal(lifecycle.split('\n').filter(row => row.endsWith(' listening')).length, 1);
+  const samples = [];
+  for (let i = 0; i < 20; i++) {
+    const start = performance.now();
+    const attached = JSON.parse(await good(['status', '--json', '--socket', socket], null, { PATH: empty }));
+    samples.push(performance.now() - start);
+    assert.equal(attached.epoch, first.epoch);
+  }
+  samples.sort((a, b) => a - b);
+  const p95 = samples[18];
+  t.diagnostic(JSON.stringify({ platform: process.platform, arch: process.arch, count: samples.length,
+    boundary: 'installed process spawn through status stdout/exit, explicit warm socket, no Node on PATH',
+    medianMs: +((samples[9] + samples[10]) / 2).toFixed(2), p95Ms: +p95.toFixed(2), targetMs: 100 }));
+  assert.ok(p95 < 100, 'warm attach p95 exceeds 100 ms');
   const id = JSON.parse(await good(['thread', 'new', '--json'])).id;
   await good(['--print', '--thread', id, 'release-first-durable'], /^Loopback Codex reply\n$/);
   assert.equal(seen[1].model, 'gpt-6-sol');
@@ -345,6 +398,10 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   await good(['auth', 'logout'], /no Hush-managed credential/);
   const relogin = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, 'Loopback Codex reply', 'login'], { cwd, env });
   assert.equal(relogin.code, 0, relogin.stdout + relogin.stderr);
+  const ptyAttach = relogin.stdout.match(/^pty_attach_ms=(\d+(?:\.\d+)?)$/m);
+  assert.ok(ptyAttach, 'missing PTY measurement');
+  t.diagnostic(JSON.stringify({ platform: process.platform, arch: process.arch,
+    boundary: 'installed TUI process spawn through existing transcript text on PTY', attachMs: Number(ptyAttach[1]) }));
   assert.equal(exchanges, 2);
   await good(['auth', 'status'], /OAuth configured/);
   const catalog = () => native(socket, async call => {
@@ -377,21 +434,7 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   };
   await good(['--print', '--thread', id, 'release-after-configure'], /^Loopback Codex reply\n$/);
   checkSelected(seen[2], /release-after-configure/);
-  const stop = async (path, argsMarker) => {
-    const daemon = (await launches()).findLast(r => r.args.includes('--startup-fd') && r.args.includes(argsMarker));
-    assert.ok(daemon);
-    process.kill(daemon.pid, 'SIGTERM');
-    for (let i = 0; i < 250; i++) {
-      try { await lstat(path); } catch (e) {
-        if (e.code !== 'ENOENT') throw e;
-        daemonPIDs.add(daemon.pid);
-        return;
-      }
-      await delay(20);
-    }
-    assert.fail('daemon did not remove its socket');
-  };
-  await stop(socket, join(profile, 'runtime'));
+  await stop();
   const restarted = await status();
   assert.notEqual(restarted.epoch, first.epoch);
   await good(['--print', '--thread', id, 'release-after-restart'], /^Loopback Codex reply\n$/);
@@ -399,19 +442,6 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   assert.match(JSON.stringify(seen[3].input), /release-first-durable/);
   assert.deepEqual(requestTools(seen[3]).map(tool => tool.name), directTools);
 
-  // Enable on the host and restart the managed daemon. By the time it runs
-  // the script the embedded backend has been unlinked, with no Pi on PATH.
-  await writeFile(join(profile, 'settings.json'), '{"codemode":true}', { mode: 0o600 });
-  await stop(socket, join(profile, 'runtime'));
-  await good(['--no-session', '--print', 'release-private-with-codemode-enabled'], /^Loopback Codex reply\n$/);
-  assert.deepEqual(requestTools(seen[4]), []);
-  await writeFile(join(cwd, 'first.txt'), 'KEY=north\n');
-  await writeFile(join(cwd, 'second.txt'), 'KEY=south\n');
-  await good(['--print', '--thread', id, batchPrompt], /^Loopback Codex reply\n$/);
-  assert.deepEqual(requestTools(seen[5]).map(tool => tool.name), [...directTools, 'codemode']);
-  const batchResult = seen[6].input.find(item => item.call_id === 'call_release_batch' && item.type.endsWith('_output'));
-  assert.match(batchResult?.output ?? '', /Script completed[\s\S]*north, south/);
-  assert.doesNotMatch(batchResult.output, /KEY=/);
   await good(['auth', 'logout'], /no Hush-managed credential/);
   const afterLogout = await readFile(auth, 'utf8').catch(e => {
     if (e.code !== 'ENOENT') throw e;
@@ -419,9 +449,28 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   });
   assert.equal(JSON.parse(afterLogout || '{}')['openai-codex'], undefined);
   await bad(['--print', '--thread', id, 'release-after-logout'], /hush auth login/);
-  assert.equal(seen.length, 7);
+  assert.equal(seen.length, 4);
+  await stop();
+
+  await t.test('optional: installed Codemode enabled only on the host', async () => {
+    await writeFile(join(profile, 'settings.json'), '{"codemode":true}', { mode: 0o600 });
+    const signin = await invoke(python.stdout.trim(), ['-c', pty, binary], { cwd, env });
+    assert.equal(signin.code, 0, signin.stdout + signin.stderr);
+    assert.equal(exchanges, 3);
+    await good(['--no-session', '--print', 'release-private-with-codemode-enabled'], /^Loopback Codex reply\n$/);
+    assert.deepEqual(requestTools(seen[4]), []);
+    await writeFile(join(cwd, 'first.txt'), 'KEY=north\n');
+    await writeFile(join(cwd, 'second.txt'), 'KEY=south\n');
+    await good(['--print', '--thread', id, batchPrompt], /^Loopback Codex reply\n$/);
+    assert.deepEqual(requestTools(seen[5]).map(tool => tool.name), [...directTools, 'codemode']);
+    const batchResult = seen[6].input.find(item => item.call_id === 'call_release_batch' && item.type.endsWith('_output'));
+    assert.match(batchResult?.output ?? '', /Script completed[\s\S]*north, south/);
+    assert.doesNotMatch(batchResult.output, /KEY=/);
+    assert.equal(seen.length, 7);
+    await good(['auth', 'logout'], /no Hush-managed credential/);
+    await stop();
+  });
   assert.deepEqual(unexpected, []);
-  await stop(socket, join(profile, 'runtime'));
   await absent(join(home, '.pi'));
   const records = await launches();
   assert.equal(new Set(records.map(r => r.entry)).size, records.length);

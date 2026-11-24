@@ -43,11 +43,14 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		_, err := io.WriteString(out, usage)
 		return report(err)
 	}
-	if o.command == localAuth || o.command == localTrust {
+	if o.command == localAuth || o.command == localTrust || o.command == localStore {
 		var err error
-		if o.command == localTrust {
+		switch o.command {
+		case localStore:
+			err = runStore(ctx, o, out, stderr)
+		case localTrust:
 			err = runTrust(ctx, o, out, stderr)
-		} else {
+		default:
 			err = runAuth(ctx, o, in, out, stderr)
 		}
 		var exited *exec.ExitError
@@ -118,20 +121,21 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		if err != nil {
 			return report(err)
 		}
-		defer func() {
-			if err := cleanup(); err != nil {
-				code = report(err)
-			}
-		}()
 		host, err := startPrivate(ctx, node, entry, profile, needPi || preferPi)
+		// Readiness follows evaluation of the embedded module. Unlink it
+		// before accepting a prompt; a subsequent SIGKILL skips Go defers.
+		cleanupErr := cleanup()
 		if err != nil {
-			return report(err)
+			return report(errors.Join(err, cleanupErr))
 		}
 		defer func() {
 			if err := host.Close(); err != nil {
 				code = report(err)
 			}
 		}()
+		if cleanupErr != nil {
+			return report(cleanupErr)
+		}
 		if profile == backendstart.Hush {
 			sdkOpts.RequiredCapabilities = map[string]uint64{"hushProfile": 1}
 		}

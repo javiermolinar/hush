@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, fstatSync, realpathSync, writeSync } from "node:fs";
-import { chmod, lstat, open, unlink } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { chmod } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { CredentialStore } from "@earendil-works/pi-ai";
@@ -33,6 +31,10 @@ import { ImageFitter } from "./images.js";
 import { BackendError, parseConfig, type BackendConfig } from "./config.js";
 import { fauxModel, fauxTools, makeFaux } from "./faux.js";
 import { checkStoreProfile, hushDefaultModel, initializeStore, privateDirectory, privateFile } from "./profile.js";
+import { activeCutover, allowManagedOpen, managedRuntime, managedWriter, runStoreCommand } from "./cutover.js";
+import { dataLock } from "./store-lock.js";
+import { StoreValidationError } from "./store-snapshot.js";
+import { checkSocket } from "./store-socket.js";
 import { findInitialModel, InMemoryCodingAgentModelsStore, InMemoryCredentialStore, resolveModelScopeFromModels } from "./pi-source.js";
 import { LocalEnvironment, ProjectResources, type Warn } from "./resources.js";
 import { PiHost } from "./pi/host.js";
@@ -79,44 +81,6 @@ export async function loadModels(config: BackendConfig) {
   return { runtime, models: new ModelRegistry(runtime) };
 }
 
-async function dataLock(dir: string) {
-  // An exclusive SQLite lock on a dedicated file is kernel-owned on macOS/Linux:
-  // it survives stopped processes and is released on SIGKILL without PID probing.
-  const path = join(dir, "owner.sqlite");
-  const file = await open(path, "wx", 0o600).catch((err: NodeJS.ErrnoException) => {
-    if (err.code !== "EEXIST") throw err;
-  });
-  await file?.close();
-  if (!await privateFile(path)) throw new BackendError("data_locked");
-  for (const suffix of ["-wal", "-shm", "-journal"]) await privateFile(path + suffix);
-  const db = new DatabaseSync(path);
-  try {
-    db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE");
-    return () => db.close();
-  } catch {
-    db.close();
-    throw new BackendError("data_locked");
-  }
-}
-
-async function checkSocket(path: string, mayClean: boolean) {
-  const info = await lstat(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-  });
-  if (!info) return;
-  if (!mayClean || !info.isSocket() || info.uid !== process.getuid?.()) throw new BackendError("socket_unavailable");
-  const stale = await new Promise<boolean>(resolve => {
-    const peer = createConnection(path);
-    peer.setTimeout(250);
-    const done = (ok: boolean) => { peer.destroy(); resolve(ok); };
-    peer.once("connect", () => done(false));
-    peer.once("timeout", () => done(false));
-    peer.once("error", (err: NodeJS.ErrnoException) => done(err.code === "ECONNREFUSED" || err.code === "ENOENT"));
-  });
-  if (!stale) throw new BackendError("socket_unavailable");
-  await unlink(path);
-}
-
 interface RunningBackend {
   harness: Harness;
   root: Conversation;
@@ -137,8 +101,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
   process.env.PI_OFFLINE = "1";
   if (standalone) await privateDirectory(config.agentDir, !config.ephemeral, config.ephemeral);
   const directory = dirname(config.socket);
-  await privateDirectory(directory, !config.ephemeral);
-  const unlock = config.dataDir ? await dataLock(config.dataDir) : () => {};
+  let unlockRuntime: (() => void) | undefined, unlockManaged: (() => void) | undefined;
   let compatibleStore = false;
   const warn: Warn = code => {
     if (config.dataDir && compatibleStore) {
@@ -170,7 +133,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       () => codemode?.sandbox.close(),
       () => resources?.close(),
       () => models?.runtime.settleCredentialWrites(),
-      unlock,
+      () => unlockRuntime?.(),
+      () => unlockManaged?.(),
     ];
     let failed = false;
     for (const stop of tasks) {
@@ -184,10 +148,16 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     stopped.resolve();
   })();
   try {
-    let storeIdentity = config.dataDir ? await checkStoreProfile(config.dataDir, standalone) : undefined;
-    await checkSocket(config.socket, !config.ephemeral);
-    if (standalone && !storeIdentity) storeIdentity = config.dataDir ? await initializeStore(config.dataDir) :
-      { storeId: randomUUID(), generation: randomUUID() };
+    const managed = standalone && config.dataDir ? await managedRuntime(config.agentDir, config.dataDir) : undefined;
+    if (managed) unlockManaged = await managedWriter(managed);
+    const gate = managed && await activeCutover(managed);
+    await privateDirectory(directory, !config.ephemeral && !gate);
+    if (config.dataDir) unlockRuntime = await dataLock(config.dataDir);
+    const manifest = config.dataDir ? await checkStoreProfile(config.dataDir, standalone) : undefined;
+    await allowManagedOpen(managed, gate, manifest, fileURLToPath(import.meta.url));
+    await checkSocket(config.socket, config.ephemeral ? "refuse" : "clean");
+    const storeIdentity = manifest ? { storeId: manifest.storeId, generation: manifest.generation } : standalone ?
+      config.dataDir ? await initializeStore(config.dataDir) : { storeId: randomUUID(), generation: randomUUID() } : undefined;
     compatibleStore = true;
     const { models: modelRegistry, runtime } = models = await loadModels(config);
     const sources = config.piEvents ? new PiSources(runtime) : undefined;
@@ -382,6 +352,18 @@ async function main() {
   }
   if (argv[0] === "trust") {
     process.exitCode = await runWorkspaceTrustCommand(argv.slice(1));
+    return;
+  }
+  if (argv[0] === "store") {
+    try { await runStoreCommand(argv.slice(1), fileURLToPath(import.meta.url)); }
+    catch (error) {
+      const reason = error instanceof StoreValidationError ? error.message :
+        error instanceof BackendError && (error.code === "data_locked" || error.code === "socket_unavailable") ?
+          "The backend is not quiescent. Stop it and retry only after the writer exits." :
+          "Store operation refused. Inspect the store; preserve its files and recover forward if the state is unknown.";
+      process.stderr.write(`hush store: ${reason}\n`);
+      process.exitCode = 1;
+    }
     return;
   }
   const config = await parseConfig(argv).catch(() => { throw new BackendError("configuration"); });

@@ -76,7 +76,14 @@ history before sharing it. Don't add broad path or rule exclusions for fixtures 
 ## Release candidates
 
 Run [Release candidate](.github/workflows/release-candidate.yml) manually from green `main`. It runs
-`mise run release` natively for Linux and macOS on amd64 and arm64 and attaches a tarball and its
-SHA-256 checksum to each successful job. Artifacts expire after 14 days. No tag is created and nothing
-is signed or published. The checks don't replace live-provider tests or independent review of the exact
-artifacts before publication; see the [standalone candidate baseline](docs/standalone-release-baseline.md).
+`mise run release` natively for Linux and macOS on amd64 and arm64. Each successful job attaches
+its tested install tarball, checksum, source and build identity, and evidence from Node.js 22.19.0.
+The offline slices separate the default no-Pi install, native recovery, the bundled opt-in Pi profile,
+and optional commands. The installed test records warm attach from process start through `status`
+exit (20 samples) and through the first existing transcript text on a PTY. The evidence includes
+light and dark production-model frames (`evidence/frames/*.ansi`); view each in its matching
+Catppuccin Latte or Mocha palette. These are model fixtures, not terminal-emulator screenshots.
+
+Artifacts expire after 14 days. No tag is created and nothing is signed or published. The checks
+and captures don't replace visual review, authorized live-provider tests, or independent review of the
+exact artifacts before publication; see the [standalone candidate baseline](docs/standalone-release-baseline.md).

@@ -247,8 +247,8 @@ func readStartup(r io.Reader, socket string) error {
 		switch status.Error {
 		case "data_locked":
 			return errContended
-		case "store_profile":
-			return fmt.Errorf("could not start backend (store_profile): %w", sdk.ErrStoreIncompatible)
+		case "store_profile", "store_cutover":
+			return fmt.Errorf("could not start backend (%s); run 'hush store inspect' on the backend host: %w", status.Error, sdk.ErrStoreIncompatible)
 		case "credential_configuration":
 			return errors.New("set ~/.hush/credential-store to file or keyring (private, mode 600), then restart the Hush backend")
 		case "configuration", "socket_directory", "socket_unavailable", "startup_failed", "shutdown_failed":

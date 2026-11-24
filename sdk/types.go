@@ -250,7 +250,7 @@ var (
 	ErrProtocol          = errors.New("invalid hush protocol frame")
 	ErrStale             = errors.New("hush state needs a fresh snapshot")
 	ErrStoreChanged      = errors.New("hush cannot verify store continuity (store replaced, restored, or legacy backend restarted); start a fresh attach without reusing thread state or submission keys")
-	ErrStoreIncompatible = errors.New("incompatible Hush history; use a fresh data directory or a supported offline restore (no automatic migration)")
+	ErrStoreIncompatible = errors.New("incompatible or fenced Hush history; no automatic migration")
 )
 
 func token(s string) bool {

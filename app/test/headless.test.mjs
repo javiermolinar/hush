@@ -16,9 +16,11 @@ import { assertFrame } from "../../protocol/v1/replay.mjs";
 import { dial, request } from "../../server/test/client.mjs";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
-const bundle = join(repo, "dist", "hush-backend.mjs");
-let binDir, binary;
+const bundle = process.env.HUSH_TEST_BACKEND ?? join(repo, "dist", "hush-backend.mjs");
+const installed = process.env.HUSH_TEST_CLI;
+let binDir, binary = installed;
 before(async () => {
+  if (installed) return;
   binDir = await mkdtemp("/tmp/hush-cli-bin-");
   binary = join(binDir, "hush");
   await promisify(execFile)("go", ["build", "-o", binary, "./app/cmd/hush"], { cwd: repo, timeout: 60_000 });
@@ -839,7 +841,7 @@ test("persistent autostart never replaces an incompatible socket or executes a b
   const dist = join(cfg.cwd, "dist"), entry = join(dist, "hush-backend.mjs");
   await mkdir(dist);
   await writeFile(entry, `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(launched)}, 'bad');\n`);
-  failed(await cli(t, cfg, ["status", "--json"]).exit, /no local backend bundle found/);
+  if (!installed) failed(await cli(t, cfg, ["status", "--json"]).exit, /no local backend bundle found/);
   const missing = join(cfg.dir, "external.sock");
   for (const attached of [
     cli(t, { ...cfg, env: { ...cfg.env, HUSH_BACKEND: entry } }, ["--socket", missing, "status", "--json"]),

@@ -21,6 +21,8 @@ const usage = `Usage:
   hush stop [--socket PATH] [--json | -q]
   hush auth login|status|logout [--backend BUNDLE]
   hush trust status|grant|revoke [--cwd PATH] [--json]
+  hush store inspect|activate|rollback [--backend BUNDLE]
+  hush store prepare --from PINNED-HUSH [--backend BUNDLE]
   hush wait --thread ID [--json]
   hush thread list [--all] [--limit N] [--cursor CURSOR] [--json]
   hush thread new [--cwd PATH] [--title TITLE] [--worktree] [--json]
@@ -70,6 +72,7 @@ const (
 	localAuth
 	stopBackend
 	localTrust
+	localStore
 	scheduleCommand
 	checkpointCommand
 )
@@ -97,6 +100,7 @@ type options struct {
 	fileArgs                []string
 	modelFilter             string
 	authAction, trustAction string
+	storeAction, storeFrom  string
 	schedule                scheduleOptions
 	checkpoint              checkpointOptions
 	directory               sdk.ThreadDirectoryOptions
@@ -122,6 +126,7 @@ func parse(args []string) (options, error) {
 	f.BoolVarP(&o.help, "help", "h", false, "")
 	f.StringVar(&o.socket, "socket", "", "")
 	f.StringVar(&o.bundle, "backend", "", "")
+	f.StringVar(&o.storeFrom, "from", "", "")
 	f.StringVar(&o.ui.Profile, "profile", "", "")
 	f.StringVar(&thread, "thread", "", "")
 	f.StringVar(&o.create.CWD, "cwd", "", "")
@@ -194,6 +199,26 @@ func parse(args []string) (options, error) {
 		}
 		o.command, o.trustAction = localTrust, rest[1]
 		return o, nil
+	}
+	if len(rest) != 0 && rest[0] == "store" && f.ArgsLenAtDash() != 0 {
+		if len(rest) != 2 || !slices.Contains([]string{"inspect", "prepare", "activate", "rollback"}, rest[1]) {
+			return o, errors.New("use store inspect, prepare --from PINNED-HUSH, activate, or rollback")
+		}
+		var invalid bool
+		f.Visit(func(v *pflag.Flag) {
+			invalid = invalid || !slices.Contains([]string{"backend", "profile", "from", "json"}, v.Name)
+		})
+		if invalid || f.Changed("backend") && o.bundle == "" || f.Changed("profile") && o.ui.Profile != "hush" {
+			return o, errors.New("store operations are local to the managed Hush backend host and do not accept a socket or Pi profile")
+		}
+		if f.Changed("from") != (rest[1] == "prepare") || f.Changed("from") && o.storeFrom == "" {
+			return o, errors.New("store prepare requires --from PINNED-HUSH; other store operations do not accept it")
+		}
+		o.command, o.storeAction = localStore, rest[1]
+		return o, nil
+	}
+	if f.Changed("from") {
+		return o, errors.New("--from is for store prepare")
 	}
 	if len(rest) != 0 && (rest[0] == "checkpoint" || rest[0] == "rewind") && f.ArgsLenAtDash() != 0 {
 		o.command = checkpointCommand

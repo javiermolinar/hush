@@ -41,7 +41,7 @@ export type BackendConfig = {
 
 export class BackendError extends Error {
   constructor(readonly code: "configuration" | "socket_directory" | "data_locked" | "socket_unavailable" |
-     "store_profile" | "startup_failed" | "shutdown_failed") { super(code); }
+     "store_profile" | "store_cutover" | "startup_failed" | "shutdown_failed") { super(code); }
 }
 
 export function hushDirectory() {

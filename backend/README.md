@@ -33,54 +33,44 @@ a thread's working directory is not a sandbox.
 
 ## Standalone store compatibility and restore
 
-A new standalone runtime initializes a `store-profile` JSON manifest with exactly
-`profile: "hush"`, `format: 1`, `storeId`, `generation`, and decimal string `device`
-and `inode` fields. `storeId` and `generation` are lowercase UUIDv4 values. The
-manifest binds to `history.sqlite` by device/inode and a second hard link,
-`history.identity`, which keeps the original inode reserved while the store is in
-use. **Never open the alias in SQLite.** The history header carries SQLite
-`application_id` `0x48555348` (`HUSH`), independent of Durable's schema bookkeeping.
-This contract requires a private local filesystem supporting Unix file ownership,
-SQLite locking, hard links, and stable device/inode numbers (the supported hosts
-are macOS and Linux).
+A new standalone runtime initializes a format-2 `store-profile`. Its logical
+store ID and generation are lowercase UUIDv4 values. The manifest binds to
+`history.sqlite` by device and inode and to `history.identity`, a hard link that
+reserves the inode. **Never open the alias in SQLite.** The database header
+carries `application_id` `0x48555348` (`HUSH`), separate from Durable's schema.
+Hush checks this binding under the writer lock, before SQLite opens history or
+Hush removes a stale socket. It does not adopt a Pi database, a bare SQLite
+file, or an incomplete bootstrap. There is no automatic upgrade.
 
-Hush checks the profile, format, file binding and header under the writer lock,
-before SQLite opens existing history or Hush removes a stale socket. It will not
-adopt a Pi database, a bare SQLite file, the old development `hush` marker, or an
-incomplete bootstrap. It does not migrate, repair, or rewrite incompatible history.
-Pi mode cannot open a marked Hush store. Keep rejected files for inspection; use a
-separate fresh data directory if you don't need their history.
+The managed cutover implementation has this compatibility matrix. `hush store
+inspect` reports the exact target bundle SHA-256 and the on-disk phase; compare
+that SHA-256 with the current candidate's release evidence. This is an
+implementation matrix, not an independently verified release claim.
 
-**Offline history restore:** Stop the backend and prevent autostart or other writers
-throughout backup or restore. Take a backup of `history.sqlite` and `store-profile`
-together after a clean shutdown with no `history.sqlite-wal`, `-shm`, or `-journal`
-remaining. If sidecars remain, do not copy only the main file or delete them to force
-a backup. Use only a known compatible, matched backup. To restore:
+| Source build | Target build | Runtime and scope |
+| --- | --- | --- |
+| [Pinned standalone candidate](../docs/standalone-release-baseline.md), exact `eec512d5…c21f` Linux arm64 executable; Hush format 1 | Same target bundle for preparation, activation and subsequent managed startup; Hush format 2, registry `hush-standalone-2` | Node 22.19.0 for preparation, private local Linux arm64 default `~/.hush/runtime` only; Pi Durable 1.6.0 SQLite schema 2 on both sides |
 
-1. In a new private (0700) staging directory on the target local filesystem, copy
-   the backup database to a **new** regular file `history.sqlite` with mode 0600.
-   Create `history.identity` as a hard link to that new file. Do not copy socket,
-   database sidecar or writer-lock files into staging.
-2. Write a private `store-profile` from the backup's manifest. Keep `profile`,
-   `format`, and `storeId`; replace `generation` with a **new** UUIDv4 every time.
-   Set `device` and `inode` to the new file's device and inode as decimal strings
-   (e.g. Python's `str(os.stat(path).st_dev)` and `str(os.stat(path).st_ino)`).
-3. Move the stopped original runtime directory aside and put the staged directory
-   in its place before permitting a new start. Keep the old directory separate as
-   a fallback, not as a running clone. If you later restore that fallback, bind a
-   new copy with a new generation then too. Hush does not restore credentials, Git
-   worktree files, projects, or other external state. Start a **fresh attach**: do
-   not carry over thread state, history anchors, or old submission keys.
+The format-1 allowlist includes built-in `pi.generation` v3, `pi.tool` v4,
+`pi.compaction` v1, and the pinned standalone coding-tool and document registry.
+Unrecognized tasks, wake definitions, profiles, runtime artifacts, and managed
+worktrees are not supported sources. Providing the pinned executable verifies
+its bytes, not the provenance of an arbitrary database.
 
-An untouched same-store restart keeps both identity values. Replacing the store
-with another independently initialized store changes the logical ID; restoring
-an older checkpoint of the same store must change the generation. Copying or
-editing live history, copying just WAL sidecars, and raw copies over the same
-inode are unsupported. The file binding catches ordinary file replacement, not
-in-place page rewrites or a filesystem/VM rollback that also rolls back the
-binding and identity. Detecting arbitrary rollback needs a witness outside the
-restored filesystem; Hush does not have one. This is not tamper protection from
-other processes running as the same user.
+The writer interlock stays in place. An incompatible marker fences legacy
+launchers; the target additionally requires a matched gate in
+`~/.hush/store-cutover/`. The predecessor database snapshot is retained there
+with its manifest, not as a runnable clone. It does not copy credential files,
+Git worktrees, or other external files; it does not redact transcript contents.
+The pinned predecessor has no `hush stop` command. Its writer must exit before
+preparation; cutover refuses a live owner. Do not copy a database over the
+active file, move the runtime aside, start a backup as another store, or edit the
+gate. Before the gate a supported restore changes generation; after the gate
+or if the phase is unknown, preserve both stores and recover forward. Normal
+restart keeps both identity values; restoring never permits reuse of prior
+history anchors or submission keys. This is not protection against a same-user
+process rewriting files or a whole-filesystem rollback that also rolls back
+the outside gate.
 
 The [store identity wire capability](../protocol/v1/store-identity.md) keeps
 these storage identities separate from the backend's fresh `hello` epoch.

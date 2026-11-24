@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
-import { link, lstat, mkdir, open, readdir, rename, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { validStoreIdentity, type StoreIdentity } from "../../server/src/store-identity.js";
-import { parseRecord } from "../../server/src/wire.js";
+import { object } from "../../server/src/wire.js";
 import { BackendError } from "./config.js";
+import { readStoreJSON, replaceStoreJSON, statStorePath as stat, syncPath } from "./store-files.js";
 
 export const hushDefaultModel = { provider: "openai-codex", modelId: "gpt-6-sol" };
 
@@ -44,16 +45,19 @@ export async function prepareAuthFile(path: string, create: boolean) {
   return true;
 }
 
-const historyName = "history.sqlite";
-const bindingName = "history.identity"; // hard link, never opened by SQLite
-const markerName = "store-profile";
+export const historyName = "history.sqlite";
+export const bindingName = "history.identity"; // hard link, never opened by SQLite
+export const markerName = "store-profile";
+export const storeFormat = 2;
+export const storeRegistry = "hush-standalone-2";
+export const sidecars = ["-wal", "-shm", "-journal"];
 // SQLite application_id, independent of Durable's schema/user_version.
-const applicationID = 0x48555348; // HUSH
+export const applicationID = 0x48555348; // HUSH
 const sqliteMagic = Buffer.from("SQLite format 3\0", "ascii");
-const stat = (path: string) => lstat(path, { bigint: true }).catch((err: NodeJS.ErrnoException) => {
-  if (err.code !== "ENOENT") throw err;
-  return undefined;
-});
+
+export type StoreManifest = StoreIdentity & { profile: "hush"; device: string; inode: string } &
+  ({ format: 1; cutover?: never; registry?: never } | { format: 2; cutover: string | null; registry: typeof storeRegistry });
+export const uuid = (value: unknown): value is string => validStoreIdentity({ storeId: value, generation: value });
 const incompatible = () => new BackendError("store_profile");
 const owned = (info: BigIntStats | undefined, links: bigint): info is BigIntStats =>
   !!info && info.isFile() && info.nlink === links && info.uid === BigInt(process.getuid!()) && (info.mode & 0o077n) === 0n;
@@ -62,7 +66,7 @@ const sameFile = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino ==
 // Inspect under the writer lock, before touching a stale socket or letting SQLite
 // open history (even read-only SQLite may touch WAL sidecars). Only a fresh
 // directory is eligible for initialization; incomplete bootstrap fails closed.
-export async function checkStoreProfile(dir: string, hush: boolean): Promise<StoreIdentity | undefined> {
+export async function checkStoreProfile(dir: string, hush: boolean, expected: 1 | 2 = storeFormat): Promise<StoreManifest | undefined> {
   const marker = join(dir, markerName), history = join(dir, historyName);
   const manifest = await stat(marker);
   if (!hush) {
@@ -74,23 +78,20 @@ export async function checkStoreProfile(dir: string, hush: boolean): Promise<Sto
     return;
   }
   try {
-    if (!owned(manifest, 1n) || manifest.size > 512n) throw incompatible();
-    const mf = await open(marker, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let value: unknown;
-    try { value = parseRecord(await mf.readFile()); }
-    finally { await mf.close(); }
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 6) throw incompatible();
-    const { profile, format, storeId, generation, device, inode } = value as Record<string, unknown>;
+    const value = await readStoreJSON(marker);
+    if (!object(value) || Object.keys(value).length !== (expected === 1 ? 6 : 8)) throw incompatible();
+    const { profile, format, storeId, generation, device, inode, registry, cutover } = value;
     const id = { storeId, generation };
-    if (profile !== "hush" || format !== 1 || !validStoreIdentity(id)) throw incompatible();
+    if (profile !== "hush" || format !== expected || !validStoreIdentity(id) ||
+        expected === 2 && (registry !== storeRegistry || cutover !== null && !uuid(cutover))) throw incompatible();
     const file = await stat(history), binding = await stat(join(dir, bindingName));
     if (!owned(file, 2n) || !owned(binding, 2n) || !sameFile(file, binding) ||
         device !== String(file.dev) || inode !== String(file.ino)) throw incompatible();
-    for (const suffix of ["-wal", "-shm", "-journal"]) {
+    for (const suffix of sidecars) {
       const sidecar = await stat(history + suffix);
       if (sidecar && !owned(sidecar, 1n)) throw incompatible();
     }
-    const fd = await open(history, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const fd = await open(history, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const header = Buffer.alloc(100);
       const actual = await fd.stat({ bigint: true });
@@ -100,7 +101,7 @@ export async function checkStoreProfile(dir: string, hush: boolean): Promise<Sto
         throw incompatible();
       }
     } finally { await fd.close(); }
-    return id;
+    return value as StoreManifest;
   } catch { throw incompatible(); }
 }
 
@@ -115,11 +116,16 @@ export async function initializeStore(dir: string): Promise<StoreIdentity> {
   try { db.exec(`PRAGMA application_id = ${applicationID}`); }
   finally { db.close(); }
   await link(history, join(dir, bindingName));
-  const file = await lstat(history, { bigint: true });
   const id = { storeId: randomUUID(), generation: randomUUID() };
-  const pending = marker + ".new";
-  await writeFile(pending, JSON.stringify({ profile: "hush", format: 1, ...id, device: String(file.dev), inode: String(file.ino) }) + "\n",
-    { mode: 0o600, flag: "wx", flush: true });
-  await rename(pending, marker);
+  await syncPath(history);
+  await replaceStoreJSON(marker, await storeManifest(history, id, storeFormat, null));
   return id;
+}
+
+export async function storeManifest(history: string, identity: StoreIdentity, format: 1 | 2, cutover: string | null): Promise<StoreManifest> {
+  const file = await lstat(history, { bigint: true });
+  if (!owned(file, 2n)) throw incompatible();
+  const common = { profile: "hush" as const, storeId: identity.storeId, generation: identity.generation,
+    device: String(file.dev), inode: String(file.ino) };
+  return format === 1 ? { ...common, format } : { ...common, format, cutover, registry: storeRegistry };
 }

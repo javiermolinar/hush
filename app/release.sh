@@ -37,11 +37,62 @@ sha256() {
   node --input-type=module -e 'import {createHash} from "node:crypto"; import {readFileSync} from "node:fs"; console.log(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"));' "$1"
 }
 bundle_sha=$(sha256 "$assets/hush-backend.mjs")
+artifact_sha=$(sha256 "$stage/hush")
 if [ "${1:-verify}" = verify ]; then
-  # The fixture copies the exact candidate to a clean install.
-  node app/test/release.test.mjs "$stage/hush" "$bundle_sha" backend/src/prompts/system.md
-  npm run headless:check # Preserved opt-in Pi compatibility and privacy regressions.
+  evidence="$stage/evidence"
+  archive="hush-$os-$arch.tar.gz"
+  mkdir -p "$evidence/frames" "$stage/install"
+  tar -czf "$stage/$archive" -C "$stage" hush
+  printf '%s  %s\n' "$(sha256 "$stage/$archive")" "$archive" > "$stage/$archive.sha256"
+  tar -xzf "$stage/$archive" -C "$stage/install"
+  test "$(sha256 "$stage/install/hush")" = "$artifact_sha"
+  {
+    printf '%s\n' 'Release evidence v1' "target: $os-$arch" 'targets: linux-amd64 linux-arm64 darwin-amd64 darwin-arm64'
+    printf '%s\n' "commit: $(git rev-parse HEAD)" "Go: $(go version)" "Node (minimum): $(node --version)"
+    printf '%s\n' "binary sha256: $artifact_sha" "embedded bundle sha256: $bundle_sha" "lockfile sha256: $(sha256 package-lock.json)"
+    printf '%s\n' 'Providers: synthetic loopback only, no live-provider or OS keyring verification'
+  } > "$evidence/candidate.txt"
+  node app/test/release-source.mjs > "$evidence/source.json"
+  go version -m "$stage/hush" > "$evidence/go-buildinfo.txt"
+  # Print full failed slices in CI without masking the exit status with tee.
+  record() {
+    name=$1; shift
+    log="$evidence/$name.log"
+    rc=0
+    "$@" > "$log" 2>&1 || rc=$?
+    printf '\n--- %s (exit %s) ---\n' "$name" "$rc"
+    awk '{print}' "$log"
+    return "$rc"
+  }
+  export HUSH_TEST_CLI="$PWD/$stage/install/hush" HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs"
+  test "$(sha256 "$HUSH_TEST_BACKEND")" = "$bundle_sha"
+  record installed node app/test/release.test.mjs "$HUSH_TEST_CLI" "$bundle_sha" backend/src/prompts/system.md
+  record typescript npm run build
+  record native-protocol npm run protocol:check
+  record native-recovery node --test --test-concurrency=1 server/test/core.test.mjs backend/test/backend.test.mjs
+  optional='schedule CLI|checkpoint CLI|workspace trust'
+  pi='^Pi |^raw native protocol|^persistent headless joins'
+  record native-cli node --test --test-skip-pattern="$optional|$pi" app/test/headless.test.mjs
+  # Run the bundled opt-in profile separately, with real producer fixtures and
+  # bare-host rejection. A slice that matches no tests must not certify it.
+  record pi-reference npm run profile:check
+  record pi-backend node --test --test-concurrency=1 server/test/pi-events.test.mjs backend/test/pi-events.test.mjs
+  record pi-cli node --test --test-name-pattern="$pi" app/test/headless.test.mjs
+  grep -Eq '^# pass [1-9][0-9]*$' "$evidence/pi-cli.log"
+  record optional-native-cli node --test --test-name-pattern="$optional" app/test/headless.test.mjs
+  grep -Eq '^# pass [1-9][0-9]*$' "$evidence/optional-native-cli.log"
+  export HUSH_RELEASE_FRAMES="$PWD/$evidence/frames"
+  record go-regressions go test -count=1 -p=1 -v -skip 'TestKitty|TestImageFromDrop' ./sdk/... ./tui/... ./app/...
+  for theme in latte mocha; do
+    for frame in alt-up-before alt-up-after selection copied nested-escape-before nested-escape-after reconnecting; do
+      test -s "$evidence/frames/$theme-$frame.ansi"
+    done
+  done
+  node app/test/release-source.mjs > "$stage/source-after.json"
+  cmp "$evidence/source.json" "$stage/source-after.json"
+  mv -f "$stage/$archive" "$stage/$archive.sha256" "$output/"
+  rm -rf "$output/evidence"
+  mv "$evidence" "$output/evidence"
 fi
 mv -f "$stage/hush" "$output/hush"
-artifact_sha=$(sha256 "$output/hush")
 printf '%s  %s\n' "$artifact_sha" "$output/hush" "$bundle_sha" 'embedded hush-backend.mjs'

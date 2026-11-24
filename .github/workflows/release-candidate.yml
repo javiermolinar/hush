@@ -44,20 +44,19 @@ jobs:
         with:
           version: 2026.11.12 # renovate: jdx/mise
           cache: false
-      - name: Build and verify with the minimum supported Node
-        run: mise run release
-      - name: Package binary and checksum
+      - name: Verify the archive that will be uploaded, at minimum Node
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          archive="hush-$TARGET.tar.gz"
-          tar -czf "$archive" -C "dist/release/$TARGET" hush
-          shasum -a 256 "$archive" > "$archive.sha256"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          mise run release
+          test -s "dist/release/$TARGET/hush-$TARGET.tar.gz"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hush-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            hush-${{ matrix.target }}.tar.gz
-            hush-${{ matrix.target }}.tar.gz.sha256
+            dist/release/${{ matrix.target }}/hush-${{ matrix.target }}.tar.gz
+            dist/release/${{ matrix.target }}/hush-${{ matrix.target }}.tar.gz.sha256
+            dist/release/${{ matrix.target }}/evidence/
           if-no-files-found: error
           retention-days: 14

@@ -770,6 +770,8 @@ test("standalone bundle, private socket and lock, deadline outlives disconnected
   assert.equal((await lstat(config.socket)).mode & 0o777, 0o600);
   const { connection } = await peer(t, config.socket);
   await boot(t, dir, config, { failure: /data_locked/ });
+  await setTimeout(350); // More than the idle grace with a connected, idle peer.
+  assert.equal(host.dead, false, "backend exited with a client still attached");
   const { id: threadId } = ok(await connection.send("thread.list", { limit: 1 })).threads[0];
   ok(await connection.send("subscribe", { threadId }));
   const receipt = await submit(connection, threadId, "!sleep 1000", "pending-deadline");
