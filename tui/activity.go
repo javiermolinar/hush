@@ -76,7 +76,7 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 		for _, b := range msg.Blocks {
 			switch b.Type {
 			case "thinking":
-				if !ctx.Expanded || strings.TrimSpace(b.Text) == "" {
+				if !ctx.ReasoningExpanded || strings.TrimSpace(b.Text) == "" {
 					continue
 				}
 				if !shownThought {

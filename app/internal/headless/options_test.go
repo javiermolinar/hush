@@ -125,13 +125,20 @@ func TestParseStop(t *testing.T) {
 
 func TestParseLocalAuth(t *testing.T) {
 	for _, action := range []string{"login", "status", "logout"} {
-		o, err := parse([]string{"--backend", "fixture.mjs", "auth", action, "--profile", "hush"})
-		if err != nil || o.command != localAuth || o.authAction != action || o.bundle != "fixture.mjs" || o.interactive(true, true) {
-			t.Errorf("auth %s: options=%+v error=%v", action, o, err)
+		for _, provider := range []string{"", "openrouter", "openai-codex"} {
+			args := []string{"--backend", "fixture.mjs", "auth", action, "--profile", "hush"}
+			if provider != "" {
+				args = append(args, provider)
+			}
+			o, err := parse(args)
+			if err != nil || o.command != localAuth || o.authAction != action || o.authProvider != provider || o.bundle != "fixture.mjs" || o.interactive(true, true) {
+				t.Errorf("auth %s %s: options=%+v error=%v", action, provider, o, err)
+			}
 		}
 	}
 	for _, args := range [][]string{
 		{"auth"}, {"auth", "invalid"}, {"auth", "login", "secret"}, {"auth", "login", "--socket=/tmp/sock"},
+		{"auth", "login", "openrouter", "secret"}, {"auth", "logout", "__proto__"}, {"auth", "status", "--provider=openai"},
 		{"auth", "login", "--profile=pi"}, {"--model=x", "auth", "login"}, {"--mode=json", "auth", "login"},
 		{"--print", "auth", "login"}, {"auth", "login", "--no-session"},
 	} {

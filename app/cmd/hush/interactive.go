@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/javiermolinar/hush/app/internal/authproviders"
 	"github.com/javiermolinar/hush/app/internal/backendstart"
 	"github.com/javiermolinar/hush/app/internal/headless"
 	"github.com/javiermolinar/hush/sdk"
@@ -43,7 +44,8 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		"modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion},
 		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceVersion},
 		"images": {sdk.ImagesVersion}, "nativeStop": {sdk.NativeStopVersion}, "schedules": {sdk.SchedulesVersion},
-		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "workspaceFiles": {sdk.WorkspaceFilesVersion}, "workspaceSkills": {sdk.WorkspaceSkillsVersion}, "loadedContext": {sdk.LoadedContextVersion},
+		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "settings": {sdk.SettingsVersion},
+		"workspaceFiles": {sdk.WorkspaceFilesVersion}, "workspaceSkills": {sdk.WorkspaceSkillsVersion}, "loadedContext": {sdk.LoadedContextVersion},
 	}
 	var environment sdk.ClientEnvironment
 	if profile == backendstart.Pi {
@@ -81,11 +83,14 @@ func localProviderLogin(o headless.InteractiveOptions) *tui.ProviderLoginOptions
 	if o.Profile != string(backendstart.Hush) || o.Socket != "" || os.Getenv("HUSH_SOCKET") != "" {
 		return nil
 	}
-	const codex = "openai-codex"
+	var choices []extension.Choice
+	for _, p := range authproviders.All() {
+		choices = append(choices, extension.Choice{ID: p.ID, Label: p.Label, Description: p.Description})
+	}
 	return &tui.ProviderLoginOptions{
-		Providers: []extension.Choice{{ID: codex, Label: "OpenAI Codex", Description: "Browser or device code"}},
+		Providers: choices,
 		Command: func(ctx context.Context, provider string) (*exec.Cmd, error) {
-			if provider != codex {
+			if _, ok := authproviders.Lookup(provider); !ok {
 				return nil, errors.New("unsupported sign-in provider")
 			}
 			exe, err := os.Executable()
@@ -93,6 +98,9 @@ func localProviderLogin(o headless.InteractiveOptions) *tui.ProviderLoginOptions
 				return nil, err
 			}
 			args := []string{"auth", "login", "--profile", "hush"}
+			if provider != authproviders.Default {
+				args = append(args, provider)
+			}
 			if o.Bundle != "" {
 				args = append(args, "--backend", o.Bundle)
 			}

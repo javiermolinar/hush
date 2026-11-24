@@ -82,9 +82,11 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, native := m.backend.(modelCatalogBackend)
 	_, search := m.backend.(modelCatalogSearchBackend)
 	_, draft := m.backend.(modelCatalogDraftBackend)
+	_, settings := m.backend.(settingsBackend)
 	catalog = catalog && m.options.Services.Models == nil
 	native = native && m.options.Services.Models == nil
-	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive && !schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext {
+	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive &&
+		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings {
 		return nil
 	}
 	ctx := m.ctx
@@ -105,6 +107,9 @@ func (m *Model) menuProbe() tea.Cmd {
 					f |= x.NativeCatalogDraft
 				}
 			}
+		}
+		if settings && hello.Capabilities["settings"] == sdk.SettingsVersion {
+			f |= x.Settings
 		}
 		if catalog && hello.Capabilities["piEvents"] == sdk.PiEventsVersion {
 			f |= x.Catalog
@@ -191,6 +196,9 @@ func modelsFromPi(ctx context.Context, backend piCatalogBackend) ([]x.CatalogMod
 }
 
 func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Context) x.ClientResult, bool) {
+	if job, ok := m.settingsJob(operation); ok {
+		return job, true
+	}
 	services := m.options.Services
 	features := m.menuFeatures()
 	target := func(id sdk.ID) sdk.ID {
@@ -245,7 +253,17 @@ func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Conte
 			return func(ctx context.Context) x.ClientResult {
 				call, cancel := context.WithTimeout(ctx, menuTimeout)
 				defer cancel()
-				catalog, err := backend.ModelCatalog(call, target(op.ThreadID))
+				var catalog sdk.ModelCatalog
+				var err error
+				if op.ThreadID == "" {
+					search, supported := m.backend.(modelCatalogSearchBackend)
+					if !supported || !features.Has(x.NativeCatalogDraft) {
+						return x.ClientResult{Err: sdk.ErrProtocol}
+					}
+					catalog, err = search.SearchModelCatalog(call, "", op.Query)
+				} else {
+					catalog, err = backend.ModelCatalog(call, target(op.ThreadID))
+				}
 				if err != nil {
 					return x.ClientResult{Err: err}
 				}
@@ -433,6 +451,10 @@ func (m *Model) applyMenuResult(op x.Operation, result *x.ClientResult) {
 			t.revision++
 			m.emit(result.ThreadID, x.Event{Kind: x.StatusChanged})
 		}
+	case x.ReadSettings, x.WriteSettings:
+		if result.Settings != nil {
+			m.applySettings(*result.Settings)
+		}
 	case x.SetMode:
 		if t := m.threads[result.ThreadID]; t != nil {
 			t.info.Mode = limitText(v.Mode, 64)
@@ -475,6 +497,7 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 		da("skills", "List loaded skills", "", "l", "skills", x.Skills, func(_ x.Context, _ x.Invocation) x.Outcome {
 			return x.Outcome{x.Client{Op: x.ListSkills{}, Done: showSkills}}
 		}),
+		da("config", "Configuration", "", "i o", "config", x.Settings, configMenu),
 		da("model", "Select model", "ctrl+l", "m", "model", x.Catalog, func(c x.Context, v x.Invocation) x.Outcome {
 			id := actionThread(c, v)
 			if !id.Valid() && !(id == "" && c.Features.Has(x.NativeCatalogDraft)) {

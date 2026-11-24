@@ -107,6 +107,7 @@ type Model struct {
 	intro                     *introState
 	introOnly                 bool
 	menuFeaturesFromBackend   extension.Features
+	settings                  sdk.SettingsSnapshot
 	slashHidden               bool
 }
 
@@ -212,7 +213,7 @@ func (m *Model) Init() tea.Cmd {
 	for i, out := range initial {
 		commands = append(commands, m.admit(m.route(owner, m.host.registrations[i].ID), out, &budget))
 	}
-	return tea.Batch(append(commands, m.syncClock(), m.syncWorkspaceTrust())...)
+	return tea.Batch(append(commands, m.syncClock(), m.syncWorkspaceTrust(), m.loadSettings())...)
 }
 
 // Close cancels local work and tears down initialized extensions. It does not
@@ -325,6 +326,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case nativeFilePage:
 		cmd = m.receiveNativeFilePage(v)
+	case settingsMsg:
+		if v.err == nil {
+			m.applySettings(v.settings)
+		}
 	case gitDiffTick:
 		if uint64(v) == m.gitDiffFeed.tick {
 			cmd = m.scanGitDiff()
@@ -434,7 +439,8 @@ func (m *Model) ensureThread(id sdk.ID) *threadState {
 		return t
 	}
 	t := &threadState{life: m.token(), info: extension.Thread{ID: id}, entries: make(map[sdk.ID]*record),
-		status: make(map[string]extension.SetStatus), following: true, customEntries: m.host.customEntries}
+		status: make(map[string]extension.SetStatus), following: true, customEntries: m.host.customEntries,
+		reasoningDefault: m.settings.Reasoning == sdk.ReasoningExpanded}
 	m.threads[id] = t
 	return t
 }
@@ -834,6 +840,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 		return m.openWorkspaceTrust(r)
 	case openUsageOp:
 		return m.openUsage(r, t, budget)
+	case openConfigOp:
+		return m.openConfig(r, budget)
 	case retryFailureOp, dismissFailureOp:
 		return m.recoverRun(r, e, budget)
 	case providerLoginOp:
@@ -869,7 +877,12 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 			return m.replaceFile(e.Text)
 		}
 	case extension.ToggleDetails:
-		t.expanded = !t.expanded
+		if t.detailsSet || t.expanded {
+			t.expanded = !t.expanded
+		} else {
+			t.expanded = !t.reasoningVisible()
+		}
+		t.detailsSet = true
 		t.expandEpoch++
 		t.liveOverride = false
 	case extension.ToggleActivity:
@@ -886,10 +899,7 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 			}
 			t.liveOverride, t.liveExpanded = true, !value
 		} else if row := t.entries[sdk.ID(e.Text)]; row != nil {
-			value := t.expanded
-			if row.override && row.expandEpoch == t.expandEpoch {
-				value = row.expanded
-			}
+			value := row.details(t) || row.reasoningDetails(t)
 			row.expandEpoch, row.override, row.expanded = t.expandEpoch, true, !value
 		}
 	case extension.ReplacePrompt:

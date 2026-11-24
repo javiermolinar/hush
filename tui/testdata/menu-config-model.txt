@@ -1,0 +1,22 @@
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ─ model · default ──────────────────────────────────────────────────────────────
+
+  › Type to filter
+  › fixture/one  current · Fixture one
+
+    fixture/two  Fixture two
+
+  enter use  ctrl+d make default  esc back to settings                    2 models
+  dir workspace

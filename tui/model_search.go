@@ -13,10 +13,11 @@ const modelSearchOp x.LocalOp = "model.search"
 const modelSearchDelay = 120 * time.Millisecond
 
 type modelSearchState struct {
-	thread sdk.ID
-	models map[string]x.CatalogModel
-	cancel context.CancelFunc
-	failed bool
+	thread   sdk.ID
+	settings *sdk.SettingsSnapshot
+	models   map[string]x.CatalogModel
+	cancel   context.CancelFunc
+	failed   bool
 }
 
 func (s *modelSearchState) stop() {
@@ -60,7 +61,7 @@ func (m *Model) openModelSearch(r ownerRoute, thread sdk.ID, query string, budge
 
 func (m *Model) searchModels(d *dialog, delay time.Duration) tea.Cmd {
 	backend, ok := m.backend.(modelCatalogSearchBackend)
-	if !ok || m.sheet != d || !m.foreground(d.route) {
+	if !ok || m.focusedDialog() != d || !m.foreground(d.route) {
 		return nil
 	}
 	s := d.modelSearch
@@ -93,7 +94,7 @@ func (m *Model) searchModels(d *dialog, delay time.Duration) tea.Cmd {
 }
 
 func (m *Model) receiveModelSearch(v modelSearchResult) {
-	d := m.sheet
+	d := m.focusedDialog()
 	if d == nil || d.modelSearch == nil || d.token != v.token || !m.foreground(d.route) {
 		return
 	}
@@ -103,7 +104,10 @@ func (m *Model) receiveModelSearch(v modelSearchResult) {
 		d.modelSearch.failed = true
 		return
 	}
-	if d.modelSearch.thread == "" {
+	if d.modelSearch.settings != nil {
+		model := d.modelSearch.settings.Model
+		v.catalog.Current = &model
+	} else if d.modelSearch.thread == "" {
 		if model := m.threads[d.route.owner].info.Model; model != (sdk.Model{}) {
 			v.catalog.Current = &model // locally staged, not a saved thread setting
 		}

@@ -35,7 +35,11 @@ func runAuth(ctx context.Context, o options, in, out, stderr *os.File) (result e
 			result = errors.Join(result, err)
 		}
 	}()
-	cmd := exec.CommandContext(ctx, node, entry, "auth", o.authAction)
+	args := []string{entry, "auth", o.authAction}
+	if o.authProvider != "" {
+		args = append(args, o.authProvider)
+	}
+	cmd := exec.CommandContext(ctx, node, args...)
 	cmd.Env = backendstart.RuntimeEnv(backendstart.Hush)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, stderr
 	// Give the bundle time to abort the provider flow and restore tty mode.

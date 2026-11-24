@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
 import type { CredentialStore } from "@earendil-works/pi-ai";
-import { registerBunOAuthFlows as registerBundledOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { ModelRegistry, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   AgentDoc, createRegistry, Harness, MemoryStorage, type AgentChange, type Conversation, type Cursor, type Extension, type HarnessSettings,
@@ -15,6 +14,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createCoreServer, type NativeHost } from "../../server/src/index.js";
 import { WireError } from "../../server/src/wire.js";
 import { runAuthCommand } from "./auth.js";
+import { registerBundledOAuthFlows } from "./auth-providers.js";
 import { credentialAdvice, credentialConfigurationFailed, hushCredentialStore } from "./credentials.js";
 import { nativeModelCatalog, nativeSelectionValidator } from "./model-catalog.js";
 import { Rejected } from "./pi/commands.js";
@@ -27,7 +27,7 @@ import { GitDiffService } from "./git-diff.js";
 import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
 import { LoadedContext } from "./loaded-context.js";
 import { skillUnavailable, StandaloneSkills, standaloneSkillsConfigured } from "./workspace-skills.js";
-import { readStandaloneSettings, standaloneModelDefault } from "./standalone-settings.js";
+import { readStandaloneSettings, StandaloneSettingsHost, standaloneModelDefault, standaloneSettingsView } from "./standalone-settings.js";
 import { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
 import { runWorkspaceTrustCommand, WorkspaceTrust, WorkspaceWorkTrust } from "./workspace-trust.js";
@@ -65,9 +65,7 @@ function shellSettings(settings: SettingsManager): HarnessSettings {
 }
 
 export async function loadModels(config: BackendConfig) {
-  // Pi's normal OAuth loader uses variable imports, which esbuild cannot fold
-  // into a single file. The standalone registration uses ordinary Node APIs.
-  registerBundledOAuthFlows();
+  await registerBundledOAuthFlows();
   const standalone = config.profile === "hush";
   const authPath = join(config.agentDir, "auth.json"), modelsPath = join(config.agentDir, "models.json");
   let credentials: CredentialStore | undefined;
@@ -164,7 +162,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const gate = managed && await activeCutover(managed);
     await privateDirectory(directory, !config.ephemeral && !gate);
     if (config.dataDir) unlockRuntime = await dataLock(config.dataDir);
-    const localSettings = standalone && (config.dataDir || !config.faux && !config.model)
+    let localSettings = standalone && (config.dataDir || !config.faux && !config.model)
       ? await readStandaloneSettings(config.agentDir) : {};
     const allowLegacy = managed && !gate && localSettings.allowLegacyStore === true;
     const manifest = config.dataDir ? await checkStoreProfile(config.dataDir, standalone, allowLegacy ? "either" : undefined) : undefined;
@@ -216,11 +214,12 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       const project = await dirs.load(cwd);
       return { ...selection(project), extensions: [...base, ...ordered, ...(project.mcp ? [project.mcp] : [])] };
     };
-    const nativeSelection = standalone && !config.faux && !config.model
+    const nativeSelection = () => standalone && !config.faux && !config.model
       ? standaloneModelDefault(localSettings, runtime) : undefined;
-    const nativeDefault = config.faux ? fauxModel : config.model ?? nativeSelection?.model ?? hushDefaultModel;
+    const nativeDefault = () => config.faux ? fauxModel : config.model ?? nativeSelection()?.model ?? hushDefaultModel;
+    if (standalone && !config.faux && !config.model) standaloneSettingsView(localSettings, runtime);
     const defaultModel = async (settings: SettingsManager) => {
-      if (standalone) return { model: nativeDefault, thinkingLevel: config.model ? "off" as const : nativeSelection?.thinkingLevel ?? "off" as const };
+      if (standalone) return { model: nativeDefault(), thinkingLevel: config.model ? "off" as const : nativeSelection()?.thinkingLevel ?? "off" as const };
       const initial = await findInitialModel({
         scopedModels: resolveModelScopeFromModels(settings.getSettings().enabledModels ?? [], modelRegistry.getAvailable()).scopedModels,
         isContinuing: false,
@@ -362,9 +361,11 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const browser = standalone && config.dataDir ? await workspaceFileHelper() : undefined;
     workspaceFiles = browser ? new WorkspaceFiles(harness, config.agentDir, browser) : undefined;
     const loadedContext = workTrust && config.dataDir ? new LoadedContext(harness, dirs, workTrust) : undefined;
+    const settingsHost = standalone && config.dataDir && !config.faux && !config.model
+      ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff, workspaceFiles, workspaceSkills, loadedContext,
       hushProfile: standalone ? 1 : undefined, nativeStop: standalone ? 1 : undefined,
-      workspaceWorkTrust: workTrust ? 1 : undefined,
+      workspaceWorkTrust: workTrust ? 1 : undefined, settings: settingsHost,
       clientEnvironment: standalone ? 1 : undefined, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });
     await server.listen(config.socket);
@@ -372,7 +373,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     warn("listening");
     harness.resume();
     if (config.supervisor && !config.faux) {
-      const { provider } = nativeDefault;
+      const { provider } = nativeDefault();
       // A once-per-boot diagnostic must not stop the scheduler. Never print provider data.
       void runtime.checkAuth(provider, { signal: AbortSignal.timeout(5_000) }).then(auth => {
         if (!auth) process.stderr.write("Hush service: provider sign-in needed. Run 'hush auth status' or choose another model.\n");

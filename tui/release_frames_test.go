@@ -31,8 +31,9 @@ func TestReleaseFrames(t *testing.T) {
 		t.Run(theme.name, func(t *testing.T) {
 			var clipboard string
 			m, s := demo(t, Options{Fills: FillOn, ReducedMotion: true,
-				CopyText: func(_ context.Context, text string) error { clipboard = text; return nil },
-				Services: MenuServices{Rename: func(context.Context, x.SetTitle) error { return nil }},
+				CopyText:      func(_ context.Context, text string) error { clipboard = text; return nil },
+				Services:      MenuServices{Rename: func(context.Context, x.SetTitle) error { return nil }},
+				ProviderLogin: loginFixture(),
 			})
 			m.Update(tea.WindowSizeMsg{Width: 100, Height: 22})
 			m.Update(tea.BackgroundColorMsg{Color: theme.bg})
@@ -49,6 +50,13 @@ func TestReleaseFrames(t *testing.T) {
 				}
 				return ansi.Strip(frame)
 			}
+			m.editor.set("/login")
+			press(m, tea.KeyEnter, 0)
+			if frame := shot("provider-login"); !strings.Contains(frame, "Fixture provider") || !strings.Contains(frame, "Device provider") {
+				t.Fatal("the provider picker did not show both sign-in choices")
+			}
+			press(m, tea.KeyEscape, 0)
+
 			m.editor.set("Keep this draft")
 			s.queue = []sdk.QueueItem{{SubmissionID: "7", Mode: string(sdk.FollowUp), Text: "Queued fixture"}}
 			s.info.Status = x.Running
@@ -138,6 +146,26 @@ func TestReleaseFrames(t *testing.T) {
 				!strings.Contains(m.frame.rows[m.height-1], m.palette.activeTab) {
 				t.Fatal("tab band or active tab did not retain its separate surface")
 			}
+
+			thought := entry(8, "assistant", "")
+			thought.Messages[0].Blocks = []sdk.Block{{Type: "thinking", Text: "Check the settings flow before changing the defaults."}}
+			s.merge([]sdk.Entry{thought})
+			m.applySettings(sdk.SettingsSnapshot{Model: configModel().Model, ThinkingLevel: "high", Reasoning: sdk.ReasoningExpanded})
+			if body := shot("reasoning-expanded"); !strings.Contains(body, "Check the settings flow") {
+				t.Fatal("expanded reasoning was not captured")
+			}
+			fixture := &configFixture{settings: configModel()}
+			m.backend = fixture
+			m.Update(m.menuProbe()())
+			m.Update(m.loadSettings()())
+			m.finishWork(m.runAction(m.host.byID[x.ActionID(menusID+".config")], "")().(workMsg))
+			configDialog := m.focusedDialog()
+			currentModel, _, _ := m.configCurrent(configDialog)
+			configDialog.config.levels[currentModel] = []string{"off", "low", "high", "max"}
+			if body := shot("config"); !strings.Contains(body, "settings") || !strings.Contains(body, "reasoning") || !strings.Contains(body, "folded") {
+				t.Fatal("configuration sheet was not captured")
+			}
+			press(m, tea.KeyEscape, 0)
 
 			enableGitDiffFixture(m, s)
 			s.info.Branch = s.gitDiff.summary.Branch

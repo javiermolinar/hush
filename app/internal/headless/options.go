@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/javiermolinar/hush/app/internal/authproviders"
 	"github.com/javiermolinar/hush/sdk"
 	"github.com/spf13/pflag"
 )
@@ -21,7 +22,7 @@ const usage = `Usage:
   hush service install [--backend BUNDLE]
   hush service status|pause|resume|restart|uninstall
   hush stop [--socket PATH] [--json | -q]
-  hush auth login|status|logout [--backend BUNDLE]
+  hush auth login|status|logout [PROVIDER] [--backend BUNDLE]
   hush trust status|grant|revoke [--scope git|work|browse|home] [--cwd PATH] [--json]
   hush store inspect|activate|rollback [--backend BUNDLE]
   hush store prepare --from PINNED-HUSH [--backend BUNDLE]
@@ -52,6 +53,7 @@ HUSH_BACKEND to select a bundle). --socket and HUSH_SOCKET are attach-only;
 --mode protocol just relays bytes. --no-session starts a private backend.
 Use --profile pi (or HUSH_PROFILE=pi) to select the legacy Pi profile.
 Pi modes and options select it explicitly and require a backend with piEvents.
+Auth commands default to openai-codex; use /login to see the local OAuth providers.
 `
 
 type command uint8
@@ -103,6 +105,7 @@ type options struct {
 	fileArgs                []string
 	modelFilter             string
 	authAction, trustAction string
+	authProvider            string
 	trustScope              string
 	storeAction, storeFrom  string
 	serviceAction           string
@@ -178,8 +181,14 @@ func parse(args []string) (options, error) {
 	// Reserve unescaped auth syntax even in an explicit generation mode. An
 	// incompatible option must not accidentally send a login command as chat.
 	if len(rest) != 0 && rest[0] == "auth" && f.ArgsLenAtDash() != 0 {
-		if len(rest) != 2 || !slices.Contains([]string{"login", "status", "logout"}, rest[1]) {
-			return o, errors.New("use auth login, status, or logout")
+		if len(rest) < 2 || len(rest) > 3 || !slices.Contains([]string{"login", "status", "logout"}, rest[1]) {
+			return o, errors.New("use auth login, status, or logout with an optional provider ID")
+		}
+		if len(rest) == 3 {
+			if _, ok := authproviders.Lookup(rest[2]); !ok {
+				return o, errors.New("unsupported auth provider; use /login to see the OAuth providers")
+			}
+			o.authProvider = rest[2]
 		}
 		var invalid bool
 		f.Visit(func(v *pflag.Flag) {

@@ -1,0 +1,11 @@
+[
+  {"id":"openai-codex","label":"OpenAI Codex","description":"Browser or device code"},
+  {"id":"anthropic","label":"Anthropic (Claude)","description":"Browser or copy code"},
+  {"id":"openai","label":"OpenAI (ChatGPT)","description":"Browser"},
+  {"id":"github-copilot","label":"GitHub Copilot","description":"Device code"},
+  {"id":"kimi-coding","label":"Kimi Code","description":"Device code"},
+  {"id":"meta","label":"Meta","description":"Device code"},
+  {"id":"openrouter","label":"OpenRouter","description":"Browser"},
+  {"id":"radius","label":"Radius","description":"Browser or device code"},
+  {"id":"xai","label":"xAI (Grok)","description":"Device code"}
+]

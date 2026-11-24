@@ -614,6 +614,7 @@ func (m *Model) copyCode(r ownerRoute, id string, budget *int) tea.Cmd {
 	} else if rec := t.entries[sdk.ID(parts[0])]; rec != nil {
 		ctx := m.renderContext(t, m.width-4, recordRows, false)
 		ctx.Expanded = rec.details(t)
+		ctx.ReasoningExpanded = rec.reasoningDetails(t)
 		content, _ = m.recordContent(ctx, t, rec)
 	}
 	if block >= len(content) || content[block].Format != x.Markdown {

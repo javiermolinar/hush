@@ -15,6 +15,7 @@ func TestMalformedRequestsAreSilentAndDoNotAccessKeyring(t *testing.T) {
 		`{"operation":"set","scope":"` + scope + `","record":"not an object"}`,
 		`{"operation":"delete","scope":"` + scope + `"} {}`,
 		`{"operation":"delete","scope":"` + scope + `","account":"not Hush"}`,
+		`{"operation":"get","scope":"` + scope + `","provider":"__proto__"}`,
 		strings.Repeat(" ", maxCredential+4000),
 	} {
 		var out bytes.Buffer

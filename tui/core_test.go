@@ -78,6 +78,7 @@ func TestFrameGeometry(t *testing.T) {
 	t.Run("workspace-trust", testWorkspaceTrustFrameGeometry)
 	t.Run("file-picker", testFilePickerFrameGeometry)
 	t.Run("loaded-context", testLoadedContextFrameGeometry)
+	t.Run("configuration", testConfigFrameGeometry)
 	for _, size := range [][2]int{{39, 11}, {40, 12}, {64, 16}, {80, 24}, {120, 30}, {200, 60}} {
 		m, s := demo(t, Options{Fills: FillOff, ProviderLogin: loginFixture()})
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})

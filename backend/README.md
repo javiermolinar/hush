@@ -85,12 +85,28 @@ the outside gate.
 The [store identity wire capability](../protocol/v1/store-identity.md) keeps
 these storage identities separate from the backend's fresh `hello` epoch.
 
-## Host-local Codex login
+## Host-local provider login
 
-Use `hush auth login`, `hush auth status`, or `hush auth logout` on the backend host.
-In a managed local Hush TUI, `/login` opens the same Codex sign-in flow.
-Other providers need credentials configured separately on the backend host.
-The equivalent bundle commands are `node dist/hush-backend.mjs auth login|status|logout`.
+In a managed local Hush TUI, use `/login` to choose a provider, then `/model`
+to select a model. From a shell on the backend host, use `hush auth login PROVIDER`,
+`hush auth status PROVIDER`, or `hush auth logout PROVIDER`. Omitting `PROVIDER`
+still targets `openai-codex` for all three commands.
+
+| Provider ID | Sign-in |
+| --- | --- |
+| `openai-codex` | OpenAI Codex: browser or device code |
+| `anthropic` | Anthropic (Claude): browser or copy code |
+| `openai` | OpenAI (ChatGPT): browser |
+| `github-copilot` | GitHub Copilot on GitHub.com: device code |
+| `kimi-coding` | Kimi Code: device code |
+| `meta` | Meta: device code |
+| `openrouter` | OpenRouter: browser |
+| `radius` | Radius public gateway: browser or device code |
+| `xai` | xAI (Grok): device code |
+
+These are the built-in OAuth flows from Pi 1.6.0. Configure API keys and other
+credentials separately on the backend host. The equivalent bundle commands are
+`node dist/hush-backend.mjs auth login|status|logout [PROVIDER]`.
 There is no socket auth method. Login requires a TTY and writes to the selected
 Hush credential store. It shows browser or device instructions only on the login
 terminal; manually pasted codes and redirect URLs are not echoed. Cancel before
@@ -103,8 +119,8 @@ remove separately configured alternatives. Status does not validate tokens with 
 The default for compatibility is `file`, which uses private `~/.hush/auth.json`.
 To use the OS keyring, finish auth operations and stop the Hush daemon (SIGTERM
 the matching backend or wait for idle shutdown). While still on the old store,
-run `hush auth logout` to remove its Codex record. Do not remove the whole
-`auth.json` if it contains credentials you need for other providers. Existing
+run `hush auth logout PROVIDER` for each credential you want to remove. Do not
+remove the whole `auth.json` if it contains credentials you need to keep. Existing
 backups are not scrubbed. Then select the new store and sign in again:
 
 ```sh
@@ -118,10 +134,10 @@ There is no migration, mixing, or automatic fallback. A running backend
 refuses new credential reads if the selection changes; restart it to adopt
 the new setting. The Pi profile does not use this selector.
 
-Keyring mode keeps the complete Codex OAuth record in one item scoped to the
-Hush profile on the backend host. It uses the backend account's default
-Keychain on macOS and an unlocked Secret Service in its local Linux D-Bus
-session. Start Hush from that account/session. Hush does not start, unlock or
+Keyring mode keeps one complete OAuth record per provider and Hush profile on
+the backend host. Existing Codex records remain readable without migration.
+It uses the backend account's default Keychain on macOS and an unlocked Secret
+Service in its local Linux D-Bus session. Start Hush from that account/session. Hush does not start, unlock or
 prompt for a keyring; when it is inaccessible, unlock or authorize access in
 the OS and retry `hush auth status`. A manually started Node backend in
 keyring mode needs `HUSH_KEYRING_HELPER` set to the trusted absolute path of
@@ -157,6 +173,28 @@ npm run backend:bundle
 go build -o /tmp/hush-keyring-fixture ./app/cmd/hush
 HUSH_TEST_KEYRING_BINARY=/tmp/hush-keyring-fixture node --test app/test/keyring.test.mjs
 ```
+
+## Standalone configuration
+
+`/config` opens the persistent settings modal on a standalone host. It is also available as
+**Configuration** in the main command palette. **Default model** and
+**Default thinking effort** apply to newly created threads; `/model` continues to change the current
+thread. **Reasoning text** is independent: `expanded` shows supplied live and historical reasoning
+while leaving tool output folded, and `folded` retains the Ctrl+O behavior. Changes take effect
+without a backend restart and are stored in the backend host's private `~/.hush/settings.json`.
+
+```json
+{
+  "defaultProvider": "openrouter",
+  "defaultModel": "moonshotai/kimi-k3.1-pro",
+  "defaultThinkingLevel": "high",
+  "display": { "reasoning": "expanded" }
+}
+```
+
+The file must remain owned by the user and mode `0600`. Existing unrelated keys are preserved.
+Reasoning display cannot recover empty or redacted provider reasoning. Other already-connected
+clients reload the setting on their next configuration read or restart rather than receiving a push.
 
 ## Standalone Codemode
 

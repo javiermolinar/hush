@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/javiermolinar/hush/app/internal/authproviders"
 )
 
 const secretService = "org.freedesktop.secrets"
@@ -37,7 +38,7 @@ func platformKeyring(ctx context.Context, req request) ([]byte, error) {
 		return bus.Object(secretService, path).CallWithContext(ctx, method, dbus.FlagNoAutoStart, args...)
 	}
 	attributes := map[string]string{
-		"application": "hush", "service": servicePrefix + req.Scope, "account": account,
+		"application": "hush", "service": servicePrefix + req.Scope, "account": req.Provider,
 	}
 	var unlocked, locked []dbus.ObjectPath
 	if call(servicePath, secretAPI+"Service.SearchItems", attributes).Store(&unlocked, &locked) != nil ||
@@ -94,8 +95,9 @@ func platformKeyring(ctx context.Context, req request) ([]byte, error) {
 			return nil, errUnavailable
 		}
 	} else {
+		provider, _ := authproviders.Lookup(req.Provider)
 		props := map[string]dbus.Variant{
-			secretAPI + "Item.Label":      dbus.MakeVariant("Hush OpenAI Codex OAuth"),
+			secretAPI + "Item.Label":      dbus.MakeVariant("Hush " + provider.Label + " OAuth"),
 			secretAPI + "Item.Attributes": dbus.MakeVariant(attributes),
 		}
 		var created, prompt dbus.ObjectPath

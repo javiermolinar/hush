@@ -308,6 +308,13 @@ func (s *session) receive(f map[string]any) error {
 		if err := optionalEnvelope(f, version, SchedulesVersion); err != nil {
 			return err
 		}
+	} else if ok && (method == settingsGetMethod || method == settingsSetMethod) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[settingsCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, SettingsVersion); err != nil {
+			return err
+		}
 	} else if ok && method == runtimeStopMethod {
 		s.mu.Lock()
 		version := s.hello.Capabilities[runtimeCapability]

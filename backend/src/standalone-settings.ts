@@ -4,6 +4,9 @@ import { join } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { publicCatalogText } from "../../server/src/model-catalog.js";
+import type { SettingsChange, SettingsView, ThinkingLevel } from "../../server/src/settings.js";
+import { replaceStoreJSON } from "./store-files.js";
+import { WireError } from "../../server/src/wire.js";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { BackendError } from "./config.js";
 import { hushDefaultModel, privateFile } from "./profile.js";
@@ -46,4 +49,59 @@ export function standaloneModelDefault(settings: Record<string, unknown>, runtim
     throw new BackendError("configuration");
   }
   return { model, thinkingLevel: (thinking ?? "off") as ModelThinkingLevel };
+}
+
+export function standaloneSettingsView(settings: Record<string, unknown>, runtime: ModelRuntime): SettingsView {
+  const selected = standaloneModelDefault(settings, runtime);
+  const display = settings.display;
+  if (display !== undefined && (!display || typeof display !== "object" || Array.isArray(display))) {
+    throw new BackendError("configuration");
+  }
+  const reasoning = (display as Record<string, unknown> | undefined)?.reasoning;
+  if (reasoning !== undefined && reasoning !== "folded" && reasoning !== "expanded") throw new BackendError("configuration");
+  return { model: selected.model, thinkingLevel: selected.thinkingLevel as ThinkingLevel, reasoning: reasoning ?? "folded" };
+}
+
+// Mutations are serialized so concurrent clients cannot overwrite each other's
+// unrelated changes. The on-disk file remains private and unrelated Pi-compatible
+// settings survive every update.
+export class StandaloneSettingsHost {
+  #tail: Promise<void> = Promise.resolve();
+  constructor(private readonly agentDir: string, private readonly runtime: ModelRuntime,
+      private settings: Record<string, unknown>, private readonly changed: (settings: Record<string, unknown>) => void) {}
+
+  async get(): Promise<SettingsView> {
+    await this.#tail;
+    return standaloneSettingsView(this.settings, this.runtime);
+  }
+
+  set(change: SettingsChange): Promise<SettingsView> {
+    const run = this.#tail.then(() => this.#set(change));
+    this.#tail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async #set(change: SettingsChange): Promise<SettingsView> {
+    const next: Record<string, unknown> = { ...this.settings };
+    if (change.model) {
+      next.defaultProvider = change.model.provider;
+      next.defaultModel = change.model.modelId;
+    }
+    if (change.thinkingLevel !== undefined) next.defaultThinkingLevel = change.thinkingLevel;
+    if (change.reasoning !== undefined) {
+      next.display = { ...(this.settings.display as Record<string, unknown> | undefined), reasoning: change.reasoning };
+    }
+    try { standaloneSettingsView(next, this.runtime); }
+    catch {
+      const error = new WireError("invalid_request");
+      error.message = "Selected model or thinking level is unavailable.";
+      throw error;
+    }
+    const path = join(this.agentDir, "settings.json");
+    await replaceStoreJSON(path, next);
+    if (!await privateFile(path)) throw new BackendError("configuration");
+    this.settings = next;
+    this.changed(next);
+    return standaloneSettingsView(next, this.runtime);
+  }
 }

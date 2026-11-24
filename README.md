@@ -20,7 +20,7 @@ mkdir -p "$HOME/.local/bin" && install -m 755 ./hush "$HOME/.local/bin/hush"
 
 Run `~/.local/bin/hush` in your project. The local TUI asks before allowing tools
 in a new workspace; you can choose **Not now** and change your mind with `/trust`.
-Type `/login` to sign in with OpenAI Codex. The binary embeds the backend. You need Node.js 22.19.0 or newer, but not a separate Pi installation.
+Type `/login` to choose an [OAuth provider](backend/README.md#host-local-provider-login), then use `/model` to select a model. The binary embeds the backend. You need Node.js 22.19.0 or newer, but not a separate Pi installation.
 [Codemode](backend/README.md#standalone-codemode) is an optional host setting for batching workspace reads.
 
 For a [release candidate](CONTRIBUTING.md#release-candidates), use the GitHub Actions
@@ -45,6 +45,8 @@ Faux: Now check the install instructions
 
 In the Go TUI, you can open threads in tabs. It caches transcript blocks and
 renders the visible window, rather than rewrapping the whole thread on each keystroke.
+Use `/config` to set the default model and thinking effort for new threads, and to show live and
+historical reasoning without expanding tool output. `/model` still changes only the current thread.
 
 On a supported standalone backend, click the `±` badge or use `/diff` or
 `Ctrl+X I D` to review the active thread’s trusted Git worktree. The review
