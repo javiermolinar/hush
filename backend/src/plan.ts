@@ -183,7 +183,7 @@ export async function proposePlan(tx: Tx, owner: ConversationId, directory: (cwd
   // exact at its next transcript entry, even when a peer made the edit.
   for (const member of state.members) setBinding(await tx.doc(Binding, member), planId, plan.revision, member);
   await mark(tx, owner, { planId, revision: plan.revision });
-  return plan.revision;
+  return { planId, revision: plan.revision };
 }
 
 async function unbind(tx: Tx, owner: ConversationId, pin: Pin & { liveThread: ConversationId }, previous: PlanState) {

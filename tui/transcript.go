@@ -24,6 +24,7 @@ type threadState struct {
 	directoryBase                                            tabMetadata
 	gitDiff                                                  gitDiffState
 	plan                                                     planView
+	planDraft                                                planDraftState
 	life, revision                                           uint64
 	info                                                     extension.Thread
 	ids, shown, detailShown                                  []sdk.ID
@@ -102,6 +103,7 @@ type renderKey struct {
 
 	speakerBreak    bool
 	first, forkHint bool
+	planSave        bool
 }
 type blockCache struct {
 	key  renderKey
@@ -243,7 +245,10 @@ func (t *threadState) merge(values []sdk.Entry) []*record {
 		t.entries[e.ID] = r
 		added = append(added, r)
 		ids = append(ids, e.ID)
-		if !checkpointMarker(e.Kind) && lessID(t.lastAnswerID, e.ID) {
+		if e.ThreadID == t.info.ID {
+			t.planDraft.observe(e)
+		}
+		if e.Kind != planPreviewEntry && !checkpointMarker(e.Kind) && lessID(t.lastAnswerID, e.ID) {
 			var parts []string
 			for _, msg := range r.entry.Record.Messages {
 				if msg.Role != "assistant" {
@@ -344,6 +349,9 @@ func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
 	}
 	r := t.entries[shown[i]]
 	key.entry = r.entry.Record.ID
+	if r.entry.Record.Kind == planPreviewEntry {
+		key.planSave = m.canSavePlanPreview(t, key.entry)
+	}
 	ctx.Expanded = r.details(t)
 	ctx.ReasoningExpanded = r.reasoningDetails(t)
 	key.expanded, key.reasoning = ctx.Expanded, ctx.ReasoningExpanded

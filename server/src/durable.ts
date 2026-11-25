@@ -11,7 +11,7 @@ import { Cursors } from "./cursor.js";
 import { environmentEntry, environmentInputKind, type ClientEnvironment } from "./client-environment.js";
 import { projectImageBytes, type ImageRef, type ImagesHost, type ImageSubmission } from "./images.js";
 import { planReviewKind } from "./plan-review.js";
-import { planRunKind, planTaskKind, planResultKind } from "./plan.js";
+import { planRunKind, planTaskKind, planResultKind, planPreviewKind, planPreviewSavedKind } from "./plan.js";
 import { scheduleReportKind } from "./scheduling.js";
 import { checkpointKind, effectKind } from "./checkpoints.js";
 import type { CatalogCreation } from "./model-catalog.js";
@@ -76,7 +76,8 @@ const projectEntry = (entry: EntryRecord) => ({
   id: id(entry.id), threadId: id(entry.conversationId),
   kind: entry.kind === environmentInputKind ? "pi.user" : entry.kind,
   messages: (entry.kind === scheduleReportKind || entry.kind === checkpointKind || entry.kind === effectKind ||
-    entry.kind === planRunKind || entry.kind === planTaskKind || entry.kind === planResultKind || entry.kind === planReviewKind) &&
+    entry.kind === planRunKind || entry.kind === planTaskKind || entry.kind === planResultKind || entry.kind === planReviewKind ||
+    entry.kind === planPreviewKind || entry.kind === planPreviewSavedKind) &&
     object(entry.data) && typeof entry.data.text === "string" && typeof entry.data.timestampMs === "number" ? [{ role: "assistant", timestampMs: entry.data.timestampMs,
       stopReason: "stop", blocks: [{ type: "text", text: entry.data.text }] }] :
     (entry.model ?? []).map(projectMessage),

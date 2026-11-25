@@ -726,6 +726,23 @@ func (m *Model) eligibleFor(a registeredAction, owner sdk.ID, target string) boo
 	if a.action.ID == pasteImageID {
 		return m.images.capable
 	}
+	if a.action.ID == inspectPlanPreviewID || a.action.ID == savePlanPreviewID {
+		t := m.threads[owner]
+		if t == nil {
+			return false
+		}
+		if a.action.ID == inspectPlanPreviewID {
+			if target == "" {
+				target = string(t.planDraft.latest)
+			}
+			rec := t.entries[sdk.ID(target)]
+			return rec != nil && rec.entry.Record.Kind == planPreviewEntry
+		}
+		if target == "" {
+			target = string(t.planDraft.pending())
+		}
+		return m.canSavePlanPreview(t, sdk.ID(target))
+	}
 	if a.action.ID == retryFailureID || a.action.ID == dismissFailureID {
 		recovery := m.recoveryFor(owner, target)
 		return recovery.task.Valid() && (a.action.ID == dismissFailureID || recovery.retry)
@@ -902,6 +919,18 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	switch e.Op {
 	case openPlanOp:
 		return m.openPlan(r)
+	case inspectPlanPreviewOp:
+		id := sdk.ID(e.Text)
+		if id == "" {
+			id = t.planDraft.latest
+		}
+		return m.inspectPlanPreview(r, id)
+	case savePlanPreviewOp:
+		id := sdk.ID(e.Text)
+		if id == "" {
+			id = t.planDraft.pending()
+		}
+		return m.savePlanPreview(r, id)
 	case openLoadedContextOp:
 		return m.openLoadedContext(r, budget)
 	case openGitDiffOp:

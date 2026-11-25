@@ -284,6 +284,17 @@ func TestReleaseFrames(t *testing.T) {
 			if body := shot("plan-selection"); !strings.Contains(body, "Run 2 @ r7") || !strings.Contains(body, "Save a profile → Restore saved profiles") {
 				t.Fatal("the plan picker did not preview the selected run")
 			}
+			press(m, tea.KeyEscape, 0)
+			s.info.Status, s.tools, s.plan = x.Idle, nil, planView{}
+			m.menuFeaturesFromBackend |= x.Plans | x.PlanDraft
+			s.merge([]sdk.Entry{previewFixtureEntry(99)})
+			if body := shot("plan-preview"); !strings.Contains(body, "Plan preview · Worker reviews") || !strings.Contains(body, "Save to /plan") {
+				t.Fatal("the preview did not show its Save action")
+			}
+			m.runAction(m.host.byID[inspectPlanPreviewID], "")
+			if body := shot("plan-preview-details"); !strings.Contains(body, "New plan · not saved") || !strings.Contains(body, "Worker results remain separate") {
+				t.Fatal("the preview detail did not show the proposed check")
+			}
 		})
 	}
 }

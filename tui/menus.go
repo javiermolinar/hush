@@ -141,6 +141,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, plans := m.backend.(planBackend)
 	_, planWorkspace := m.backend.(planWorkspaceBackend)
 	_, planReview := m.backend.(planReviewBackend)
+	_, planDraft := m.backend.(planDraftBackend)
 	_, loadedContext := m.backend.(loadedContextBackend)
 	_, native := m.backend.(modelCatalogBackend)
 	_, search := m.backend.(modelCatalogSearchBackend)
@@ -177,6 +178,9 @@ func (m *Model) menuProbe() tea.Cmd {
 		}
 		if plans && hello.Capabilities["plan"] == sdk.PlanVersion {
 			f |= x.Plans
+			if planDraft && hello.Capabilities["planDraft"] == sdk.PlanDraftVersion {
+				f |= x.PlanDraft
+			}
 			if planWorkspace && hello.Capabilities["planWorkspace"] == sdk.PlanWorkspaceVersion {
 				f |= x.PlanWorkspace
 				if planReview && hello.Capabilities["planReview"] == sdk.PlanReviewVersion {

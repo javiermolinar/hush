@@ -49,11 +49,12 @@ async function layout(t) {
   const boot = async (changes = {}) => {
     const options = { ...config, ...changes };
     backend = await startBackend(options);
-    return async (versions = [1], negotiated = true) => {
+    return async (versions = [1], negotiated = true, draftVersions = [1]) => {
       const peer = await dial(options.socket);
       peers.push(peer);
-      const hello = okay(await peer.send("hello", { versions: [1], capabilities: { plan: versions, planWorkspace: [1], planReview: [1], nativeStop: [1] } }));
+      const hello = okay(await peer.send("hello", { versions: [1], capabilities: { plan: versions, planWorkspace: [1], planReview: [1], planDraft: draftVersions, nativeStop: [1] } }));
       assert.equal(hello.capabilities.plan, negotiated ? 1 : undefined);
+      assert.equal(hello.capabilities.planDraft, negotiated && draftVersions.includes(1) ? 1 : undefined);
       assert.equal(hello.capabilities.planWorkspace, negotiated ? 1 : undefined);
       assert.equal(hello.capabilities.planReview, negotiated && !options.faux && !options.ephemeral ? 1 : undefined);
       return peer;
@@ -283,6 +284,87 @@ test("normal provider drafting is advertised, write-free and revision-checked ac
   assert.deepEqual(await snapshot(a, owner), v2);
   denied(await a.send("ext.plan.run", { threadId: owner, planId, revision: 2, stepIds: ["save"], requestId: "no-fixture-for-real-draft" }),
     "unsupported_capability");
+});
+
+test("plan previews stay unsaved until an exact, current confirmation", { timeout: 20_000 }, async t => {
+  helper(t);
+  const { boot, stop, config } = await layout(t);
+  const initial = "Lets work on creating a new plan to support subagents, independent reviews etc.";
+  const revision = "Preview a plan revision with more detail";
+  const original = draftArgs(0, "Independent reviews"), expanded = draftArgs(1, "More review detail");
+  const provider = await planProvider(t, config.agentDir, ({ text, tools, results }) => {
+    if (text === "Another topic") return "An ordinary reply.";
+    if (text === "Revise the plan explicitly") {
+      assert.deepEqual(tools.toSorted(), ["hush_plan_current", "hush_plan_propose", "read"]);
+      return results.length ? "Saved." : [call("hush_plan_propose", draftArgs(1, "Peer revision"))];
+    }
+    assert.ok(text === initial || text === revision, text);
+    assert.deepEqual(tools.toSorted(), ["hush_plan_current", "hush_plan_preview", "read"]);
+    if (!results.length) return [call("hush_plan_preview", text === initial ? original : expanded),
+      call("hush_plan_propose", original), call("write", { path: "plan.md", content: "not allowed" })];
+    assert.ok(results.some(r => r.content.includes("Plan preview ready")));
+    assert.equal(results.filter(r => r.content.includes("Plan previewing only permits")).length, 2);
+    if (results.length === 3) return [call("hush_plan_preview", draftArgs(text === revision ? 1 : 0, "Do not replace the shown draft"))];
+    assert.match(results.at(-1).content, /already available/);
+    return "Preview shown; not saved.";
+  });
+  const options = { faux: false, model: provider.model };
+  let connect = await boot(options), a = await connect(), b = await connect();
+  const newThread = async () => okay(await a.send("thread.new", {})).id;
+  const owner = await newThread(), other = await newThread();
+  const list = async () => okay(await a.send("ext.planWorkspace.wait", { threadId: owner, page: 0 })).plans;
+  const findPreview = async threadId => (await history(a, threadId)).findLast(e => e.kind === "hush.plan.preview");
+  const save = (threadId, previewId, peer = a) => peer.send("ext.planDraft.save", { threadId, previewId });
+  await ask(a, owner, initial, "first-preview");
+  const preview = await findPreview(owner);
+  assert.match(preview.messages[0].blocks[0].text, /Independent reviews[\s\S]+not saved[\s\S]+Round-trip preserves/);
+  assert.equal((await history(a, owner)).filter(e => e.kind === "hush.plan.preview").length, 1);
+  assert.equal((await snapshot(a, owner)).plan, null);
+  assert.deepEqual(await list(), []);
+  denied(await save(other, preview.id), "not_found");
+  const fork = okay(await a.send("thread.fork", { threadId: owner, atEntryId: preview.id })).id;
+  denied(await save(fork, preview.id), "not_found");
+  denied(await save(owner, preview.id, await connect([1], true, [2])), "unsupported_capability");
+
+  // A fresh client can save the same preview after restart, with no model turn.
+  await stop();
+  connect = await boot(options); a = await connect(); b = await connect();
+  const requests = provider.requests.length;
+  const trust = new WorkspaceTrust(config.agentDir);
+  await trust.change(config.cwd, "revoke", AbortSignal.timeout(5_000));
+  denied(await save(owner, preview.id), "invalid_request", /trust/i);
+  assert.equal((await snapshot(a, owner)).plan, null);
+  await trust.change(config.cwd, "grant", AbortSignal.timeout(5_000));
+  const [first, retry] = (await Promise.all([save(owner, preview.id), save(owner, preview.id, b)])).map(okay);
+  assert.deepEqual(retry, first);
+  assert.equal(first.revision, 1);
+  const saved = await snapshot(a, owner);
+  assert.deepEqual(saved.plan, { id: first.planId, revision: 1, title: original.title, steps: original.steps });
+  assert.equal(saved.run, null);
+  assert.equal(provider.requests.length, requests);
+  assert.deepEqual((await list()).map(p => p.id), [first.planId]);
+  assert.equal((await history(a, owner)).filter(e => e.kind === "hush.plan.preview-saved").length, 1);
+
+  await ask(a, other, initial, "other-preview");
+  const obsolete = await findPreview(other);
+  await ask(a, other, "Another topic", "other-topic");
+  denied(await save(other, obsolete.id), "invalid_request", /no longer current/);
+  await ask(a, other, initial, "before-reset");
+  const reset = await findPreview(other);
+  okay(await a.send("thread.reset", { threadId: other }));
+  denied(await save(other, reset.id), "invalid_request", /no longer current/);
+  assert.equal((await snapshot(a, other)).plan, null);
+  await ask(a, owner, revision, "revision-preview");
+  const outdated = await findPreview(owner);
+  okay(await b.send("ext.plan.attach", { threadId: other, planId: first.planId }));
+  await ask(b, other, "Revise the plan explicitly", "peer-edit");
+  denied(await save(owner, outdated.id), "invalid_request", /plan changed/);
+  assert.equal((await snapshot(a, owner)).plan.title, "Peer revision");
+  assert.deepEqual(await readdir(config.cwd), []);
+  await stop();
+  connect = await boot(options); a = await connect();
+  assert.deepEqual(okay(await save(owner, preview.id)), first, "old retries do not create revisions");
+  assert.equal((await snapshot(a, owner)).plan.revision, 2);
 });
 
 test("plan capability is unavailable on invocation-private hosts", { timeout: 12_000 }, async t => {

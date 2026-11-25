@@ -20,6 +20,16 @@ authorizes implementation.
 A stale proposal fails without changing the head. There is no Markdown export
 in this slice.
 
+Start with **Preview a plan …** or use an opening such as **Let's work on
+creating a new plan …** to draft without saving. The read-only turn offers
+`hush_plan_preview` in place of `hush_plan_propose`. In the TUI, click the
+preview title or press `ctrl+x i v` to inspect it. Click **Save to /plan**,
+press `ctrl+x i w`, or send **ok save it** to save the exact preview when it is
+still current in this thread. A later submitted topic or a reset invalidates
+that confirmation. Saving doesn't call the model, run tasks, or write a
+Markdown file. Without preview saving, use the explicit create or revise
+request above.
+
 A runnable step declares one of two scopes:
 
 - `edit: {path, contains}`: one exact replacement with a literal newly present
@@ -223,6 +233,23 @@ verification records commit with the relevant run progress. The native core
 wire schema is unchanged. Scoped execution requires a matching private file
 helper; an old helper leaves the host draft-only. Older in-flight execution
 records settle as interrupted on upgrade and are not replayed.
+
+### Save a preview (`planDraft:1`)
+
+Offer `planDraft:1` along with `plan:1`. The `hush.plan.preview` transcript
+entry is an immutable preview, not a saved plan or model input. The owning
+thread can prepare one preview per placed input. Historical previews remain
+inspectable after saving, a newer input, or a fork.
+
+`ext.planDraft.save {threadId, previewId}` saves the exact preview and returns
+`{planId, revision}`. The IDs name an ownerless thread and its preview entry.
+Saving requires workspace trust, a settled draft turn, no active or queued
+work in that thread, no newer input or reset, and the same workspace and plan
+base as when it was previewed. New saves against stale previews are rejected.
+An exact retry returns the original receipt, even after reconnect, restart,
+or revision changes. The revision and a `hush.plan.preview-saved` transcript
+entry commit together. The request cannot start a run. Text confirmation is
+handled by the TUI; other native clients can use the same save operation.
 
 ### Independent plan review (`planReview:1`)
 

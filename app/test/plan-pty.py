@@ -54,7 +54,16 @@ def open_plan(title, count):
 
 
 try:
-    if mode == "draft":
+    if mode == "preview":
+        wait_for("ask anything")
+        submit(draft)
+        wait_for("Plan preview · Subagents and independent reviews", "Save to /plan")
+        submit("ok save it")
+        wait_for("Saved Subagents and independent reviews (r1)")
+        open_plan("Subagents and independent reviews", "0/1 · r1")
+        # The terminal renderer may reuse 'Plan' cells from the inventory header.
+        wait_for("Join worker results", "Draft only · execution unavailable")
+    elif mode == "draft":
         wait_for("ask anything")
         submit(draft)
         wait_for("Saved Interface preferences (r1)")

@@ -147,6 +147,9 @@ const PlanWorkspace Features = 1 << 18
 // PlanReview enables independent advisory review of a saved plan revision.
 const PlanReview Features = 1 << 19
 
+// PlanDraft enables saving an inspected plan preview.
+const PlanDraft Features = 1 << 20
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.

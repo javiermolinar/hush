@@ -24,6 +24,16 @@ func activityRegistration() x.Registration {
 			}
 			return x.Outcome{x.Local{Op: x.ToggleActivity, Text: v.Target}}
 		},
+	}, {
+		ID: inspectPlanPreviewID, Title: "Inspect plan preview", Binding: x.Binding{Leader: "i v"},
+		Run: func(_ x.Context, v x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: inspectPlanPreviewOp, Text: v.Target}}
+		},
+	}, {
+		ID: savePlanPreviewID, Title: "Save to /plan", Binding: x.Binding{Leader: "i w"}, Requires: x.PlanDraft,
+		Run: func(_ x.Context, v x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: savePlanPreviewOp, Text: v.Target}}
+		},
 	}}}
 }
 
@@ -36,6 +46,9 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 	var cards []blockRange
 	gap := x.Block{Lines: []x.Line{nil}}
 	e := r.entry
+	if e.Record.Kind == planPreviewEntry && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
+		return m.planPreviewContent(ctx, t, e.Record.ID, e.Record.Messages[0].Blocks[0].Text), nil
+	}
 	if e.Record.Kind == planReviewEntry && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
 		heading, body, _ := strings.Cut(e.Record.Messages[0].Blocks[0].Text, "\n")
 		return x.Content{{Text: heading, Tone: x.Accent}, {Text: body}}, nil

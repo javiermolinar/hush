@@ -84,6 +84,7 @@ func TestFrameGeometry(t *testing.T) {
 	t.Run("thread-picker", testThreadPickerFrameGeometry)
 	t.Run("loaded-context", testLoadedContextFrameGeometry)
 	t.Run("plan-picker", testPlanFrameGeometry)
+	t.Run("plan-preview", testPlanPreviewFrameGeometry)
 	t.Run("plan-review", testPlanReviewFrameGeometry)
 	t.Run("configuration", testConfigFrameGeometry)
 	for _, size := range [][2]int{{39, 11}, {40, 12}, {64, 16}, {80, 24}, {120, 30}, {200, 60}} {

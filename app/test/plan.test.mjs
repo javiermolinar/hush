@@ -16,8 +16,12 @@ const script = fileURLToPath(new URL("./plan-pty.py", import.meta.url));
 const okay = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
 
 async function terminalPlan(t, mode) {
-  const faux = mode === "faux", scoped = mode === "scoped", batch = mode === "fileset";
-  const promptText = batch ? fileSetRequest : scoped ? executionRequest : createRequest;
+  const faux = mode === "faux", scoped = mode === "scoped", batch = mode === "fileset", preview = mode === "preview";
+  const promptText = preview ? "Lets work on creating a new plan to support subagents, independent reviews etc."
+    : batch ? fileSetRequest : scoped ? executionRequest : createRequest;
+  const previewDraft = { baseRevision: 0, title: "Subagents and independent reviews", steps: [
+    { id: "join", title: "Join worker results", description: "Wait only when results are needed.", checks: ["A failed worker does not hide another report"] },
+  ] };
   const startingFiles = batch ? { ...preparedFiles, ...fileSetReference } : scoped ? preparedFiles : {};
   const home = await realpath(await mkdtemp("/tmp/hush-plan-pty-"));
   const agentDir = join(home, ".hush"), dataDir = join(home, "data"), cwd = join(home, "work");
@@ -63,6 +67,10 @@ async function terminalPlan(t, mode) {
       }
       assert.equal(turn.text, promptText);
       assert.match(turn.prompt, /This request is for a draft only/);
+      if (preview) {
+        assert.deepEqual(turn.tools.toSorted(), ["hush_plan_current", "hush_plan_preview", "read"]);
+        return turn.results.length ? "Preview shown, not saved." : [call("hush_plan_preview", previewDraft)];
+      }
       assert.ok(turn.tools.includes("hush_plan_propose") && !turn.tools.includes("write"));
       assert.deepEqual((await readdir(cwd)).sort(), Object.keys(startingFiles).sort());
       if (scoped || batch) for (const [path, content] of Object.entries(startingFiles)) {
@@ -97,7 +105,7 @@ async function terminalPlan(t, mode) {
       assert.equal(current.runAvailability, "disabled");
       assert.equal(current.run, null);
       assert.deepEqual(current.progress, []);
-      assert.deepEqual(current.plan.steps, draftArgs().steps);
+      assert.deepEqual(current.plan.steps, preview ? previewDraft.steps : draftArgs().steps);
     }
     const history = async id => okay(await peer.send("history", { threadId: id, limit: 64, range: { kind: "before", beforeEntryId: null } }));
     const { entries } = await history(threadId);
@@ -109,6 +117,12 @@ async function terminalPlan(t, mode) {
       assert.notEqual(runs[0].threadId, threadId, "the startup picker runs in a new thread, not the draft's thread");
       const runHistory = await history(runs[0].threadId);
       assert.ok(runHistory.entries.every(e => e.kind !== "pi.user"), "no chat message was needed to open the picker");
+    }
+    if (preview) {
+      const { plans } = okay(await peer.send("ext.planWorkspace.wait", { threadId, page: 0 }));
+      assert.deepEqual(plans.map(p => [p.title, p.revision]), [[previewDraft.title, 1]]);
+      assert.equal(entries.filter(e => e.kind === "hush.plan.preview-saved").length, 1);
+      assert.equal(provider.requests.length, 2, "confirming the preview must not start another model turn");
     }
     if (mode === "draft") {
       assert.equal(provider.requests.filter(r => r.text.startsWith("Plan review brief\n")).length, 1);
@@ -149,6 +163,7 @@ async function terminalPlan(t, mode) {
 }
 
 test("terminal UI opens /plan at startup and runs the selected steps without a first message", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI saves an unsaved plan preview with 'ok save it'", { timeout: 45_000 }, t => terminalPlan(t, "preview"));
 test("terminal UI saves and independently reviews a plan on a draft-only host", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
 test("one Enter visibly verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));
 

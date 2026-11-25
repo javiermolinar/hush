@@ -31,6 +31,7 @@ import { Plans, fixtureExtensions, isPlanWorker, recoverPlanGeneration, scopedPl
 import { checkPlanAdmission, foregroundPlan, PlanForeground } from "./plan-turn.js";
 import { PlanReviews, planReviewExtension } from "./plan-review.js";
 import { planAuthor } from "./plan-author.js";
+import { PlanDrafts } from "./plan-draft.js";
 import { planAcceptance, type PlanAcceptance } from "./plan-acceptance.js";
 import { PlanFiles } from "./plan-files.js";
 import { LoadedContext } from "./loaded-context.js";
@@ -364,13 +365,14 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const settingsHost = config.dataDir && useStoredDefaults
       ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
     const plans = planEnabled && !modelIssue ? new Plans(harness, store, cwd => resources.directory(cwd), fauxPlan, scopedPlans) : undefined;
+    const planDrafts = plans && authorizeWork ? new PlanDrafts(harness, cwd => resources.directory(cwd), fauxPlan, authorizeWork) : undefined;
     const planReviews = plans && !fauxPlan ? new PlanReviews(harness, plans, async (cwd, model, ctx) => {
       await authorizeWork?.(cwd, ctx);
       await requireModel?.(model);
     }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, readOnlyReason, capabilities: { intro, threadDirectory, images,
       schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
-      plan: plans, planReview: planReviews,
+      plan: plans, planDraft: planDrafts, planReview: planReviews,
       gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
       workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });

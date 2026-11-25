@@ -747,8 +747,13 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 	if strings.TrimSpace(text) == "" && len(t.attachments) == 0 {
 		return nil
 	}
-	if t.sending || t.aborting {
+	if t.sending || t.aborting || t.planDraft.saving {
 		return m.notifyRoute(r, "Wait for the pending request", extension.Warning)
+	}
+	if len(t.attachments) == 0 {
+		if cmd, handled := m.confirmPlanPreview(r, t, text); handled {
+			return cmd
+		}
 	}
 	if mode == sdk.Steer && !threadBusy(t) {
 		mode = sdk.RejectBusy

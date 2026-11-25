@@ -8,8 +8,8 @@ import { clientEnvironment, clientEnvironmentVersion, type ClientEnvironment } f
 import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, modelCatalogVersion,
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { parsePlanAttach, parsePlanClosure, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace,
-  planVersion, planWorkspaceVersion, type PlanHost } from "./plan.js";
+import { parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace,
+  planVersion, planDraftVersion, planWorkspaceVersion, type PlanDraftHost, type PlanHost } from "./plan.js";
 import { parsePlanReview, planReviewVersion, type PlanReviewHost } from "./plan-review.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
@@ -44,6 +44,7 @@ export type HostCapabilities = Readonly<{
   hushProfile?: 1; nativeStop?: 1; modelCatalog?: ModelCatalogHost; storeIdentity?: StoreIdentity; clientEnvironment?: 1;
   runtime?: RuntimeHost;
   plan?: PlanHost;
+  planDraft?: PlanDraftHost;
   planReview?: PlanReviewHost;
   settings?: SettingsHost;
   workspaceWorkTrust?: 1;
@@ -171,6 +172,7 @@ class Peer {
   #gitDiffPending = false;
   #gitDiffWatch = false;
   #plan?: PlanHost;
+  #planDraft?: PlanDraftHost;
   #planWorkspace = false;
   #planReview?: PlanReviewHost;
   #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
@@ -317,6 +319,12 @@ class Peer {
           const result = parts[2] === "run" ? await host.run(parsePlanRun(req.params), signal)
             : parts[2] === "attach" ? await host.attach(parsePlanAttach(req.params), signal) : undefined;
           if (!result) throw new WireError("unknown_method");
+          this.#write(encode({ ...identity(req), ok: true, result }));
+          return;
+        }
+        if (parts[1] === "planDraft" && this.#planDraft) {
+          if (parts[2] !== "save") throw new WireError("unknown_method");
+          const result = await this.#planDraft.save(parsePlanDraftTarget(req.params), this.#abort.signal);
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
         }
@@ -570,6 +578,10 @@ class Peer {
         if (this.capabilities?.plan && req.params.capabilities?.plan?.includes(planVersion)) {
           capabilities.plan = planVersion;
           this.#plan = this.capabilities.plan;
+          if (this.capabilities.planDraft && req.params.capabilities?.planDraft?.includes(planDraftVersion)) {
+            capabilities.planDraft = planDraftVersion;
+            this.#planDraft = this.capabilities.planDraft;
+          }
           if (req.params.capabilities?.planWorkspace?.includes(planWorkspaceVersion)) {
             capabilities.planWorkspace = planWorkspaceVersion;
             this.#planWorkspace = true;

@@ -2,6 +2,9 @@ import { durableID, token, WireError } from "./wire.js";
 
 export const planVersion = 1;
 export const planWorkspaceVersion = 1;
+export const planDraftVersion = 1;
+export const planPreviewKind = "hush.plan.preview";
+export const planPreviewSavedKind = "hush.plan.preview-saved";
 export const planWorkspacePageSize = 48;
 export const planHistoryPageSize = 12;
 export const planStepLimit = 24;
@@ -48,6 +51,17 @@ export type PlanClosure = PlanAttachment & { closed: boolean };
 export type PlanWorkspaceQuery = { threadId: string; page: number; after?: string };
 export type PlanHistoryQuery = PlanAttachment & { before?: string };
 export type PlanSelection = { threadId: string; planId: string; revision: number; stepIds: string[]; requestId: string };
+
+export type PlanDraftTarget = { threadId: string; previewId: string };
+export type PlanDraftReceipt = { planId: string; revision: number };
+export interface PlanDraftHost {
+  save(target: PlanDraftTarget, signal: AbortSignal): Promise<PlanDraftReceipt>;
+}
+
+export function parsePlanDraftTarget(p: Record<string, unknown>): PlanDraftTarget {
+  if (Object.keys(p).length !== 2 || !durableID(p.threadId) || !durableID(p.previewId)) throw new WireError("invalid_request");
+  return { threadId: p.threadId, previewId: p.previewId };
+}
 
 export interface PlanHost {
   wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string): Promise<PlanSnapshot>;
