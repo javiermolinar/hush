@@ -42,15 +42,20 @@ if [ "${1:-verify}" = verify ]; then
   evidence="$stage/evidence"
   archive="hush-$os-$arch.tar.gz"
   mkdir -p "$evidence/frames" "$stage/install"
-  tar -czf "$stage/$archive" -C "$stage" hush
+  cp LICENSE "$stage/LICENSE"
+  cp -R app/redistribution/THIRD_PARTY_NOTICES "$stage/THIRD_PARTY_NOTICES"
+  COPYFILE_DISABLE=1 tar -czf "$stage/$archive" -C "$stage" hush LICENSE THIRD_PARTY_NOTICES
   printf '%s  %s\n' "$(sha256 "$stage/$archive")" "$archive" > "$stage/$archive.sha256"
   tar -xzf "$stage/$archive" -C "$stage/install"
   test "$(sha256 "$stage/install/hush")" = "$artifact_sha"
+  node app/test/release-notices.mjs "$stage/install" "$os" > "$evidence/redistribution.json"
+  perf_mode=enforced
+  if [ "${HUSH_PERF_MODE:-}" = report ]; then perf_mode=report-only; fi
   {
     printf '%s\n' 'Release evidence v1' "target: $os-$arch" 'targets: linux-amd64 linux-arm64 darwin-amd64 darwin-arm64'
     printf '%s\n' "commit: $(git rev-parse HEAD)" "Go: $(go version)" "Node (minimum): $(node --version)"
     printf '%s\n' "binary sha256: $artifact_sha" "embedded bundle sha256: $bundle_sha" "lockfile sha256: $(sha256 package-lock.json)"
-    printf '%s\n' 'Providers: synthetic loopback only, no live-provider or OS keyring verification'
+    printf '%s\n' "Performance thresholds: $perf_mode" 'Providers: synthetic loopback only, no live-provider or OS keyring verification'
   } > "$evidence/candidate.txt"
   node app/test/release-source.mjs > "$evidence/source.json"
   go version -m "$stage/hush" > "$evidence/go-buildinfo.txt"

@@ -51,19 +51,26 @@ finally:
 
 const pickerPTY = String.raw`
 import fcntl, os, re, select, signal, struct, subprocess, sys, termios, time
-binary, thread, previous, action, *args = sys.argv[1:]
+binary, thread, previous, action, transcript_path, *args = sys.argv[1:]
 master, slave = os.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 35, 125, 0, 0))
 start = time.monotonic()
 child = subprocess.Popen([binary, '--thread', thread, '--motion=false', '--fills=off'], stdin=slave, stdout=slave, stderr=slave)
 output = b''
-ansi = re.compile(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]')
+transcript = bytearray()
+ansi = re.compile(rb'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]')
+def read_chunk():
+    chunk = os.read(master, 8192)
+    transcript.extend(chunk)
+    del transcript[:-262144]
+    return chunk
+
 def wait_for(text):
     global output
     until = time.monotonic() + 4
     while time.monotonic() < until and child.poll() is None:
         if select.select([master], [], [], .05)[0]:
-            output += os.read(master, 8192)
+            output += read_chunk()
             body = ansi.sub(b'', output)
             if text.encode() in body:
                 output = b''
@@ -80,7 +87,7 @@ try:
         wait_for(previous)
         print('pty_attach_ms=' + str(round((time.monotonic() - start) * 1000, 2)))
         os.write(master, ('/' + action).encode())
-        time.sleep(.12)
+        wait_for(' › /' + action)
         os.write(master, b'\r')
     if action == 'login':
         wait_for('Sign in to a provider')
@@ -95,12 +102,10 @@ try:
     elif action == 'model':
         model, = args
         wait_for('Select model')
-        time.sleep(.2)
-        for char in model:
-            os.write(master, char.encode())
-            time.sleep(.045)
-        wait_for(model + '  ')
-        time.sleep(.2)
+        os.write(master, b'\x1b[200~' + model.encode() + b'\x1b[201~')
+        # The padded search field can contain the full ID before the host
+        # answers. Wait for the selected catalog row, not the typed text.
+        wait_for('› openai-codex/' + model + '  ')
         os.write(master, b'\r')
         wait_for('Thinking level')
         os.write(master, b'\r')
@@ -111,7 +116,7 @@ try:
     until = time.monotonic() + 4
     while child.poll() is None and time.monotonic() < until:
         if select.select([master], [], [], .05)[0]:
-            output += os.read(master, 8192)
+            output += read_chunk()
     assert child.poll() in (0, 143), repr(ansi.sub(b'', output)[-1000:])
 finally:
     if child.poll() is None:
@@ -119,6 +124,9 @@ finally:
         child.wait()
     os.close(master)
     os.close(slave)
+    clean = re.sub(rb'[\x00-\x08\x0b-\x1f\x7f]', b'', ansi.sub(b'', transcript))
+    with open(transcript_path, 'wb') as capture:
+        capture.write(clean.replace(b'fixture-code', b'[redacted fixture code]'))
 `;
 
 // Use the Responses SSE shape of the existing Go OAuth fixture.
@@ -191,8 +199,9 @@ async function native(socket, action) {
   }
 }
 
-const [candidate, digest, promptFile] = process.argv.slice(2);
-test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
+const [candidate, digest, promptFile, transcriptDir] = process.argv.slice(2);
+const tuiWalkthrough = transcriptDir !== undefined;
+test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWalkthrough ? ' with TUI walkthrough' : ''), {
   skip: !candidate, timeout: 90_000,
 }, async t => {
   assert.equal(process.version, 'v22.19.0');
@@ -217,6 +226,9 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   assert.deepEqual((await readdir(bin)).sort(), ['hush', 'node']);
   const python = await invoke('/usr/bin/env', ['python3', '-c', 'import sys; print(sys.executable)']);
   assert.equal(python.code, 0, python.stderr);
+  const walkthrough = (thread, action, ...args) => invoke(python.stdout.trim(),
+    ['-c', pickerPTY, binary, thread, 'Loopback Codex reply', action, join(transcriptDir, `${action}.txt`), ...args], { cwd, env });
+  if (tuiWalkthrough) await mkdir(transcriptDir, { recursive: true, mode: 0o700 });
   await writeFile(join(old, 'node'), '#!/bin/sh\nif [ "$1" = --version ]; then echo v22.18.9; else exit 99; fi\n', { mode: 0o700 });
 
   const account = 'release-fixture-account';
@@ -392,11 +404,16 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
     assert.equal(attached.epoch, first.epoch);
   }
   samples.sort((a, b) => a - b);
-  const p95 = samples[18];
+  const p95 = samples[18], targetMs = 100;
+  const reportOnly = process.env.HUSH_PERF_MODE === 'report';
   t.diagnostic(JSON.stringify({ platform: process.platform, arch: process.arch, count: samples.length,
     boundary: 'installed process spawn through status stdout/exit, explicit warm socket, no Node on PATH',
-    medianMs: +((samples[9] + samples[10]) / 2).toFixed(2), p95Ms: +p95.toFixed(2), targetMs: 100 }));
-  assert.ok(p95 < 100, 'warm attach p95 exceeds 100 ms');
+    medianMs: +((samples[9] + samples[10]) / 2).toFixed(2), p95Ms: +p95.toFixed(2), targetMs, reportOnly }));
+  if (reportOnly && p95 >= targetMs) {
+    t.diagnostic(`performance target missed (report-only): warm attach p95 ${p95.toFixed(2)} ms, limit ${targetMs} ms`);
+  } else {
+    assert.ok(p95 < targetMs, `warm attach p95 ${p95.toFixed(2)} ms must be below ${targetMs} ms`);
+  }
   const id = JSON.parse(await good(['thread', 'new', '--json'])).id;
   await bad(['--print', '--thread', id, 'release-denied'], /not trusted for tool execution/);
   const trust = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, '', 'trust'], { cwd, env });
@@ -407,27 +424,45 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   const directTools = ['read', 'bash', 'edit', 'write'];
   assert.deepEqual(requestTools(seen[1]).map(tool => tool.name), directTools);
   await good(['auth', 'logout'], /no Hush-managed credential/);
-  const relogin = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, 'Loopback Codex reply', 'login'], { cwd, env });
-  assert.equal(relogin.code, 0, relogin.stdout + relogin.stderr);
-  const ptyAttach = relogin.stdout.match(/^pty_attach_ms=(\d+(?:\.\d+)?)$/m);
-  assert.ok(ptyAttach, 'missing PTY measurement');
-  t.diagnostic(JSON.stringify({ platform: process.platform, arch: process.arch,
-    boundary: 'installed TUI process spawn through existing transcript text on PTY', attachMs: Number(ptyAttach[1]) }));
+  if (tuiWalkthrough) {
+    const relogin = await walkthrough(id, 'login');
+    assert.equal(relogin.code, 0, relogin.stdout + relogin.stderr);
+    const ptyAttach = relogin.stdout.match(/^pty_attach_ms=(\d+(?:\.\d+)?)$/m);
+    assert.ok(ptyAttach, 'missing PTY measurement');
+    t.diagnostic(JSON.stringify({ platform: process.platform, arch: process.arch,
+      boundary: 'installed TUI process spawn through existing transcript text on PTY', attachMs: Number(ptyAttach[1]) }));
+  } else {
+    const relogin = await invoke(python.stdout.trim(), ['-c', pty, binary], { cwd, env });
+    assert.equal(relogin.code, 0, relogin.stdout + relogin.stderr);
+    assert.match(relogin.stdout, /signed in with OAuth/);
+  }
   assert.equal(exchanges, 2);
   await good(['auth', 'status'], /OAuth configured/);
-  const catalog = () => native(socket, async call => {
+  const withCatalog = action => native(socket, async call => {
     const hello = await call('hello', { versions: [1], capabilities: { modelCatalog: [1], piEvents: [1] } });
     assert.deepEqual(hello.capabilities, { modelCatalog: 1 });
-    return call('ext.modelCatalog.list', { threadId: id });
+    return action(call);
   });
+  const catalog = () => withCatalog(call => call('ext.modelCatalog.list', { threadId: id }));
   const report = await catalog();
   const alternative = report.models.find(row => row.available && row.provider === 'openai-codex' &&
     row.modelId !== report.current.modelId && report.models.filter(other => other.modelId.includes(row.modelId)).length === 1);
   assert.ok(alternative, 'need a second available native Codex model');
   const selected = alternative.modelId;
-  const picker = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, 'Loopback Codex reply', 'model', selected], { cwd, env });
-  assert.equal(picker.code, 0, picker.stdout + picker.stderr);
-  assert.equal((await catalog()).current.modelId, selected);
+  const model = { provider: alternative.provider, modelId: selected };
+  const threadState = async () => JSON.parse(await good(['status', '--thread', id, '--json']));
+  const thinkingLevel = alternative.thinkingLevels.at(-1);
+  assert.ok(thinkingLevel, 'available model has no selectable thinking level');
+  if (tuiWalkthrough) {
+    const picker = await walkthrough(id, 'model', selected);
+    assert.equal(picker.code, 0, picker.stdout + picker.stderr);
+  } else {
+    await withCatalog(call => call('thread.configure', { threadId: id, change: { model, thinkingLevel } }));
+  }
+  const savedLevel = (await threadState()).agent.thinkingLevel;
+  if (tuiWalkthrough) assert.ok(alternative.thinkingLevels.includes(savedLevel));
+  else assert.equal(savedLevel, thinkingLevel);
+  assert.deepEqual((await catalog()).current, model);
   const checkSelected = (request, marker) => {
     assert.equal(request.model, selected);
     const promptText = content => typeof content === 'string' ? content : (content ?? []).map(part => part.text).join('\n');
@@ -448,6 +483,8 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
   await stop();
   const restarted = await status();
   assert.notEqual(restarted.epoch, first.epoch);
+  assert.deepEqual((await catalog()).current, model);
+  assert.equal((await threadState()).agent.thinkingLevel, savedLevel);
   await good(['--print', '--thread', id, 'release-after-restart'], /^Loopback Codex reply\n$/);
   checkSelected(seen[3], /release-after-restart/);
   assert.match(JSON.stringify(seen[3].input), /release-first-durable/);
@@ -479,6 +516,30 @@ test('packaged Hush clean install, OAuth, TUI model picker, and resume', {
     assert.doesNotMatch(batchResult.output, /KEY=/);
     assert.equal(seen.length, 7);
     await good(['auth', 'logout'], /no Hush-managed credential/);
+    await stop();
+  });
+  await t.test('installed image worker decodes and resizes an attachment', async () => {
+    const signin = await invoke(python.stdout.trim(), ['-c', pty, binary], { cwd, env });
+    assert.equal(signin.code, 0, signin.stdout + signin.stderr);
+    const threadId = JSON.parse(await good(['thread', 'new', '--json'])).id;
+    // A 4100×8 solid RGB PNG exceeds the host's 4096-pixel axis cap for
+    // fitted output, but is within the accepted input bounds.
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAEAQAAAAICAIAAAD/pw2ZAAAAkUlEQVR42u3bQQkAMAzAwHqplmqZfwfTETg4Bfln9h4AAAAAAAAAAAAAABAyEgAAAAAAAAAAAAAAQIsZAAAAAAAAAAAAAAAAYswAAAAAAAAAAAAAAAAQYwYAAAAAAAAAAAAAAIAYMwAAAAAAAAAAAAAAAMSYAQAAAAAAAAAAAAAAIMYMAAAAAAAAAAAAAAAAMR+6l5/qSnJ7ugAAAABJRU5ErkJggg==';
+    const caption = 'release-fitted-image';
+    await native(socket, async call => {
+      const hello = await call('hello', { versions: [1], capabilities: { images: [1] } });
+      assert.deepEqual(hello.capabilities, { images: 1 });
+      const { submissionId } = await call('ext.images.submit', {
+        threadId, requestId: caption, whenBusy: 'reject', text: caption, images: [{ mimeType: 'image/png', data }],
+      });
+      const settled = await call('submission.wait', { threadId, submissionId });
+      assert.equal(settled.status, 'done', JSON.stringify(settled));
+    });
+    const request = seen.at(-1);
+    const content = request.input.find(m => m.role === 'user' && m.content.some(p => p.text === caption)).content;
+    const fitted = content.find(p => p.type === 'input_image')?.image_url;
+    assert.match(fitted, /^data:image\/(?:png|jpeg);base64,/);
+    assert.notEqual(fitted, `data:image/png;base64,${data}`);
     await stop();
   });
   assert.deepEqual(unexpected, []);

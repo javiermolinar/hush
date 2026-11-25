@@ -40,12 +40,16 @@ func ansiCut(s string, w int) string {
 	}
 	return ansi.Truncate(s, w, "")
 }
-func fit(s string, w int) string {
+func clipWidth(s string, w int) (string, int) {
 	n := stringWidth(s)
 	if n > w {
 		s = ansiCut(s, w)
 		n = stringWidth(s)
 	}
+	return s, n
+}
+func fit(s string, w int) string {
+	s, n := clipWidth(s, w)
 	return s + strings.Repeat(" ", max(0, w-n))
 }
 
@@ -188,6 +192,7 @@ func (m *Model) View() tea.View {
 			}
 		}
 	}
+	padding := strings.Repeat(" ", m.width)
 	add := func(y int, r displayRow) {
 		if y < 0 || y >= len(f.rows) {
 			return
@@ -205,7 +210,8 @@ func (m *Model) View() tea.View {
 				}
 			}
 		}
-		line := fit(r.text, w)
+		text, cells := clipWidth(r.text, w)
+		line := text + padding[:max(0, w-cells)] // fit, without a per-row allocation
 		if r.card {
 			line = surface(line, m.palette.softInk)
 		}
@@ -266,10 +272,9 @@ func (m *Model) View() tea.View {
 		}
 	}
 	if rail {
-		spaces := strings.Repeat(" ", m.width-1)
 		for y := 0; y < f.transcriptHeight; y++ {
 			if f.rows[y] == "" {
-				f.rows[y] = spaces + m.scrollCell(&f, y)
+				f.rows[y] = padding[:m.width-1] + m.scrollCell(&f, y)
 			}
 		}
 	}
@@ -337,6 +342,7 @@ func (m *Model) View() tea.View {
 	}
 	for i, d := range m.overlays {
 		rows, choices := m.overlayRows(d, f.transcriptHeight)
+		framed := f.transcriptHeight >= minOverlayFrameRows
 		width := m.dialogWidth(d)
 		left := max(0, (m.width-width)/2)
 		space := max(0, f.transcriptHeight-len(rows))
@@ -350,13 +356,20 @@ func (m *Model) View() tea.View {
 		}
 		for j, row := range rows {
 			y := top + j
+			if !framed && d.output == nil {
+				row = fit(row, width)
+			}
+			if f.rows[y] == "" {
+				f.rows[y] = padding[:left] + row + padding[left+width:]
+				continue
+			}
 			base := fit(f.rows[y], m.width)
-			f.rows[y] = ansi.Cut(base, 0, left) + fit(row, width) + ansi.Cut(base, left+width, m.width)
+			f.rows[y] = ansi.Cut(base, 0, left) + row + ansi.Cut(base, left+width, m.width)
 		}
 		if i == len(m.overlays)-1 {
 			f.dialogToken, f.dialogX, f.dialogY = d.token, left, top
 			f.dialogWidth, f.dialogHeight = width, len(rows)
-			f.dialogFramed = f.transcriptHeight >= minOverlayFrameRows
+			f.dialogFramed = framed
 			f.dialogChoices = choices
 			if d.git != nil {
 				v.Cursor = nil
@@ -469,14 +482,13 @@ func (m *Model) promptRows(t *threadState, w int, slash []registeredAction) ([]d
 	}
 	prefix := stringWidth(label)
 	maxRows := max(1, m.height/4)
-	output := m.editor.rows(m.editor.area.Width(), maxRows)
+	output, editorCursor := m.editor.layout(maxRows)
 	var cursor *tea.Cursor
-	if m.focusedDialog() == nil {
-		if c := m.editor.area.Cursor(); c != nil {
-			c.Position.X = prefix + min(c.Position.X, w-prefix-1)
-			c.Position.Y = min(max(0, c.Position.Y), len(output)-1)
-			cursor = c
-		}
+	if m.focusedDialog() == nil && editorCursor != nil {
+		c := *editorCursor
+		c.Position.X = prefix + min(c.Position.X, w-prefix-1)
+		c.Position.Y = min(max(0, c.Position.Y), len(output)-1)
+		cursor = &c
 	}
 	rows := make([]displayRow, 0, len(output))
 	for i, text := range output {

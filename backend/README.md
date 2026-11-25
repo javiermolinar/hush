@@ -69,6 +69,9 @@ implementation matrix, not an independently verified release claim.
 | --- | --- | --- |
 | [Pinned standalone candidate](../docs/standalone-release-baseline.md), exact `eec512d5…c21f` Linux arm64 executable; Hush format 1 | Same target bundle for preparation, activation and subsequent managed startup; Hush format 2, registry `hush-standalone-2` | Node 22.19.0 for preparation, private local Linux arm64 default `~/.hush/runtime` only; Pi Durable 1.6.0 SQLite schema 2 on both sides |
 
+Use the [operator runbook](../docs/store-cutover.md) to check the exact pair,
+quiesce launchers, recover an interrupted cutover, and attach fresh clients.
+
 The format-1 allowlist includes built-in `pi.generation` v3, `pi.tool` v4,
 `pi.compaction` v1, and the pinned standalone coding-tool and document registry.
 Unrecognized tasks, wake definitions, profiles, runtime artifacts, and managed

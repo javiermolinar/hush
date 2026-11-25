@@ -1,0 +1,3 @@
+# Notice digests cover exact upstream bytes, including original line endings.
+app/redistribution/THIRD_PARTY_NOTICES/texts/*.txt -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
+backend/wasm/photon_rs.js -text

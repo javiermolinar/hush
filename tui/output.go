@@ -16,6 +16,8 @@ const (
 	outputCopyTarget   = -2
 	toolPreviewLines   = 24
 	toolPreviewBytes   = 16 << 10
+	maxOutputWindows   = 256
+	maxOutputWindowB   = 4 << 10
 )
 
 type outputViewer struct {
@@ -25,7 +27,10 @@ type outputViewer struct {
 	widest       int
 	reviewSource []outputLine
 	reviewWidth  int
+	windows      map[outputWindow]string
 }
+
+type outputWindow struct{ row, left, width int }
 
 type outputLine struct {
 	text   string
@@ -115,6 +120,25 @@ func newOutputViewer(raw string) *outputViewer {
 	return v
 }
 
+// Cache only visited windows. A vertical scroll usually reuses all but one
+// row, and the overlay can reuse these padded cells without measuring them.
+func (v *outputViewer) window(row, left, width int) string {
+	key := outputWindow{row, left, width}
+	if s, ok := v.windows[key]; ok {
+		return s
+	}
+	s := fit(v.lines[row].window(left, width), width)
+	if len(s) <= maxOutputWindowB {
+		if v.windows == nil {
+			v.windows = make(map[outputWindow]string)
+		} else if len(v.windows) >= maxOutputWindows {
+			clear(v.windows)
+		}
+		v.windows[key] = s
+	}
+	return s
+}
+
 func (v *outputViewer) reflowReview(width int) {
 	width = max(1, width)
 	if width == v.reviewWidth {
@@ -124,6 +148,7 @@ func (v *outputViewer) reflowReview(width int) {
 		v.reviewSource = v.lines
 	}
 	v.reviewWidth, v.top, v.left = width, 0, 0
+	clear(v.windows)
 	v.widest = width
 	v.lines = make([]outputLine, 0, len(v.reviewSource))
 	for _, line := range v.reviewSource {
@@ -146,21 +171,21 @@ func (v *outputViewer) reflowReview(width int) {
 
 func (m *Model) outputCopyHint() string { return paint(x.Accent, "c copy all") }
 
+// Output rows are already padded to exactly w cells.
 func (m *Model) outputRows(d *dialog, w, n int) ([]string, []int) {
 	v := d.output
-	var rows []string
-	var targets []int
+	page := min(len(v.lines), outputPage(n))
+	top := min(v.top, len(v.lines)-page)
+	left := min(v.left, max(0, v.widest-w))
+	rows, targets := make([]string, 0, page+2), make([]int, 0, page+2)
 	add := func(s string, target int) {
 		rows, targets = append(rows, s), append(targets, target)
 	}
 	if n >= 3 {
-		add(paint(x.Accent, ansi.Truncate(d.title, w, "…")), -1)
+		add(fit(paint(x.Accent, ansi.Truncate(d.title, w, "…")), w), -1)
 	}
-	page := min(len(v.lines), outputPage(n))
-	top := min(v.top, len(v.lines)-page)
-	left := min(v.left, max(0, v.widest-w))
-	for _, line := range v.lines[top : top+page] {
-		add(line.window(left, w), -1)
+	for i := top; i < top+page; i++ {
+		add(v.window(i, left, w), -1)
 	}
 	if n >= 2 {
 		copyHint := m.outputCopyHint()
@@ -190,7 +215,7 @@ func (m *Model) outputRows(d *dialog, w, n int) ([]string, []int) {
 			compact = key + "  " + m.keyCap("esc")
 			target = -1
 		}
-		add(m.hintRow(w, full, compact, visibleRange(top, top+page, len(v.lines))), target)
+		add(fit(m.hintRow(w, full, compact, visibleRange(top, top+page, len(v.lines))), w), target)
 	}
 	return rows, targets
 }

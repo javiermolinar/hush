@@ -733,8 +733,12 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	targets := make([]int, 0, len(body)+2)
 	rows = append(rows, paint(x.Muted, "╭"+strings.Repeat("─", w-2)+"╮"))
 	targets = append(targets, -1)
+	edge := paint(x.Muted, "│")
 	for i, row := range body {
-		rows = append(rows, paint(x.Muted, "│")+" "+fit(row, w-4)+" "+paint(x.Muted, "│"))
+		if d.output == nil { // outputRows already fit their body width
+			row = fit(row, w-4)
+		}
+		rows = append(rows, edge+" "+row+" "+edge)
 		targets = append(targets, choices[i])
 	}
 	rows = append(rows, paint(x.Muted, "╰"+strings.Repeat("─", w-2)+"╯"))

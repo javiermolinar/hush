@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -127,6 +128,90 @@ func TestFrameGeometry(t *testing.T) {
 		assertFrame(t, m)
 		m.openDialog(m.route(m.active, coreID), x.InputDialog{Title: "Edit", Initial: "value"}, &b)
 		assertFrame(t, m)
+	}
+}
+
+func TestPromptLayoutCacheTracksEdits(t *testing.T) {
+	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	check := func() tea.View {
+		t.Helper()
+		editor, limit := &m.editor, max(1, m.height/4)
+		rows, caret := editor.layout(limit)
+		if want := editor.rows(editor.area.Width(), limit); !slices.Equal(rows, want) {
+			t.Fatalf("memoized editor rows %q differ from the textarea view %q", rows, want)
+		}
+		wantCaret := editor.area.Cursor()
+		if (caret == nil) != (wantCaret == nil) || caret != nil && caret.Position != wantCaret.Position {
+			t.Fatal("memoized caret differs from the textarea cursor")
+		}
+		got, again := m.View(), m.View()
+		if got.Content != again.Content || (got.Cursor == nil) != (again.Cursor == nil) ||
+			got.Cursor != nil && got.Cursor.Position != again.Cursor.Position {
+			t.Fatal("repeated frames changed the prompt or its cursor position")
+		}
+		return got
+	}
+	check()
+	m.Update(tea.PasteMsg{Content: strings.Repeat("line 界👩‍💻 é\n", 18) + "tail"})
+	before := check()
+	press(m, tea.KeyLeft, 0)
+	left := check()
+	if left.Cursor == nil || before.Cursor == nil || left.Cursor.Position.X != before.Cursor.Position.X-1 {
+		t.Fatalf("moving the caret without editing the draft did not move the rendered cursor")
+	}
+	press(m, tea.KeyLeft, tea.ModShift)
+	check()
+	m.Update(tea.WindowSizeMsg{Width: 50, Height: 16})
+	check()
+	m.editor.area.Blur()
+	if check().Cursor != nil {
+		t.Fatal("blurred editor still shows a memoized cursor")
+	}
+	m.editor.area.Focus()
+	m.editor.set("replacement draft ")
+	check()
+	press(m, tea.KeyLeft, tea.ModShift)
+	check()
+	m.editor.set(strings.Repeat("a", m.editor.area.Width()))
+	check()
+	m.editor.newline()
+	check()
+}
+
+func TestPlainTypingMatchesTextarea(t *testing.T) {
+	fast, reference := newPrompt(), newPrompt()
+	for _, p := range []*promptEditor{&fast, &reference} {
+		p.area.SetVirtualCursor(false)
+		p.area.SetWidth(9)
+		p.area.SetHeight(3)
+		p.area.Focus()
+	}
+	check := func(k tea.KeyPressMsg) {
+		t.Helper()
+		fast.update(k, true)
+		reference.area, _ = reference.area.Update(k)
+		reference.text = reference.area.Value()
+		rows, caret := fast.layout(3)
+		want := reference.rows(9, 3)
+		wantCaret := reference.area.Cursor()
+		if fast.text != reference.text || !slices.Equal(rows, want) || caret == nil || wantCaret == nil || caret.Position != wantCaret.Position {
+			t.Fatalf("key %q: text %q vs %q, rows %q vs %q, caret %v vs %v", k.String(), fast.text, reference.text, rows, want, caret, wantCaret)
+		}
+	}
+	// Cross two wrap boundaries and then exceed the viewport; Bubbles must
+	// take over before a printable key would move the caret out of view.
+	for _, ch := range "ABCDEFGHIJKLMNOPQRSTUVWXYZab" {
+		check(tea.KeyPressMsg{Code: ch, Text: string(ch)})
+	}
+	for _, p := range []*promptEditor{&fast, &reference} {
+		p.set("a b")
+	}
+	for _, k := range []tea.KeyPressMsg{
+		{Code: tea.KeyLeft}, {Code: 'c', Text: "C", Mod: tea.ModShift},
+		{Code: tea.KeyLeft, Mod: tea.ModShift}, {Code: 'd', Text: "d"},
+		{Code: '界', Text: "界"}, {Code: 'x', Text: "x"},
+	} {
+		check(k)
 	}
 }
 

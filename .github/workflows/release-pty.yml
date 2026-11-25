@@ -1,0 +1,90 @@
+name: Release PTY compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Release candidate run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  walkthrough:
+    name: Walk through TUI login and model selection (Linux amd64)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Resolve the verified candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          [[ "$RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '
+            select(.path == ".github/workflows/release-candidate.yml" and .head_branch == "main" and
+                   .head_repository.full_name == .repository.full_name and .event == "workflow_dispatch" and
+                   .status == "completed" and .conclusion == "success") | .head_sha')
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'run_id=%s\nsha=%s\n' "$RUN_ID" "$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.candidate.outputs.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          version: 2026.11.12 # renovate: jdx/mise
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.candidate.outputs.run_id }}
+          pattern: hush-linux-amd64-${{ steps.candidate.outputs.sha }}-*
+          path: ${{ runner.temp }}/hush-release-artifacts
+      - name: Run the TUI walkthrough on the verified archive
+        env:
+          SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
+          HUSH_PERF_MODE: report
+        run: |
+          prefix="hush-linux-amd64-$SOURCE_SHA-"
+          archive_dir=
+          latest=0
+          # A rerun can reuse a passing job's artifact from an earlier attempt.
+          for path in "$RUNNER_TEMP"/hush-release-artifacts/"$prefix"*; do
+            [[ -d "$path" ]] || continue
+            attempt=${path##*"$prefix"}
+            if [[ "$attempt" =~ ^[1-9][0-9]{0,6}$ ]] && (( attempt > latest )); then
+              archive_dir=$path
+              latest=$attempt
+            fi
+          done
+          test -n "$archive_dir"
+          evidence="$archive_dir/evidence/candidate.txt"
+          grep -Fx "commit: $SOURCE_SHA" "$evidence"
+          grep -Fx 'target: linux-amd64' "$evidence"
+          install="$RUNNER_TEMP/hush-pty-install"
+          capture="$RUNNER_TEMP/hush-pty-capture"
+          mkdir "$install" "$capture"
+          (cd "$archive_dir"; sha256sum --strict -c hush-linux-amd64.tar.gz.sha256)
+          tar -xzf "$archive_dir/hush-linux-amd64.tar.gz" -C "$install" hush
+          test "$(sha256sum "$install/hush" | cut -d ' ' -f 1)" = "$(awk '/^binary sha256: / { print $3 }' "$evidence")"
+          bundle=$(awk '/^embedded bundle sha256: / { print $4 }' "$evidence")
+          cp "$evidence" "$capture/candidate.txt"
+          mise exec node@22.19.0 -- node app/test/release.test.mjs "$install/hush" "$bundle" backend/src/prompts/system.md "$capture" \
+            2>&1 | tee "$capture/walkthrough.log"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: hush-release-pty-${{ steps.candidate.outputs.sha }}-${{ steps.candidate.outputs.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hush-pty-capture/
+          if-no-files-found: ignore
+          retention-days: 14

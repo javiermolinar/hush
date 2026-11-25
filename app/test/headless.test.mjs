@@ -76,15 +76,17 @@ function value(r) {
 }
 
 async function nextLine(lines, exit) {
-  const result = await Promise.race([lines.next(), exit.then(x => {
+  // readline can see EOF before the child's close event. In either order,
+  // wait for the exit status and captured stderr to diagnose a failed startup.
+  const exited = exit.then(x => {
     throw new Error("process exited before the expected line: " + JSON.stringify(x));
-  })]);
-  assert.equal(result.done, false);
-  return result.value;
+  });
+  const result = await Promise.race([lines.next(), exited]);
+  return result.done ? await exited : result.value;
 }
 
-async function faux(t, pi = false) {
-  const cfg = await layout(t);
+async function faux(t, pi = false, cfg) {
+  cfg ??= await layout(t);
   const host = launch(t, process.execPath, [bundle, "--faux", ...(pi ? ["--pi-events"] : [])], cfg, null);
   const lines = createInterface({ input: host.child.stdout });
   const socket = join(cfg.agent, "hush", "hush.sock");
@@ -702,9 +704,12 @@ test("Pi JSON/print: sequential argv, stdin and @file, status per mode, stable s
 });
 
 test("Pi RPC: stock RpcClient interoperates with tools, abort, queue and trusted prompt templates", { timeout: 20000 }, async t => {
-  const { cfg } = await faux(t, true);
+  const cfg = await layout(t);
   await mkdir(join(cfg.agent, "prompts"));
   await writeFile(join(cfg.agent, "prompts", "fixture.md"), "---\ndescription: Fixture resource\n---\nExpanded: $1\n");
+  // Seed startup resources before the host caches them. This test is not a
+  // filesystem-watch test; creating the template after ready races getCommands.
+  await faux(t, true, cfg);
   const wrapper = join(cfg.dir, "rpc-loader.mjs");
   // RpcClient starts `node cliPath`. Replace this fixture process with the
   // compiled binary so the same stdin/stdout and signals reach hush directly.
@@ -714,6 +719,7 @@ test("Pi RPC: stock RpcClient interoperates with tools, abort, queue and trusted
     await rpc.start();
     assert.equal((await rpc.getState()).model.id, "faux-1");
     const resource = (await rpc.getCommands()).find(r => r.name === "fixture");
+    assert.ok(resource, "get_commands did not return the seeded user template");
     assert.equal(resource.source, "prompt");
     assert.equal(resource.sourceInfo.scope, "user");
     const template = await rpc.promptAndWait("/fixture needle", undefined, 5000);

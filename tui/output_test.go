@@ -24,6 +24,33 @@ func TestOutputLineClipsLikeANSIAtCheckpointBoundaries(t *testing.T) {
 	}
 }
 
+func TestOutputWindowCacheUsesSizeAndCurrentRows(t *testing.T) {
+	v := newOutputViewer(strings.Repeat("🇪🇸e\u0301界abc", 125) + "\nold second row")
+	want := func(row, left, width int) string {
+		return fit(ansi.Cut(v.lines[row].text, left, left+width), width)
+	}
+	check := func(row, left, width int) string {
+		t.Helper()
+		got := v.window(row, left, width)
+		if expected := want(row, left, width); got != expected || ansi.StringWidth(got) != width {
+			t.Fatalf("window (%d, %d, %d): got %q, want %q", row, left, width, got, expected)
+		}
+		return got
+	}
+	before := check(1, 0, 18)
+	for i := range 2 * maxOutputWindows {
+		check(0, i, 18+i%3)
+	}
+	if len(v.windows) > maxOutputWindows {
+		t.Fatal("output cache exceeded its bound")
+	}
+	check(1, 0, 18)
+	v.reflowReview(12)
+	if after := check(1, 0, 18); after == before {
+		t.Fatal("reflow reused pixels from the old line at the same index")
+	}
+}
+
 func TestShortOutputViewerClampsAgainstUnframedWidth(t *testing.T) {
 	m, s := demo(t, Options{Intro: &IntroOptions{}, ReducedMotion: true})
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
