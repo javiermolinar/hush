@@ -416,7 +416,8 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
   }
   const id = JSON.parse(await good(['thread', 'new', '--json'])).id;
   await bad(['--print', '--thread', id, 'release-denied'], /not trusted for tool execution/);
-  const trust = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, '', 'trust'], { cwd, env });
+  const trustTranscript = join(tuiWalkthrough ? transcriptDir : root, 'trust.txt');
+  const trust = await invoke(python.stdout.trim(), ['-c', pickerPTY, binary, id, '', 'trust', trustTranscript], { cwd, env });
   assert.equal(trust.code, 0, trust.stdout + trust.stderr);
   assert.equal(JSON.parse(await good(['trust', 'status', '--json'])).trusted, true);
   await good(['--print', '--thread', id, 'release-first-durable'], /^Loopback Codex reply\n$/);

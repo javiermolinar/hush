@@ -39,8 +39,13 @@ test("directory searches workspace names, titles and committed chat before pagin
     directory = new ThreadDirectory(h, dir, async () => ({}), {});
     const list = (query = {}) => directory.list({ limit: 10, ...query }, signal, 2, 2);
     const ids = page => page.threads.map(row => row.id);
-    const initial = await list();
-    assert.equal(initial.indexing, false);
+    // The first page waits at most 120 ms for the startup index, then returns
+    // a partial page; slow hosts can exceed that, so wait for the full index.
+    let initial = await list();
+    while (initial.indexing) {
+      await delay(20);
+      initial = await list();
+    }
     assert.equal(initial.threads[0].id, String(recent.id));
     assert.equal(initial.workspaces[0].name, "deployment_tools");
     assert.equal(initial.workspaces[ids(initial).indexOf(String(unknown.id))], null);
@@ -102,8 +107,12 @@ test("directory projects a durable future background wake as scheduled", { timeo
     h = await open();
     directory = new ThreadDirectory(h, dir, async () => ({}), {});
     h.resume();
-    const page = await directory.list({ limit: 10 }, new AbortController().signal, 2);
-    assert.equal(page.indexing, false);
+    const list = () => directory.list({ limit: 10 }, new AbortController().signal, 2);
+    let page = await list();
+    while (page.indexing) { // a slow host can outlast the first page's wait for the index
+      await delay(20);
+      page = await list();
+    }
     assert.equal(page.threads.find(row => row.id === String(root.id))?.status, "idle");
     assert.equal(page.threads.find(row => row.id === String(thread.id))?.status, "scheduled");
   } finally {
