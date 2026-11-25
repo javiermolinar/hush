@@ -280,6 +280,33 @@ func (menuBackend) History(_ context.Context, id sdk.ID, _ sdk.HistoryRange, _ i
 	return sdk.HistoryPage{ThreadID: id, Entries: []sdk.Entry{entry(1, "user", "Open the fixture"), entry(2, "assistant", "Done")}}, nil
 }
 
+type newThreadMenuBackend struct {
+	inertBackend
+	cwd string
+}
+
+func (b *newThreadMenuBackend) NewThread(_ context.Context, options sdk.NewThread) (sdk.Thread, error) {
+	b.cwd = options.CWD
+	return sdk.Thread{ID: "2"}, nil
+}
+
+func TestNewThreadUsesLaunchDirectory(t *testing.T) {
+	const launch = "/launch/project"
+	m := modelFor(t, Options{ThreadID: "1", NewThread: sdk.NewThread{CWD: launch}, WorkspaceLocal: true, ReducedMotion: true})
+	m.threads[m.active].info.Workspace = "/other/project"
+	backend := &newThreadMenuBackend{}
+	m.backend = backend
+
+	m.editor.set("/new")
+	workflowWork(t, m, press(m, tea.KeyEnter, 0))
+	if backend.cwd != launch {
+		t.Fatalf("/new used cwd %q, want launch directory %q", backend.cwd, launch)
+	}
+	if m.active != "2" {
+		t.Fatalf("/new did not switch to the new thread: active %q", m.active)
+	}
+}
+
 func TestSheetShowsRangeAndFooterDoesNotSelect(t *testing.T) {
 	m, _ := demo(t, Options{Intro: &IntroOptions{}})
 	m.Update(tea.WindowSizeMsg{Width: 58, Height: 29})

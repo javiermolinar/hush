@@ -482,8 +482,9 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 	r := x.Registration{ID: menusID, APIVersion: x.APIVersion, Actions: []x.Action{
 		da("switch", "Switch threads", "ctrl+t", "s", "threads", 0, func(c x.Context, _ x.Invocation) x.Outcome { return switcher(c, "") }),
 		da("switch-all", "Browse all workspaces", "", "shift+s", "threads-all", 0, func(_ x.Context, _ x.Invocation) x.Outcome { return workspaceSwitcher("", true) }),
-		da("new", "New thread", "ctrl+n", "n", "new", 0, func(c x.Context, _ x.Invocation) x.Outcome {
-			return x.Outcome{x.Client{Op: x.NewThread{Workspace: c.Thread.Workspace}, Done: switchResult}}
+		da("new", "New thread", "ctrl+n", "n", "new", 0, func(_ x.Context, _ x.Invocation) x.Outcome {
+			// Use the launch directory, not the active thread's workspace.
+			return x.Outcome{x.Client{Op: x.NewThread{}, Done: switchResult}}
 		}),
 		da("schedule", "Scheduled occurrences", "", "i s", "schedule", x.Schedules, scheduleMenu),
 		da("checkpoint", "Record checkpoint", "", "i c", "checkpoint", x.Checkpoints, checkpointMenu),
