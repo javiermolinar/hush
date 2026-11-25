@@ -41,13 +41,15 @@ type request struct {
 	Device    string `json:"device"`
 	Inode     string `json:"inode"`
 	Directory string `json:"directory"`
+	Query     string `json:"query,omitempty"`
 	Offset    int    `json:"offset"`
 	Limit     int    `json:"limit"`
 }
 
 type response struct {
-	Page  *page  `json:"page,omitempty"`
-	Error string `json:"error,omitempty"`
+	Page   *page         `json:"page,omitempty"`
+	Search *searchResult `json:"search,omitempty"`
+	Error  string        `json:"error,omitempty"`
 }
 
 var errLimit = errors.New("directory listing limit")
@@ -77,19 +79,27 @@ func descend(fd int, p string) (int, error) {
 	return fd, nil
 }
 
-func read(root, device, inode, relative string, offset, limit int) (page, error) {
+func openRoot(root, device, inode string) (int, error) {
 	fd, err := unix.Open("/", openDir, 0)
 	if err != nil {
-		return page{}, err
+		return -1, err
 	}
 	fd, err = descend(fd, strings.TrimPrefix(root, "/"))
 	if err != nil {
-		return page{}, err
+		return -1, err
 	}
 	var actual unix.Stat_t
 	if err := unix.Fstat(fd, &actual); err != nil || device != fmt.Sprint(actual.Dev) || inode != fmt.Sprint(actual.Ino) {
 		unix.Close(fd)
-		return page{}, errors.New("workspace root changed")
+		return -1, errors.New("workspace root changed")
+	}
+	return fd, nil
+}
+
+func read(root, device, inode, relative string, offset, limit int) (page, error) {
+	fd, err := openRoot(root, device, inode)
+	if err != nil {
+		return page{}, err
 	}
 	fd, err = descend(fd, relative)
 	if err != nil {
@@ -98,8 +108,8 @@ func read(root, device, inode, relative string, offset, limit int) (page, error)
 	dir := os.NewFile(uintptr(fd), "workspace directory")
 	defer dir.Close()
 
-	// Bound total work, including hidden/invalid entries. Recurse only on
-	// a later explicit directory selection; list names, never contents.
+	// Bound total work, including hidden/invalid entries. List immediate
+	// names only; a page never reads contents or descends.
 	entries := make([]entry, 0)
 	seen := 0
 	for {
@@ -159,6 +169,9 @@ func (r request) valid() bool {
 		r.Limit < 1 || r.Limit > 100 {
 		return false
 	}
+	if r.Query != "" {
+		return r.Directory == "" && r.Offset == 0 && r.Limit <= maxSearchResults && allowedQuery(r.Query)
+	}
 	if r.Directory != "" {
 		for name := range strings.SplitSeq(r.Directory, "/") {
 			if !allowed(name) {
@@ -180,8 +193,17 @@ func Run(in io.Reader, out io.Writer) int {
 		if dec.Decode(&r) != nil || dec.Decode(&struct{}{}) != io.EOF || !r.valid() {
 			return 2
 		}
-		result, err := read(r.Root, r.Device, r.Inode, r.Directory, r.Offset, r.Limit)
-		reply := response{Page: &result}
+		var reply response
+		var err error
+		if r.Query != "" {
+			var result searchResult
+			result, err = search(r)
+			reply.Search = &result
+		} else {
+			var result page
+			result, err = read(r.Root, r.Device, r.Inode, r.Directory, r.Offset, r.Limit)
+			reply.Page = &result
+		}
 		if errors.Is(err, errLimit) {
 			reply = response{Error: "limit"}
 		} else if err != nil {

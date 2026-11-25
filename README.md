@@ -58,9 +58,13 @@ Git review and `@` use the same [workspace grant](backend/README.md#workspace-tr
 as agent tools. Use `/trust` in the local TUI or `hush trust grant --cwd PATH`
 on the backend host.
 
-Type `@` to browse the active thread’s trusted workspace, then Tab or Enter to
-complete a path without submitting. `@~/` browses the backend’s home only after a
-separate `hush trust grant --scope home`, which does not permit tool execution.
+Type `@name` to fuzzy-search the active thread’s trusted workspace, including nested
+files. Use ↑/↓ to scroll through matches, or add a parent path term inside quotes
+(e.g. `@"tempo.fork generator.go"`). Type `@` or `@dir/` to browse one directory at
+a time. Tab or Enter completes the path without submitting. In a new local
+session this works before your first message, without creating a thread. `@~/` browses the
+backend’s home only after a separate `hush trust grant --scope home`, which does not
+permit tool execution.
 
 Open `?` → **Show loaded context** to see the instruction files the backend
 resolves for the active thread’s next submission. The inspector lists paths,

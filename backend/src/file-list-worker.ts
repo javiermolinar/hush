@@ -2,7 +2,8 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { WireError } from "../../server/src/wire.js";
 
-const recordLimit = 64 * 1024;
+// A search can return 32 paths of 2048 bytes, including JSON escaping.
+const recordLimit = 512 * 1024;
 type Child = ChildProcessByStdio<Writable, Readable, null>;
 type Job = { chunk: Buffer[]; size: number; done: (error?: Error, value?: unknown) => void };
 
@@ -45,32 +46,39 @@ export class FileListWorker {
   }
 
   #retire() {
+    if (this.#retiring) return;
     this.#retiring = true;
     this.#job?.done(new WireError("not_found"));
     this.#child?.kill("SIGKILL"); // wait for close before reusing the stream
   }
 
   request(value: object, signal: AbortSignal) {
-    const operation = this.#tail.then(() => {
-      signal.throwIfAborted(); // an abandoned queued page never scans disk
-      return this.#exchange(value);
+    const operation = this.#tail.then(async () => {
+      signal.throwIfAborted(); // an abandoned queued request never scans disk
+      if (this.#retiring) await this.#exited;
+      signal.throwIfAborted();
+      return this.#exchange(value, signal);
     });
     this.#tail = operation.then(() => {}, () => {});
     return operation;
   }
 
-  #exchange(value: object) {
+  #exchange(value: object, signal: AbortSignal) {
     this.warm();
     const child = this.#child;
     if (!child || this.#retiring || this.#closed) throw new WireError("not_found");
     return new Promise<unknown>((resolve, reject) => {
-      const timeout = setTimeout(() => this.#retire(), 3500);
+      const stop = () => this.#retire();
+      const timeout = setTimeout(stop, 3500);
       this.#job = { chunk: [], size: 0, done: (error, value) => {
         clearTimeout(timeout);
+        signal.removeEventListener("abort", stop);
         this.#job = undefined;
         if (error) reject(error); else resolve(value);
       } };
-      child.stdin.write(JSON.stringify(value) + "\n");
+      signal.addEventListener("abort", stop, { once: true });
+      if (signal.aborted) stop();
+      else child.stdin.write(JSON.stringify(value) + "\n");
     });
   }
 

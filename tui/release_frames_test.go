@@ -192,6 +192,24 @@ func TestReleaseFrames(t *testing.T) {
 			if body := shot("workspace-trust-attached"); !strings.Contains(body, "hush trust grant --cwd PATH") {
 				t.Fatal("no backend-host instructions")
 			}
+			press(m, tea.KeyEscape, 0)
+			m.options.WorkspaceTrust = nil
+			openBrowseScope(t, m, fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true},
+				search: func(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error) {
+					return sdk.WorkspaceFileSearchResult{Partial: true, Matches: []sdk.WorkspaceFileMatch{
+						{Path: "other/pkg/generator.go"}, {Path: "tempo.fork/modules/generator/generator.go"},
+					}}, nil
+				}})
+			m.editor.set("@generator.go")
+			cmd := m.refreshFilePicker()
+			if body := shot("file-search-pending"); !strings.Contains(body, "Searching workspace") {
+				t.Fatal("file search did not show its pending state")
+			}
+			m.Update(cmd())
+			press(m, tea.KeyDown, 0)
+			if body := shot("file-search-results"); !strings.Contains(body, "› tempo.fork/modules/generator/generator.go") || !strings.Contains(body, "partial results") {
+				t.Fatal("file search did not show the selected path and scan state")
+			}
 		})
 	}
 }

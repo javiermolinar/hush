@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,24 +18,34 @@ type fileScopeFixture struct {
 	inertBackend
 	capable bool
 	scope   sdk.WorkspaceFileScope
-	list    func(context.Context, sdk.ID, string, string, int, string) (sdk.WorkspaceFilePage, error)
+	list    func(context.Context, sdk.WorkspaceFileTarget, string, string, int, string) (sdk.WorkspaceFilePage, error)
+	search  func(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error)
 }
 
 func (f fileScopeFixture) Hello(context.Context) (sdk.Hello, error) {
 	caps := map[string]uint64{}
 	if f.capable {
 		caps["workspaceFiles"] = sdk.WorkspaceFilesVersion
+		if f.search != nil {
+			caps["workspaceFiles"] = sdk.WorkspaceFileSearchVersion
+		}
 	}
 	return sdk.Hello{Capabilities: caps}, nil
 }
-func (f fileScopeFixture) WorkspaceFileScope(_ context.Context, id sdk.ID) (sdk.WorkspaceFileScope, error) {
-	if id == "1" {
+
+// Thread 1 and the fresh session's launch directory share the fixture scope.
+func (f fileScopeFixture) WorkspaceFileScope(_ context.Context, target sdk.WorkspaceFileTarget) (sdk.WorkspaceFileScope, error) {
+	if target == (sdk.WorkspaceFileTarget{ThreadID: "1"}) || target == (sdk.WorkspaceFileTarget{CWD: "/workspace"}) {
 		return f.scope, nil
 	}
 	return sdk.WorkspaceFileScope{}, nil
 }
-func (f fileScopeFixture) ListWorkspaceFiles(ctx context.Context, id sdk.ID, root, dir string, limit int, cursor string) (sdk.WorkspaceFilePage, error) {
-	return f.list(ctx, id, root, dir, limit, cursor)
+func (f fileScopeFixture) ListWorkspaceFiles(ctx context.Context, target sdk.WorkspaceFileTarget, root, dir string, limit int, cursor string) (sdk.WorkspaceFilePage, error) {
+	return f.list(ctx, target, root, dir, limit, cursor)
+}
+
+func (f fileScopeFixture) SearchWorkspaceFiles(ctx context.Context, target sdk.WorkspaceFileTarget, query string, limit int) (sdk.WorkspaceFileSearchResult, error) {
+	return f.search(ctx, target, query, limit)
 }
 
 func openBrowseScope(t testing.TB, m *Model, fixture fileScopeFixture) {
@@ -96,13 +108,86 @@ func testFilePickerFrameGeometry(t *testing.T) {
 	}
 }
 
+func TestNativeFileSearchDebouncesCancelsAndCompletes(t *testing.T) {
+	m, s := demo(t, Options{ReducedMotion: true})
+	m.Update(tea.WindowSizeMsg{Width: 75, Height: 20})
+	started := make(chan struct{})
+	const target = "tempo.fork/modules/source folder/generator.go"
+	fixture := fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true},
+		search: func(ctx context.Context, scope sdk.WorkspaceFileTarget, query string, limit int) (sdk.WorkspaceFileSearchResult, error) {
+			if scope != (sdk.WorkspaceFileTarget{ThreadID: "1"}) || limit != sdk.WorkspaceFileSearchLimit {
+				t.Errorf("unexpected target/limit %+v %d", scope, limit)
+			}
+			if query == "gen" {
+				close(started)
+				<-ctx.Done()
+				return sdk.WorkspaceFileSearchResult{}, ctx.Err()
+			}
+			if query != "generator.go" {
+				t.Errorf("unexpected query %q", query)
+			}
+			var matches []sdk.WorkspaceFileMatch
+			for i := range 5 {
+				matches = append(matches, sdk.WorkspaceFileMatch{Path: fmt.Sprintf("repo%d/generator.go", i)})
+			}
+			matches = append(matches, sdk.WorkspaceFileMatch{Path: target})
+			return sdk.WorkspaceFileSearchResult{Matches: matches, Partial: true}, nil
+		}}
+	openBrowseScope(t, m, fixture)
+	m.editor.set("look @g")
+	first := m.refreshFilePicker()
+	m.editor.set("look @gen")
+	second := m.refreshFilePicker()
+	if first == nil || second == nil || first() != nil {
+		t.Fatal("superseded debounced command wasn't cancelled")
+	}
+	settled := make(chan tea.Msg, 1)
+	go func() { settled <- second() }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("search never reached the backend")
+	}
+	old := m.files.generation
+	m.editor.set("look @generator.go then keep this")
+	end := len("look @generator.go")
+	m.editor.replaceAt(5, end, "@generator.go", end-5)
+	cmd := m.refreshFilePicker()
+	select {
+	case reply := <-settled:
+		if reply != nil {
+			t.Fatal("cancelled search returned data")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale search didn't cancel")
+	}
+	m.receiveNativeFileSearch(nativeFileSearchMsg{generation: old, result: sdk.WorkspaceFileSearchResult{
+		Matches: []sdk.WorkspaceFileMatch{{Path: "stale/generator.go"}},
+	}})
+	if _, choices, ok := m.fileSuggestions(); !ok || len(choices) != 0 || !m.files.waiting {
+		t.Fatalf("stale matches were selectable: %v, %t", choices, ok)
+	}
+	m.Update(cmd().(nativeFileSearchMsg))
+	for range 5 {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	frame := ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "partial results") || !strings.Contains(frame, "› "+target) {
+		t.Fatal(frame)
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if got := m.editor.value(); got != `look @"`+target+`" then keep this` || threadBusy(s) {
+		t.Fatalf("file completion changed the suffix or submitted work: %q", got)
+	}
+}
+
 func TestNativeFilesEditorTokenAndHomeScope(t *testing.T) {
 	pending := make(chan struct{})
 	m, s := demo(t, Options{ReducedMotion: true})
 	fixture := fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true, Home: true},
-		list: func(ctx context.Context, owner sdk.ID, root, dir string, limit int, cursor string) (sdk.WorkspaceFilePage, error) {
-			if owner != "1" || limit != 100 {
-				t.Errorf("unexpected owner/limit: %s %d", owner, limit)
+		list: func(ctx context.Context, target sdk.WorkspaceFileTarget, root, dir string, limit int, cursor string) (sdk.WorkspaceFilePage, error) {
+			if target != (sdk.WorkspaceFileTarget{ThreadID: "1"}) || limit != 100 {
+				t.Errorf("unexpected target/limit: %+v %d", target, limit)
 			}
 			switch {
 			case cursor != "":
@@ -172,5 +257,121 @@ func TestNativeFilesEditorTokenAndHomeScope(t *testing.T) {
 	m.receiveNativeFilePage(first) // stale reply from first thread
 	if m.fileAvailable("") || strings.Contains(ansi.Strip(assertFrame(t, m)), "@ files") {
 		t.Fatal("file scope leaked across thread switch")
+	}
+}
+
+// A fresh session's file backend that must never be asked for a thread.
+type freshSessionFiles struct {
+	fileScopeFixture
+	created *atomic.Int32
+}
+
+func (f freshSessionFiles) NewThread(context.Context, sdk.NewThread) (sdk.Thread, error) {
+	f.created.Add(1)
+	return sdk.Thread{}, x.ErrUnavailable
+}
+
+// Opens the picker scope the way a fresh session does: the probe arrives with
+// no thread, so no watch ever reports Connected.
+func openFreshScope(t testing.TB, m *Model, fixture freshSessionFiles) {
+	t.Helper()
+	m.backend = fixture
+	m.Update(m.menuProbe()().(menuCapabilities))
+	if m.fileScope.generation != 0 {
+		m.Update(m.fileScopeCommand()().(fileScopeMsg))
+	}
+}
+
+func TestFreshSessionBrowsesProspectiveWorkspace(t *testing.T) {
+	var created atomic.Int32
+	prospective := sdk.WorkspaceFileTarget{CWD: "/workspace"}
+	fixture := freshSessionFiles{fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true},
+		list: func(_ context.Context, target sdk.WorkspaceFileTarget, root, dir string, _ int, _ string) (sdk.WorkspaceFilePage, error) {
+			if target != prospective || root != "workspace" || dir != "" {
+				t.Errorf("unexpected listing %+v %q %q", target, root, dir)
+			}
+			return sdk.WorkspaceFilePage{Entries: []sdk.WorkspaceFileEntry{{Name: "README.md"}}}, nil
+		},
+		search: func(_ context.Context, target sdk.WorkspaceFileTarget, query string, _ int) (sdk.WorkspaceFileSearchResult, error) {
+			if target != prospective || query != "read" {
+				t.Errorf("unexpected search %+v %q", target, query)
+			}
+			return sdk.WorkspaceFileSearchResult{Matches: []sdk.WorkspaceFileMatch{{Path: "docs/README.md"}}}, nil
+		}}, &created}
+	m := modelFor(t, Options{ReducedMotion: true, WorkspaceLocal: true})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+	openFreshScope(t, m, fixture)
+	if m.fileScope.target != prospective || !m.fileAvailable("") {
+		t.Fatalf("no prospective scope: %+v", m.fileScope)
+	}
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "@ files") {
+		t.Fatal(frame)
+	}
+
+	m.editor.set("look @")
+	first := m.refreshFilePicker()().(nativeFilePage)
+	m.receiveNativeFilePage(first)
+	if _, choices, ok := m.fileSuggestions(); !ok || len(choices) != 1 || choices[0].Path != "README.md" {
+		t.Fatalf("browse choices: %v, %t", choices, ok)
+	}
+	m.editor.set("look @read")
+	m.Update(m.refreshFilePicker()().(nativeFileSearchMsg))
+	m.replaceFile("docs/README.md")
+	if got := m.editor.value(); got != "look @docs/README.md " {
+		t.Fatal(got)
+	}
+	if created.Load() != 0 || m.active != "" {
+		t.Fatalf("the picker created a thread: calls=%d active=%q", created.Load(), m.active)
+	}
+
+	// Once the first message creates the thread, its own scope takes over and
+	// replies for the prospective scope are dropped.
+	_ = m.switchThread("1")
+	m.connection = x.Connected
+	m.Update(m.syncFileScope()().(fileScopeMsg))
+	if m.fileScope.target != (sdk.WorkspaceFileTarget{ThreadID: "1"}) || !m.fileAvailable("") {
+		t.Fatalf("thread scope: %+v", m.fileScope)
+	}
+	m.receiveNativeFilePage(first)
+	if _, choices, _ := m.fileSuggestions(); len(choices) != 0 {
+		t.Fatalf("prospective listing leaked into the thread: %v", choices)
+	}
+}
+
+func TestFreshSessionFilePickerNeedsProspectiveScope(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		local, search, trusted bool
+	}{{"older host", true, false, true}, {"remote", false, true, true}, {"untrusted", true, true, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var created atomic.Int32
+			fixture := freshSessionFiles{fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: tc.trusted},
+				list: func(context.Context, sdk.WorkspaceFileTarget, string, string, int, string) (sdk.WorkspaceFilePage, error) {
+					t.Error("listed files without an authorized prospective scope")
+					return sdk.WorkspaceFilePage{}, nil
+				}}, &created}
+			if tc.search {
+				fixture.search = func(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error) {
+					t.Error("searched without an authorized prospective scope")
+					return sdk.WorkspaceFileSearchResult{}, nil
+				}
+			}
+			m := modelFor(t, Options{ReducedMotion: true, WorkspaceLocal: tc.local})
+			m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+			openFreshScope(t, m, fixture)
+			for _, draft := range []string{"look @", "look @read"} {
+				m.editor.set(draft)
+				if cmd := m.refreshFilePicker(); cmd != nil || m.fileAvailable("") {
+					t.Fatalf("%q opened the picker", draft)
+				}
+			}
+			if created.Load() != 0 || m.active != "" {
+				t.Fatalf("the picker created a thread: calls=%d active=%q", created.Load(), m.active)
+			}
+			m.editor.set("")
+			if frame := ansi.Strip(assertFrame(t, m)); strings.Contains(frame, "@ files") {
+				t.Fatal(frame)
+			}
+		})
 	}
 }

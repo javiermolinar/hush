@@ -136,7 +136,7 @@ func waitOn[T any](ctx context.Context, c *Client, method string, params any) (T
 	return waitOnCapability[T](ctx, c, method, params, "", 0)
 }
 
-func waitOnCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, version uint64) (T, error) {
+func waitOnCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, versions ...uint64) (T, error) {
 	var zero T
 	if c.life.Err() != nil {
 		return zero, ErrClosed
@@ -149,7 +149,7 @@ func waitOnCapability[T any](ctx context.Context, c *Client, method string, para
 		return zero, err
 	}
 	defer s.fail(ErrClosed)
-	if capability != "" && s.hello.Capabilities[capability] != version {
+	if capability != "" && !slices.Contains(versions, s.hello.Capabilities[capability]) {
 		return zero, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: capability}
 	}
 	v, err := s.call(life, method, params, nil)

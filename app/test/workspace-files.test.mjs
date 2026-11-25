@@ -21,9 +21,9 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   const env = { HOME: home, PATH: dirname(process.execPath) + ':/usr/bin:/bin', LANG: 'C' };
   const cli = (...args) => invoke(executable, ['--backend', bundle, ...args], { cwd: workspace, env, timeout: 12_000 });
   const stop = () => invoke(executable, ['stop'], { cwd: workspace, env, timeout: 12_000 });
-  let client, older;
+  let client, older, listOnly;
   t.after(async () => {
-    client?.close(); older?.close();
+    client?.close(); older?.close(); listOnly?.close();
     await stop();
     await rm(dir, { recursive: true, force: true });
   });
@@ -38,17 +38,22 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   await cli('status');
   const connect = async () => {
     client = await dial(socket); // attach-only peer can have an unrelated client cwd
-    assert.deepEqual(ok(await client.send('hello', { versions: [1], capabilities: { workspaceFiles: [1] } })).capabilities, { workspaceFiles: 1 });
+    assert.deepEqual(ok(await client.send('hello', { versions: [1], capabilities: { workspaceFiles: [2, 1] } })).capabilities, { workspaceFiles: 2 });
   };
   await connect();
   older = await dial(socket);
   assert.deepEqual(ok(await older.send('hello', { versions: [1] })).capabilities, {});
+  listOnly = await dial(socket);
+  assert.deepEqual(ok(await listOnly.send('hello', { versions: [1], capabilities: { workspaceFiles: [1] } })).capabilities, { workspaceFiles: 1 });
   const { id } = ok(await client.send('thread.new', { cwd: workspace }));
   const { id: same } = ok(await client.send('thread.new', { cwd: workspace }));
   const { id: outside } = ok(await client.send('thread.new', { cwd: foreign }));
   const scope = (threadId = id) => client.send('ext.workspaceFiles.scope', { threadId });
   const list = overrides => client.send('ext.workspaceFiles.list', { threadId: id, root: 'workspace', directory: '', limit: 1, ...overrides });
+  const search = (overrides, peer = client) => peer.send('ext.workspaceFiles.search', { threadId: id, query: 'an inner file.txt', limit: 10, ...overrides });
   denied(await older.send('ext.workspaceFiles.scope', { threadId: id }), 'unsupported_capability');
+  denied(await search({}, older), 'unsupported_capability');
+  denied(await search({}, listOnly), 'unknown_method');
   const oldGrants = join(home, '.hush', 'workspace-browse-v1');
   const { dev, ino, birthtimeNs } = await lstat(workspace, { bigint: true });
   const oldBrowse = JSON.stringify(['browse', workspace, String(dev), String(ino), String(birthtimeNs)]) + '\n';
@@ -56,10 +61,18 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   await writeFile(join(oldGrants, createHash('sha256').update(oldBrowse).digest('hex')), oldBrowse, { mode: 0o600 });
   assert.deepEqual(ok(await scope()), { workspace: false, home: false });
   denied(await list(), 'not_found'); // old browse-only consent is not promoted
+  denied(await search(), 'not_found');
   await cli('trust', 'grant', '--cwd', workspace);
   assert.deepEqual(ok(await scope()), { workspace: true, home: false });
   assert.deepEqual(ok(await scope(outside)), { workspace: false, home: false });
+  assert.deepEqual(ok(await listOnly.send('ext.workspaceFiles.scope', { threadId: id })), { workspace: true, home: false });
   denied(await list({ root: 'home' }), 'not_found');
+  denied(await search({ threadId: outside }), 'not_found');
+  assert.deepEqual(ok(await search()), { matches: [{ path: 'nested folder/an inner file.txt', directory: false }], partial: false });
+  assert.deepEqual(ok(await search({ query: 'secret' })), { matches: [], partial: false });
+  for (const overrides of [{ root: 'home' }, { cwd: foreign }, { query: '../foreign' }, { query: '\u00a0' }, { limit: 33 }]) {
+    denied(await search(overrides), 'invalid_request');
+  }
 
   const first = ok(await list());
   assert.deepEqual(first.entries, [{ name: 'nested folder', directory: true }]);
@@ -73,6 +86,31 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   denied(await list({ threadId: same, cursor: first.nextCursor }), 'invalid_cursor');
   denied(await list({ directory: 'nested folder', cursor: first.nextCursor }), 'invalid_cursor');
 
+  // Before a thread exists, version 2 addresses the directory a new thread
+  // would record. The same grant applies and nothing is created.
+  const threads = async () => ok(await client.send('thread.list', { limit: 100 })).threads.map(row => row.id);
+  const known = await threads();
+  const draft = (method, params, peer = client) => peer.send(`ext.workspaceFiles.${method}`, params);
+  const draftList = overrides => draft('list', { cwd: workspace, root: 'workspace', directory: '', limit: 1, ...overrides });
+  assert.deepEqual(ok(await draft('scope', { cwd: workspace })), { workspace: true, home: false });
+  assert.deepEqual(ok(await draft('scope', { cwd: foreign })), { workspace: false, home: false });
+  assert.deepEqual(ok(await draft('scope', { cwd: join(workspace, 'symlink') })), { workspace: false, home: false }); // its untrusted target
+  denied(await draft('scope', { cwd: join(dir, 'missing') }), 'not_found');
+  for (const params of [{}, { cwd: 'workspace space' }, { cwd: workspace, threadId: id }, { cwd: `${workspace}\u0085` }]) {
+    denied(await draft('scope', params), 'invalid_request');
+  }
+  denied(await draft('scope', { cwd: workspace }, listOnly), 'invalid_request'); // version 1 frames are unchanged
+  const page = ok(await draftList());
+  assert.deepEqual(page.entries, [{ name: 'nested folder', directory: true }]);
+  assert.deepEqual(ok(await draftList({ cursor: page.nextCursor })).entries, [{ name: 'a file.txt', directory: false }]);
+  denied(await list({ cursor: page.nextCursor }), 'invalid_cursor'); // a cursor stays with its target
+  denied(await draftList({ cursor: first.nextCursor }), 'invalid_cursor');
+  denied(await draftList({ cwd: foreign }), 'not_found');
+  assert.deepEqual(ok(await draft('search', { cwd: workspace, query: 'an inner file.txt', limit: 10 })),
+    { matches: [{ path: 'nested folder/an inner file.txt', directory: false }], partial: false });
+  denied(await draft('search', { cwd: foreign, query: 'secret', limit: 10 }), 'not_found');
+  assert.deepEqual(await threads(), known);
+
   await cli('trust', 'grant', '--scope', 'home');
   assert.deepEqual(ok(await scope()), { workspace: true, home: true });
   assert.deepEqual(ok(await list({ root: 'home', limit: 100 })).entries, [{ name: 'home notes.txt', directory: false }]);
@@ -80,13 +118,17 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   await cli('trust', 'revoke', '--cwd', workspace);
   denied(await list({ cursor: first.nextCursor }), 'invalid_cursor');
   denied(await list(), 'not_found');
+  denied(await search(), 'not_found'); // a home grant does not admit recursive search
   assert.deepEqual(ok(await scope()), { workspace: false, home: true });
+  assert.deepEqual(ok(await draft('scope', { cwd: workspace })), { workspace: false, home: true });
+  denied(await draftList(), 'not_found');
   await cli('trust', 'grant', '--cwd', workspace);
   denied(await list({ cursor: first.nextCursor }), 'invalid_cursor'); // a new grant does not restore old cursors
   const regranted = ok(await list());
   await rename(nested, join(workspace, 'old folder'));
   await symlink(foreign, nested, 'dir');
   denied(await list({ directory: 'nested folder' }), 'not_found');
+  assert.deepEqual(ok(await search({ query: 'secret' })), { matches: [], partial: false });
   denied(await list({ cursor: regranted.nextCursor }), 'invalid_cursor');
   const beforeBoot = ok(await list());
   await stop(); client.close(); await cli('status'); await connect();

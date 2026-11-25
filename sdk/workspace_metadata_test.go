@@ -3,8 +3,11 @@ package sdk
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -46,10 +49,10 @@ func TestWorkspaceMetadataNegotiationAndValidation(t *testing.T) {
 	})
 	c := NewClient(socket, ClientOptions{Capabilities: caps})
 	defer c.Close()
-	if v, err := c.WorkspaceFileScope(ctx, "7"); err != nil || !v.Workspace || v.Home {
+	if v, err := c.WorkspaceFileScope(ctx, WorkspaceFileTarget{ThreadID: "7"}); err != nil || !v.Workspace || v.Home {
 		t.Fatalf("scope=%+v; %v", v, err)
 	}
-	if v, err := c.ListWorkspaceFiles(ctx, "7", "workspace", "nested space", 4, ""); err != nil || len(v.Entries) != 1 || v.Entries[0].Name != "file with space.md" {
+	if v, err := c.ListWorkspaceFiles(ctx, WorkspaceFileTarget{ThreadID: "7"}, "workspace", "nested space", 4, ""); err != nil || len(v.Entries) != 1 || v.Entries[0].Name != "file with space.md" {
 		t.Fatalf("files=%+v; %v", v, err)
 	}
 	if v, err := c.ListWorkspaceSkills(ctx, "7"); err != nil || len(v) != 1 || v[0].Name != "review" {
@@ -57,6 +60,125 @@ func TestWorkspaceMetadataNegotiationAndValidation(t *testing.T) {
 	}
 	if _, err := c.LoadedContext(ctx, "7"); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("malformed context accepted: %v", err)
+	}
+}
+
+func TestWorkspaceFileSearchNegotiationAndValidation(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		version uint64
+		path    string
+	}{
+		{"v1 does not search", 1, ""},
+		{"relative path", 2, "tempo.fork/modules/generator/generator.go"},
+		{"dot path", 2, "repo/../generator.go"},
+		{"home path", 2, "~/generator.go"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx, socket := runContext(t)
+			listener(t, socket, func(c net.Conn, r *bufio.Reader) {
+				q, err := readReq(r)
+				if err != nil || q.Method != "hello" {
+					return
+				}
+				reply(c, q, Hello{Version: 1, Epoch: "file-search-fixture", Capabilities: map[string]uint64{workspaceFilesCapability: scenario.version}})
+				q, err = readReq(r)
+				if err != nil {
+					return
+				}
+				if scenario.version != 2 || q.Method != workspaceFileSearchMethod || q.Params["threadId"] != "7" || q.Params["query"] != "generator.go" {
+					t.Errorf("unexpected file search: %+v", q)
+				}
+				reply(c, q, WorkspaceFileSearchResult{Matches: []WorkspaceFileMatch{{Path: scenario.path}}, Partial: true})
+				_, _ = r.ReadByte()
+			})
+			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceFilesCapability: {2, 1}}})
+			defer c.Close()
+			got, err := c.SearchWorkspaceFiles(ctx, WorkspaceFileTarget{ThreadID: "7"}, "generator.go", 10)
+			switch scenario.name {
+			case "relative path":
+				if err != nil || !got.Partial || len(got.Matches) != 1 || got.Matches[0].Path != scenario.path {
+					t.Fatalf("search=%+v; %v", got, err)
+				}
+			case "v1 does not search":
+				if !IsCode(err, "unsupported_capability") {
+					t.Fatalf("search on v1: %v", err)
+				}
+			default:
+				if !errors.Is(err, ErrProtocol) {
+					t.Fatalf("accepted malformed path: %+v, %v", got, err)
+				}
+			}
+		})
+	}
+}
+
+// A prospective thread is addressed by directory only on workspaceFiles:2.
+// A v1 host never receives the request.
+func TestWorkspaceFileProspectiveTarget(t *testing.T) {
+	const cwd = "/work space/repo"
+	for _, version := range []uint64{WorkspaceFilesVersion, WorkspaceFileSearchVersion} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			ctx, socket := runContext(t)
+			var calls atomic.Int32
+			listener(t, socket, func(c net.Conn, r *bufio.Reader) {
+				q, err := readReq(r)
+				if err != nil || q.Method != "hello" {
+					return
+				}
+				reply(c, q, Hello{Version: 1, Epoch: "prospective-fixture", Capabilities: map[string]uint64{workspaceFilesCapability: version}})
+				q, err = readReq(r)
+				if err != nil {
+					return
+				}
+				calls.Add(1)
+				if _, thread := q.Params["threadId"]; thread || q.Params["cwd"] != cwd {
+					t.Errorf("prospective request carried the wrong target: %+v", q)
+				}
+				switch q.Method {
+				case workspaceFilesPrefix + "scope":
+					reply(c, q, map[string]bool{"workspace": true, "home": false})
+				case workspaceFilesPrefix + "list":
+					reply(c, q, map[string]any{"entries": []WorkspaceFileEntry{{Name: "README.md"}}})
+				case workspaceFileSearchMethod:
+					reply(c, q, WorkspaceFileSearchResult{Matches: []WorkspaceFileMatch{{Path: "docs/README.md"}}})
+				default:
+					t.Errorf("unexpected method %q", q.Method)
+				}
+				_, _ = r.ReadByte()
+			})
+			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceFilesCapability: {2, 1}}})
+			defer c.Close()
+			target := WorkspaceFileTarget{CWD: cwd}
+			scope, scopeErr := c.WorkspaceFileScope(ctx, target)
+			page, listErr := c.ListWorkspaceFiles(ctx, target, "workspace", "", 10, "")
+			found, searchErr := c.SearchWorkspaceFiles(ctx, target, "readme", 10)
+			if version == WorkspaceFilesVersion {
+				for _, err := range []error{scopeErr, listErr, searchErr} {
+					if !IsCode(err, "unsupported_capability") {
+						t.Fatalf("v1 accepted a prospective target: %v", err)
+					}
+				}
+				if calls.Load() != 0 {
+					t.Fatal("a v1 host received a prospective request")
+				}
+				return
+			}
+			if scopeErr != nil || listErr != nil || searchErr != nil || !scope.Workspace || len(page.Entries) != 1 || len(found.Matches) != 1 {
+				t.Fatalf("scope=%+v %v; page=%+v %v; search=%+v %v", scope, scopeErr, page, listErr, found, searchErr)
+			}
+		})
+	}
+}
+
+func TestWorkspaceFileTargetValidation(t *testing.T) {
+	c := NewClient(filepath.Join(t.TempDir(), "absent.sock"), ClientOptions{})
+	defer c.Close()
+	for _, target := range []WorkspaceFileTarget{{}, {ThreadID: "7", CWD: "/repo"}, {ThreadID: "x"}, {CWD: "repo"},
+		{CWD: "/repo\x00name"}, {CWD: "/repo\u0085name"}, {CWD: "/" + strings.Repeat("a", 4096)}} {
+		if _, err := c.WorkspaceFileScope(t.Context(), target); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("%+v: %v", target, err) // rejected before dialing
+		}
 	}
 }
 

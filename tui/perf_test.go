@@ -28,7 +28,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning"} {
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -119,6 +119,19 @@ func TestFrameBudget(t *testing.T) {
 				for i := range 400 {
 					m.files.records = append(m.files.records, x.File{Path: fmt.Sprintf("file %03d.go", i)})
 				}
+			}
+			if which == "file-search" {
+				openBrowseScope(t, m, fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true},
+					search: func(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error) {
+						return sdk.WorkspaceFileSearchResult{}, nil
+					}})
+				m.editor.set("@generator.go")
+				m.refreshFilePicker()
+				result := sdk.WorkspaceFileSearchResult{Partial: true}
+				for i := range sdk.WorkspaceFileSearchLimit {
+					result.Matches = append(result.Matches, sdk.WorkspaceFileMatch{Path: fmt.Sprintf("repo%d/%sgenerator.go", i, strings.Repeat("nested folder 界/", 12))})
+				}
+				m.receiveNativeFileSearch(nativeFileSearchMsg{generation: m.files.generation, result: result})
 			}
 			if which == "skill-slash" || which == "skill-sheet" {
 				m.backend = workspaceMetadataFixture{}
@@ -215,6 +228,12 @@ func TestFrameBudget(t *testing.T) {
 					default:
 						msg = modelSearchResult{token: m.sheet.token, catalog: modelPage}
 					}
+				case "file-search":
+					code := tea.KeyDown
+					if i%sdk.WorkspaceFileSearchLimit < sdk.WorkspaceFileSearchLimit/2 {
+						code = tea.KeyUp
+					}
+					msg = tea.KeyPressMsg{Code: code}
 				case "file-picker", "skill-slash", "skill-sheet":
 					keys := [...]tea.KeyPressMsg{{Code: '0', Text: "0"}, {Code: tea.KeyBackspace}}
 					msg = keys[i%len(keys)]

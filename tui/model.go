@@ -100,6 +100,7 @@ type Model struct {
 	files                     filePicker
 	fileScope                 fileScopeLease
 	nativeFiles               bool
+	nativeFileSearch          bool
 	nativeSkills              bool
 	nativeContext             bool
 	skills                    skillsLease
@@ -315,6 +316,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case menuCapabilities:
 		m.menuFeaturesFromBackend = v.features
 		m.directoryEnabled, m.nativeFiles, m.nativeSkills, m.nativeContext = v.directory, v.files, v.skills, v.context
+		m.nativeFileSearch = v.fileSearch
 		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff())
 	case skillsMsg:
 		m.receiveSkills(v)
@@ -326,6 +328,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case nativeFilePage:
 		cmd = m.receiveNativeFilePage(v)
+	case nativeFileSearchMsg:
+		m.receiveNativeFileSearch(v)
 	case settingsMsg:
 		if v.err == nil {
 			m.applySettings(v.settings)

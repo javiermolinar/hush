@@ -58,11 +58,12 @@ type modelCatalogDraftBackend interface {
 }
 
 type menuCapabilities struct {
-	features  x.Features
-	directory bool
-	files     bool
-	skills    bool
-	context   bool
+	features   x.Features
+	directory  bool
+	files      bool
+	fileSearch bool
+	skills     bool
+	context    bool
 }
 
 func (m *Model) menuProbe() tea.Cmd {
@@ -77,6 +78,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, checkpoints := m.backend.(checkpointBackend)
 	_, gitDiff := m.backend.(gitDiffBackend)
 	_, files := m.backend.(fileBrowseBackend)
+	_, fileSearch := m.backend.(fileSearchBackend)
 	_, skills := m.backend.(workspaceSkillsBackend)
 	_, loadedContext := m.backend.(loadedContextBackend)
 	_, native := m.backend.(modelCatalogBackend)
@@ -137,10 +139,12 @@ func (m *Model) menuProbe() tea.Cmd {
 		if gitDiff && hello.Capabilities["gitDiff"] == sdk.GitDiffVersion {
 			f |= x.GitDiff
 		}
+		fileVersion := hello.Capabilities["workspaceFiles"]
 		return menuCapabilities{features: f, directory: managed && directory,
-			files:   files && hello.Capabilities["workspaceFiles"] == sdk.WorkspaceFilesVersion,
-			skills:  skills && hello.Capabilities["workspaceSkills"] == sdk.WorkspaceSkillsVersion,
-			context: loadedContext && hello.Capabilities["loadedContext"] == sdk.LoadedContextVersion}
+			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || fileVersion == sdk.WorkspaceFileSearchVersion),
+			fileSearch: files && fileSearch && fileVersion == sdk.WorkspaceFileSearchVersion,
+			skills:     skills && hello.Capabilities["workspaceSkills"] == sdk.WorkspaceSkillsVersion,
+			context:    loadedContext && hello.Capabilities["loadedContext"] == sdk.LoadedContextVersion}
 	}
 }
 
@@ -316,7 +320,7 @@ func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Conte
 			backend := m.backend.(fileBrowseBackend)
 			owner, limit := target(op.ThreadID), pageLimit(op.Limit)
 			return func(ctx context.Context) x.ClientResult {
-				return browseFiles(ctx, backend, owner, op.Query, op.Cursor, limit)
+				return browseFiles(ctx, backend, sdk.WorkspaceFileTarget{ThreadID: owner}, op.Query, op.Cursor, limit)
 			}, true
 		}
 		if services.Files != nil {

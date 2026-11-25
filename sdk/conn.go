@@ -280,11 +280,15 @@ func (s *session) receive(f map[string]any) error {
 		}); err != nil {
 			return err
 		}
-	} else if ok && (method == workspaceFilesPrefix+"scope" || method == workspaceFilesPrefix+"list") {
+	} else if ok && (method == workspaceFilesPrefix+"scope" || method == workspaceFilesPrefix+"list" || method == workspaceFileSearchMethod) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[workspaceFilesCapability]
 		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, WorkspaceFilesVersion); err != nil {
+		expected := uint64(WorkspaceFileSearchVersion)
+		if method != workspaceFileSearchMethod && version == WorkspaceFilesVersion {
+			expected = WorkspaceFilesVersion
+		}
+		if err := optionalEnvelope(f, version, expected); err != nil {
 			return err
 		}
 	} else if ok && (method == gitDiffPrefix+"summary" || method == gitDiffPrefix+"file") {

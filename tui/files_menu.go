@@ -17,14 +17,16 @@ const maxFileSuggestions = 5
 
 type filePicker struct {
 	owner                   sdk.ID
+	target                  sdk.WorkspaceFileTarget // the scope lease's, for native requests
 	navigation              uint64
-	prefix                  string
+	prefix, query           string
 	start                   int
 	request                 context.Context
 	cancel                  context.CancelFunc
 	sourceText              string
 	records                 []x.File
 	waiting, failed, hidden bool
+	partial                 bool
 	selected                int
 	generation              uint64
 }
@@ -94,13 +96,27 @@ func validFileRef(p string) bool {
 		!hasControl(p) && !strings.ContainsAny(p, "\\\"@:") && len(p) <= 2048
 }
 
+func (m *Model) fileSearchQuery(v fileToken) string {
+	if v.dir != "" || !m.nativeFileSearch || m.options.Services.Files != nil || !m.currentFileScope().Workspace {
+		return ""
+	}
+	q := strings.TrimSpace(v.query)
+	if q == "~" || len(q) > sdk.WorkspaceFileSearchQueryBytes {
+		return ""
+	}
+	return q
+}
+
 func (m *Model) fileSuggestions() (fileToken, []x.File, bool) {
-	if m.active == "" || m.files.generation == 0 || m.files.hidden || m.files.owner != m.active || m.files.navigation != m.navigation {
+	if m.files.generation == 0 || m.files.hidden || m.files.owner != m.active || m.files.navigation != m.navigation {
 		return fileToken{}, nil, false
 	}
 	v, ok := fileTokenAt(m.editor.value(), m.editor.cursorByte())
-	if !ok || v.start != m.files.start || v.dir != m.files.prefix || !m.fileAvailable(v.dir) {
+	if !ok || v.start != m.files.start || v.dir != m.files.prefix || !m.fileAvailable(v.dir) || m.fileSearchQuery(v) != m.files.query {
 		return fileToken{}, nil, false
+	}
+	if m.files.query != "" {
+		return v, m.files.records, true // the backend matched and ranked these paths
 	}
 	var choices []x.File
 	for _, item := range m.files.records {
@@ -119,12 +135,14 @@ func (m *Model) fileSuggestions() (fileToken, []x.File, bool) {
 }
 
 func (m *Model) refreshFilePicker() tea.Cmd {
-	if m.focusedDialog() != nil || !m.fileAvailable("") || m.active == "" || !strings.ContainsRune(m.editor.value(), '@') {
+	if m.focusedDialog() != nil || !strings.ContainsRune(m.editor.value(), '@') {
 		m.stopFileRequest()
 		return nil
 	}
 	v, ok := fileTokenAt(m.editor.value(), m.editor.cursorByte())
-	if !ok || !m.fileAvailable(v.dir) {
+	// Before the first message only a prospective native scope can authorize
+	// the picker (see fileTarget). Typing never creates a thread.
+	if !ok || m.active == "" && m.options.Services.Files != nil || !m.fileAvailable(v.dir) {
 		m.stopFileRequest()
 		return nil
 	}
@@ -138,13 +156,19 @@ func (m *Model) refreshFilePicker() tea.Cmd {
 	if p.hidden {
 		return nil
 	}
-	if p.generation != 0 && p.owner == m.active && p.navigation == m.navigation && p.start == v.start && p.prefix == v.dir {
+	query := m.fileSearchQuery(v)
+	if p.generation != 0 && p.owner == m.active && p.navigation == m.navigation && p.start == v.start && p.prefix == v.dir && p.query == query {
 		return nil
 	}
 	m.stopFileRequest()
 	generation := m.token()
-	*p = filePicker{owner: m.active, navigation: m.navigation, start: v.start, prefix: v.dir, sourceText: text, waiting: true, generation: generation}
+	*p = filePicker{owner: m.active, target: m.fileScope.target, navigation: m.navigation, start: v.start, prefix: v.dir, query: query,
+		sourceText: text, waiting: true, generation: generation}
 	if m.options.Services.Files == nil {
+		if query != "" {
+			p.request, p.cancel = context.WithCancel(m.fileScope.ctx)
+			return m.searchNativeFiles()
+		}
 		scope := m.currentFileScope()
 		if v.dir == "" && scope.Home {
 			p.records = []x.File{{Path: "~", Directory: true}}
@@ -153,7 +177,7 @@ func (m *Model) refreshFilePicker() tea.Cmd {
 				return nil
 			}
 		}
-		p.request, p.cancel = context.WithCancel(m.fileScope.ctx)
+		p.request, p.cancel = context.WithCancel(m.fileScope.ctx) // fileAvailable implies the lease
 		return m.nativeFilePage("", 4)
 	}
 	r := m.route(m.active, menusID)
@@ -249,14 +273,20 @@ func (m *Model) fileRows(w int) []displayRow {
 	if strings.HasPrefix(m.files.prefix, "~/") {
 		heading = "Backend home files"
 	}
-	if m.files.waiting {
+	switch {
+	case m.files.waiting && m.files.query != "":
+		heading += " · searching"
+	case m.files.waiting:
 		heading += " · loading"
-	}
-	if m.files.failed {
+	case m.files.failed:
 		heading += " · unavailable"
+	case m.files.partial:
+		heading += " · partial results"
 	}
 	out := []displayRow{{text: paint(x.Muted, heading)}}
-	for i, item := range choices {
+	first := max(0, m.files.selected-maxFileSuggestions+1)
+	for i := first; i < min(first+maxFileSuggestions, len(choices)); i++ {
+		item := choices[i]
 		label := item.Path
 		if item.Directory {
 			label += "/"
@@ -269,8 +299,13 @@ func (m *Model) fileRows(w int) []displayRow {
 	}
 	if len(out) == 1 {
 		label := "No matches"
-		if m.files.waiting {
+		switch {
+		case m.files.waiting && m.files.query != "":
+			label = "Searching workspace…"
+		case m.files.waiting:
 			label = "Fetching directory…"
+		case m.files.partial:
+			label = "No matches in scanned paths"
 		}
 		out = append(out, displayRow{text: paint(x.Muted, "  "+label)})
 	}

@@ -14,7 +14,7 @@ import { parseSchedule, schedulesVersion, type SchedulesHost } from "./schedulin
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
 import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
 import { parseLoadedContext, loadedContextVersion, type LoadedContextHost } from "./loaded-context.js";
-import { parseWorkspaceFiles, workspaceFilesVersion, type WorkspaceFilesHost } from "./workspace-files.js";
+import { parseWorkspaceFiles, parseWorkspaceFileSearch, workspaceFilesVersion, workspaceFileSearchVersion, type WorkspaceFilesHost } from "./workspace-files.js";
 import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillsVersion, type WorkspaceSkillsHost } from "./workspace-skills.js";
 import { PiPeer, piEventsVersion, type PiEventsHost } from "./pi-events.js";
 import { imageReply, imagesVersion, parseImageRef, parseImageSubmit, type ImagesHost } from "./images.js";
@@ -168,7 +168,7 @@ class Peer {
   #gitDiff?: GitDiffHost;
   #gitDiffPending = false;
   #loadedContext?: LoadedContextHost;
-  #workspaceFiles?: WorkspaceFilesHost;
+  #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
   #workspaceSkills?: WorkspaceSkillsHost;
   readonly #pendingMetadata = new Set<string>();
   #modelCatalog?: { host: ModelCatalogHost; version: ModelCatalogVersion };
@@ -302,8 +302,14 @@ class Peer {
           return;
         }
         if (parts[1] === "workspaceFiles" && this.#workspaceFiles) {
-          const host = this.#workspaceFiles, query = parseWorkspaceFiles(parts[2]!, req.params);
-          this.#metadata(req, parts[1], () => host.call(query, this.#abort.signal));
+          const { host, version } = this.#workspaceFiles;
+          if (parts[2] === "search" && version === workspaceFileSearchVersion && host.search) {
+            const search = host.search.bind(host), query = parseWorkspaceFileSearch(req.params);
+            this.#metadata(req, parts[1], () => search(query, this.#abort.signal));
+          } else {
+            const query = parseWorkspaceFiles(parts[2]!, req.params, version);
+            this.#metadata(req, parts[1], () => host.call(query, this.#abort.signal));
+          }
           return;
         }
         if (parts[1] === "gitDiff" && this.#gitDiff) {
@@ -490,9 +496,14 @@ class Peer {
           capabilities.workspaceSkills = workspaceSkillsVersion;
           this.#workspaceSkills = this.capabilities.workspaceSkills;
         }
-        if (this.capabilities?.workspaceFiles && req.params.capabilities?.workspaceFiles?.includes(workspaceFilesVersion)) {
-          capabilities.workspaceFiles = workspaceFilesVersion;
-          this.#workspaceFiles = this.capabilities.workspaceFiles;
+        const files = this.capabilities?.workspaceFiles, offeredFiles = req.params.capabilities?.workspaceFiles;
+        if (files) {
+          const version = files.search && offeredFiles?.includes(workspaceFileSearchVersion) ? workspaceFileSearchVersion :
+            offeredFiles?.includes(workspaceFilesVersion) ? workspaceFilesVersion : undefined;
+          if (version !== undefined) {
+            capabilities.workspaceFiles = version;
+            this.#workspaceFiles = { host: files, version };
+          }
         }
         if (this.capabilities?.gitDiff && req.params.capabilities?.gitDiff?.includes(gitDiffVersion)) {
           capabilities.gitDiff = gitDiffVersion;

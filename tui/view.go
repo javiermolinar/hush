@@ -577,7 +577,14 @@ func (m *Model) ruleHints(t *threadState, slashes, files bool) []string {
 		return []string{m.keyHint("enter", "run"), m.keyHint("tab", "complete"), m.keyHint("esc", "close")}
 	}
 	if files {
-		return []string{m.keyHint("esc", "close")}
+		hints := []string{m.keyHint("esc", "close")}
+		if m.files.query != "" && len(m.files.records) > 0 {
+			hints = append(hints, m.keyHint("tab", "complete"))
+			if len(m.files.records) > 1 {
+				hints = append(hints, m.keyHint("↑↓", "move"))
+			}
+		}
+		return hints
 	}
 	if m.hover != "" {
 		return []string{m.control(oneLine(m.hover))}
