@@ -408,7 +408,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 	}
 	t := m.threads[m.active]
 	if chord == "esc" && !m.stopAt.IsZero() {
-		if time.Since(m.stopAt) <= 2*time.Second && threadBusy(t) {
+		if time.Since(m.stopAt) <= 2*time.Second && (threadBusy(t) || canStopPlan(t)) {
 			return m.stopKey() // an advertised confirmation takes priority over suggestions
 		}
 		m.stopAt = time.Time{}
@@ -514,7 +514,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 			m.slashHidden = true
 			return nil
 		}
-		if !threadBusy(t) && m.canHintFork() && !t.sending && !t.aborting {
+		if !canStopPlan(t) && !threadBusy(t) && m.canHintFork() && !t.sending && !t.aborting {
 			now := time.Now()
 			if !m.escapeAt.IsZero() && now.Sub(m.escapeAt) <= 450*time.Millisecond {
 				m.escapeAt = time.Time{}
@@ -949,7 +949,7 @@ type stopResult struct {
 
 func (m *Model) stopKey() tea.Cmd {
 	t := m.threads[m.active]
-	if !threadBusy(t) || t.aborting || t.sending {
+	if (!threadBusy(t) && !canStopPlan(t)) || t.aborting || t.sending {
 		m.stopAt = time.Time{}
 		return nil
 	}

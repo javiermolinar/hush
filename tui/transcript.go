@@ -23,6 +23,7 @@ type threadState struct {
 	directory                                                *sdk.ThreadDirectoryRow
 	directoryBase                                            tabMetadata
 	gitDiff                                                  gitDiffState
+	plan                                                     planView
 	life, revision                                           uint64
 	info                                                     extension.Thread
 	ids, shown, detailShown                                  []sdk.ID

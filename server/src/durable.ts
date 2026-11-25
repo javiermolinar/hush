@@ -2,14 +2,16 @@
 import { withAbortSignal, BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/delta";
 import {
-  AgentDoc, ConversationBusy, ConversationIdle, ReadOnlySession, configure,
+  AgentDoc, ConversationBusy, ConversationIdle, ReadOnlySession, ResetEntry, configure,
   type AgentChange, type AgentState, type Conversation, type ConversationId, type ConversationRecord, type ConversationView,
   type Cursor, type EntryId, type EntryRecord, type Harness, type InboxState, type LiveState, type Observer,
-  type SubmissionId, type SubmissionRecord, type UsageState,
+  type SubmissionId, type SubmissionRecord, type Tx, type UsageState,
 } from "@earendil-works/pi-durable";
 import { Cursors } from "./cursor.js";
 import { environmentEntry, environmentInputKind, type ClientEnvironment } from "./client-environment.js";
 import { projectImageBytes, type ImageRef, type ImagesHost, type ImageSubmission } from "./images.js";
+import { planReviewKind } from "./plan-review.js";
+import { planRunKind, planTaskKind, planResultKind } from "./plan.js";
 import { scheduleReportKind } from "./scheduling.js";
 import { checkpointKind, effectKind } from "./checkpoints.js";
 import type { CatalogCreation } from "./model-catalog.js";
@@ -73,7 +75,8 @@ function projectMessage(message: Message) {
 const projectEntry = (entry: EntryRecord) => ({
   id: id(entry.id), threadId: id(entry.conversationId),
   kind: entry.kind === environmentInputKind ? "pi.user" : entry.kind,
-  messages: (entry.kind === scheduleReportKind || entry.kind === checkpointKind || entry.kind === effectKind) &&
+  messages: (entry.kind === scheduleReportKind || entry.kind === checkpointKind || entry.kind === effectKind ||
+    entry.kind === planRunKind || entry.kind === planTaskKind || entry.kind === planResultKind || entry.kind === planReviewKind) &&
     object(entry.data) && typeof entry.data.text === "string" && typeof entry.data.timestampMs === "number" ? [{ role: "assistant", timestampMs: entry.data.timestampMs,
       stopReason: "stop", blocks: [{ type: "text", text: entry.data.text }] }] :
     (entry.model ?? []).map(projectMessage),
@@ -199,6 +202,10 @@ export function parseStop(params: Record<string, unknown>): StopQuery {
 /** Local customization of base admission, not a negotiated wire extension. */
 export interface NativeHost {
   defaults?(cwd: string | undefined, context: Context): Promise<AgentChange>;
+  /** Hosts can keep internal worker conversations inspectable but not mutable or forkable by peers. */
+  checkMutation?(conv: Conversation, context: Context): Promise<void>;
+  /** Guard native input and settings admission. Manual compaction is checked before asking Durable to start it. */
+  checkAdmission?(tx: Tx, threadId: ConversationId, operation: "input" | "continue" | "configure" | "compact" | "reset"): Promise<void>;
   prepare?(input: Readonly<{ threadId?: string; cwd?: string; text?: string; skillToken?: string }>, context: Context):
     Promise<{ text?: string; agent?: AgentChange; confirm?: (signal?: AbortSignal) => Promise<void> }>;
   /** Check the selected model outside the transaction. Never resolve or carry request credentials. */
@@ -310,6 +317,7 @@ export class DurableAdapter {
     }
 
     const conv = await this.#get(request.params.threadId, ctx);
+    if (request.method !== "history" && request.method !== "thread.wait") await this.host?.checkMutation?.(conv, ctx);
     switch (request.method) {
       case "history": return { result: await this.#history(conv, request.params, ctx) };
       case "thread.fork": {
@@ -327,8 +335,9 @@ export class DurableAdapter {
           await check(change.model === undefined ? before?.model : change.model ?? undefined,
             (change.thinkingLevel === undefined ? before?.thinkingLevel : change.thinkingLevel) ?? "off");
         }
-        if (!check && compactionEnabled === undefined) await conv.configure(change, ctx);
+        if (!this.host?.checkAdmission && !check && compactionEnabled === undefined) await conv.configure(change, ctx);
         else await conv.commit(async tx => {
+          await this.host?.checkAdmission?.(tx, conv.id, "configure");
           const doc = await tx.doc(AgentDoc, conv.id);
           if (check && ((change.model === undefined && !sameModelRef(before?.model, doc.model)) ||
               (change.thinkingLevel === undefined && before?.thinkingLevel !== doc.thinkingLevel))) throw new WireError("busy");
@@ -347,41 +356,59 @@ export class DurableAdapter {
         await conv.abort(ctx);
         return { result: {} };
       case "thread.wait": return { wait: conv.waitForIdle(ctx).then(() => ({})) };
-      case "thread.compact": return { result: { taskId: id(await conv.compact(request.params.instructions, ctx)) } };
-      case "thread.reset":
-        await conv.reset(request.params.handoff, ctx);
+      case "thread.compact": {
+        const check = this.host?.checkAdmission;
+        if (check) await conv.commit(tx => check(tx, conv.id, "compact"), ctx);
+        return { result: { taskId: id(await conv.compact(request.params.instructions, ctx)) } };
+      }
+      case "thread.reset": {
+        const check = this.host?.checkAdmission;
+        if (!check) await conv.reset(request.params.handoff, ctx);
+        else {
+          const { handoff } = request.params;
+          await conv.commit(async tx => {
+            await check(tx, conv.id, "reset");
+            return conv.submit(tx, { type: "write", entry: { kind: ResetEntry.kind, head: "self",
+              ...(handoff === undefined ? {} : { model: [{ role: "user" as const, content: handoff, timestamp: Date.now() }] }),
+            } });
+          }, ctx);
+          this.harness.resume();
+        }
         return { result: {} };
+      }
       case "submit": {
         const { requestId, text, whenBusy } = request.params;
         const draft = { type: "input", content: text, requestId, whenBusy, entry: environmentEntry(environment) } as const;
         if (skillToken && !this.host?.prepare) throw new WireError("unsupported_capability", "workspaceSkills");
-        if (!this.host?.prepare) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
+        if (!this.host?.prepare && !this.host?.checkAdmission) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
         // Return the saved receipt before loading resources or running host admission hooks.
         const previous = await conv.commit(tx => tx.submissionByRequest(conv.id, requestId), ctx);
         if (previous) return { result: { submissionId: id(previous.id) } };
-        const prepared = await this.#prepare(conv, ctx, text, skillToken);
-        if (prepared.text !== undefined && prepared.text !== text) {
+        const prepared = this.host?.prepare ? await this.#prepare(conv, ctx, text, skillToken) : undefined;
+        if (prepared?.text !== undefined && prepared.text !== text) {
           encode({ ...request, params: { ...request.params, text: prepared.text } });
         }
-        await prepared.confirm?.(ctx.abortSignal);
+        await prepared?.confirm?.(ctx.abortSignal);
         const submission = await conv.commit(async tx => {
           const raced = await tx.submissionByRequest(conv.id, requestId);
           if (raced) return raced.id;
-          if (prepared.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
-          if (prepared.agent) await configure(tx, conv.id, prepared.agent);
-          return conv.submit(tx, { ...draft, content: prepared.text ?? text });
+          await this.host?.checkAdmission?.(tx, conv.id, "input");
+          if (prepared?.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
+          if (prepared?.agent) await configure(tx, conv.id, prepared.agent);
+          return conv.submit(tx, { ...draft, content: prepared?.text ?? text });
         }, ctx);
         this.harness.resume(); // transactional admission does not resume the scheduler
         return { result: { submissionId: id(submission) } };
       }
       case "continue": {
         const draft = { type: "continue" } as const;
-        if (!this.host?.prepare) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
-        const prepared = await this.#prepare(conv, ctx);
-        await prepared.confirm?.(ctx.abortSignal);
+        if (!this.host?.prepare && !this.host?.checkAdmission) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
+        const prepared = this.host?.prepare ? await this.#prepare(conv, ctx) : undefined;
+        await prepared?.confirm?.(ctx.abortSignal);
         const submission = await conv.commit(async tx => {
-          if (prepared.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
-          if (prepared.agent) await configure(tx, conv.id, prepared.agent);
+          await this.host?.checkAdmission?.(tx, conv.id, "continue");
+          if (prepared?.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
+          if (prepared?.agent) await configure(tx, conv.id, prepared.agent);
           return conv.submit(tx, draft);
         }, ctx);
         this.harness.resume();
@@ -406,6 +433,7 @@ export class DurableAdapter {
       environment?: ClientEnvironment, skillToken?: string) {
     if (skillToken && !this.host?.prepare) throw new WireError("unsupported_capability", "workspaceSkills");
     const conv = await this.#get(input.threadId, ctx);
+    await this.host?.checkMutation?.(conv, ctx);
     const { requestId, text, whenBusy } = input;
     const start = await conv.commit(async tx => {
       const previous = await tx.submissionByRequest(conv.id, requestId);
@@ -426,6 +454,7 @@ export class DurableAdapter {
     const submission = await conv.commit(async tx => {
       const previous = await tx.submissionByRequest(conv.id, requestId);
       if (previous) return previous.id;
+      await this.host?.checkAdmission?.(tx, conv.id, "input");
       const current = await tx.doc(AgentDoc, conv.id);
       prepared?.verify?.(current);
       const model = prepared?.agent?.model === undefined ? current.model : prepared.agent.model;

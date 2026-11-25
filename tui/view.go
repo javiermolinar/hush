@@ -25,6 +25,7 @@ type frameMemo struct {
 	copyToken                                   uint64
 	openActivity                                string
 	dialogToken                                 uint64
+	dialogPlanRev                               string
 	dialogX, dialogY, dialogWidth, dialogHeight int
 	dialogFramed                                bool
 	dialogChoices                               []int
@@ -100,8 +101,11 @@ func (m *Model) View() tea.View {
 	chrome := m.chromeRows(t, w)
 	listEnd := m.height - len(chrome)
 	var overlayRoom int
-	if len(m.overlays) != 0 {
-		overlayRoom = minOverlayBodyRows
+	for _, d := range m.overlays {
+		if !d.promptDock {
+			overlayRoom = minOverlayBodyRows
+			break
+		}
 	}
 	if configDock {
 		limit := min(12, max(6, m.height-4))
@@ -122,7 +126,7 @@ func (m *Model) View() tea.View {
 		f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, 2, w
 		f.dialogY, f.dialogHeight = listEnd-len(rows), len(rows)
 		f.dialogChoices = choices
-	} else if overlayRoom > 0 {
+	} else if len(m.overlays) != 0 {
 		continuation = true // an overlay owns focus; hide background completion lists
 	} else if files, n := m.fileRows(w); len(files) > 0 {
 		below, filePicker, fileChoices = files, true, n
@@ -143,7 +147,7 @@ func (m *Model) View() tea.View {
 	var notice displayRow
 	free := m.height - fixedRows - len(editorRows) - len(below)
 	var attachments []displayRow
-	if free > overlayRoom+1 && m.focusedDialog() == nil && (t.attaching || len(t.attachments) != 0) {
+	if d := m.focusedDialog(); free > overlayRoom+1 && (d == nil || d.promptDock) && (t.attaching || len(t.attachments) != 0) {
 		attachments = []displayRow{m.attachmentRow(t, w)}
 		free--
 	}
@@ -356,21 +360,34 @@ func (m *Model) View() tea.View {
 		}
 	}
 	for i, d := range m.overlays {
-		rows, choices := m.overlayRows(d, f.transcriptHeight)
-		framed := f.transcriptHeight >= minOverlayFrameRows
+		if i < len(m.overlays)-1 && d.promptDock && m.overlays[len(m.overlays)-1].promptDock {
+			continue // one docked panel at a time
+		}
+		bottom := f.transcriptHeight
+		if d.promptDock {
+			// Overlay the rows immediately above the rule; do not reserve input rows.
+			bottom = f.ruleY
+		}
+		rows, choices := m.overlayRows(d, bottom)
+		framed := !d.promptDock && bottom >= minOverlayFrameRows
 		width := m.dialogWidth(d)
 		left := max(0, (m.width-width)/2)
-		space := max(0, f.transcriptHeight-len(rows))
+		space := max(0, bottom-len(rows))
 		anchorSpace := space
 		if d.palette {
 			anchorSpace = max(0, f.transcriptHeight-paletteMaxHeight)
 		}
 		top := min(space, anchorSpace/3+2*i)
-		if d.anchorBottom {
+		if d.promptDock || d.anchorBottom {
 			top = space
 		}
 		for j, row := range rows {
 			y := top + j
+			if d.promptDock {
+				// Don't leave transcript bars or targets behind the edge of the panel.
+				f.rows[y], f.hits[y] = padding[:left]+fit(row, width)+padding[left+width:], nil
+				continue
+			}
 			if !framed && d.output == nil {
 				row = fit(row, width)
 			}
@@ -386,6 +403,9 @@ func (m *Model) View() tea.View {
 			f.dialogWidth, f.dialogHeight = width, len(rows)
 			f.dialogFramed = framed
 			f.dialogChoices = choices
+			if d.plan != nil {
+				f.dialogPlanRev = m.planViewFor(d).snapshot.Revision
+			}
 			if d.git != nil {
 				v.Cursor = nil
 			}
@@ -492,7 +512,7 @@ func (m *Model) promptRows(t *threadState, w int, slash []registeredAction) ([]d
 	if intro {
 		label = "main › "
 	}
-	if threadBusy(t) && m.focusedDialog() == nil && len(slash) == 0 {
+	if d := m.focusedDialog(); threadBusy(t) && (d == nil || d.promptDock) && len(slash) == 0 {
 		label = "steer › "
 	}
 	prefix := stringWidth(label)
@@ -556,6 +576,12 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 		}
 	}
 	out := m.liveActivity(t, liveWidth, phase, tool, count)
+	if phase == liveIdle {
+		out = m.planActivity(t, liveWidth)
+		if d := m.focusedDialog(); out.text == "" && d != nil && d.plan != nil && liveWidth >= 6 {
+			out.text = m.control("○ idle")
+		}
+	}
 	leftWidth := stringWidth(out.text)
 	room := w - ruleSpace - leftWidth - stringWidth(right.text)
 	for _, hint := range hints {
@@ -626,6 +652,9 @@ func (m *Model) ruleHints(t *threadState, slashes, files bool, fileChoices int) 
 			hints = append(hints, m.keyHint("enter", "steer"), m.keyHint("alt+enter", "follow-up"))
 		}
 		return hints
+	}
+	if canStopPlan(t) {
+		return []string{m.keyHint("esc", "stop")}
 	}
 	if len(t.attachments) != 0 {
 		return []string{m.keyHint("enter", "send"), m.keyHint("ctrl+c", "clear")}
@@ -783,6 +812,23 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				if i >= 0 && i < len(f.dialogChoices) {
 					target := f.dialogChoices[i]
 					if target >= 0 {
+						if d.planWorkspace != nil {
+							d.selected = target
+							return m.planWorkspaceKey(d, "enter")
+						}
+						if d.plan != nil {
+							v := m.planViewFor(d)
+							left, width := f.dialogX, f.dialogWidth
+							if f.dialogFramed {
+								left, width = left+2, width-4
+							}
+							if v.snapshot.Plan != nil && f.dialogPlanRev == v.snapshot.Revision && target < len(v.snapshot.Plan.Steps) &&
+								p.X >= left && p.X < left+planListWidth(width) {
+								d.plan.focus, d.plan.details, d.plan.scroll = target, false, 0
+								m.togglePlanStep(v, d.plan)
+							}
+							return nil
+						}
 						d.selected = target
 						return m.acceptChoice(d)
 					}
@@ -820,6 +866,21 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 					m.outputMove(d, -3, 0)
 				} else if p.Button == tea.MouseWheelDown {
 					m.outputMove(d, 3, 0)
+				}
+			} else if inside && (d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil || d.plan != nil) {
+				move := m.planKey
+				if d.planWorkspace != nil {
+					move = m.planWorkspaceKey
+				} else if d.planHistory != nil {
+					move = m.planHistoryKey
+				} else if d.planReview != nil {
+					move = m.planReviewKey
+				}
+				if p.Button == tea.MouseWheelUp {
+					return move(d, "up")
+				}
+				if p.Button == tea.MouseWheelDown {
+					return move(d, "down")
 				}
 			} else if inside && d.custom == nil {
 				if p.Button == tea.MouseWheelUp {

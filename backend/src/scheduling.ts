@@ -67,7 +67,8 @@ export class Scheduling implements SchedulesHost {
   readonly #task;
 
   constructor(private readonly harness: () => Harness, private readonly lateMs = defaultLateMs,
-      authorizeWork?: (cwd: string | undefined, ctx: Context) => Promise<string>) {
+      authorizeWork?: (cwd: string | undefined, ctx: Context) => Promise<string>,
+      foregroundBusy?: (tx: Tx, owner: ConversationId) => Promise<boolean>) {
     this.#task = defineTask<{ threadId: string; occurrence: string }, typeof phase, null>({
       name: "hush.scheduled-occurrence", version: 1, initial: () => phase,
       phases: { wake: async (task, runtime, ctx) => {
@@ -143,6 +144,7 @@ export class Scheduling implements SchedulesHost {
             }
             if (!reviewed.allowed) return park("target_untrusted");
           }
+          if (await foregroundBusy?.(tx, targetId)) return { status: "sleeping", checkpoint: phase, until: now + 500 };
           if (!record.requestId || !record.text) throw new Error("Incomplete occurrence");
           const submission = await target.submit(tx, { type: "input", whenBusy: "followUp",
             requestId: record.requestId, content: record.text, notify: { taskId: runtime.taskId, key: settled } });

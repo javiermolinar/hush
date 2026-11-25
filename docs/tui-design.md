@@ -8,7 +8,9 @@
 - In the main prompt, pastes over 10 lines or 1,000 characters appear as markers such as `[paste #1 +29 lines]`. Arrow keys step over a marker and Backspace or Delete removes it as a unit. Sending uses the full text. A paste that would exceed the 32 KiB prompt limit is rejected, not truncated.
 - Below the input show directory, branch, model, current context, and spend when available. Cumulative tokens belong in usage details. A lone thread's title goes in status; the tab band starts at two threads.
 - Wrap messages and detailed output. One-line summaries and chrome may ellipsize.
-- Lists (slash commands, `@` files, switcher, fork picker, models) open below the prompt. Only the tab popover and overlay stack float, over the transcript, never the footer. The top overlay owns all keys and clicks; `esc` closes only it.
+- Dock command panels such as `/plan` to the input rule: the rule is the bottom edge, the panel grows upward, and the prompt stays put. Empty space belongs above the panel. Keep live state and the changes count on the rule. Inline completions and existing under-prompt sheets still open below the prompt. Floating dialogs cover the transcript, never the footer. The top overlay owns all keys and clicks; `esc` closes only it.
+
+- `/plan` opens a docked workspace list. Show status and verified counts, with closed plans grouped after open ones. Enter opens the focused plan; Enter in its task picker admits the run and returns to the initiating thread to show task progress and verification. `h` opens run history, `v` opens advisory review for the displayed revision, and `c` closes or reopens the focused plan. Esc backs out without changing lifecycle.
 
 ## Colors and contrast
 

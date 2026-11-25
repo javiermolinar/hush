@@ -1,0 +1,22 @@
+
+
+
+
+
+
+
+
+  Plan · r7 · Workspace profiles ──────────────────────────────────────────────────────────────────── 0/3 verified
+
+  › ● Save a profile                        Ready        │   Save a profile
+    ○ Restore saved profiles                Needs 1      │   Store a profile under a stable name.
+    ○ Document discovery                    Blocked      │
+                                                         │   Check     Profile has the expected name
+                                                         │   Thinking  high
+
+  ↵ Run Save a profile @ r7  Restore saved profiles stays pending · +1 unselected
+  space select  tab details  ↑↓ move                                                                     esc close
+
+  ○ idle ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

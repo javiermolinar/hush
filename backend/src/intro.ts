@@ -86,7 +86,8 @@ export class IntroReports implements IntroHost {
       private readonly resources: StandaloneResources, private readonly runtime: Models, private readonly startedAtMs: number,
       private readonly previewAgent: () => PreviewAgent,
       private readonly prepare: NonNullable<NativeHost["prepare"]>,
-      private readonly requireModel?: NativeHost["requireModel"]) {}
+      private readonly requireModel?: NativeHost["requireModel"],
+      private readonly checkAdmission?: NativeHost["checkAdmission"]) {}
 
   #advance = () => {
     this.#revision++;
@@ -192,6 +193,7 @@ export class IntroReports implements IntroHost {
         doc.dismissedFailure = taskId;
         return undefined;
       }
+      await this.checkAdmission?.(tx, id, "continue");
       const current = (await tx.doc(AgentDoc, id)).model;
       if (verify) verify(current);
       else if (!this.#modelAvailable(current)) throw new WireError("invalid_request");

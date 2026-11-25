@@ -245,6 +245,27 @@ func (s *session) receive(f map[string]any) error {
 		if version != ImagesVersion || imagesWire()["successEnvelope"].Validate(f) != nil {
 			return fmt.Errorf("%w: images schema or negotiation", ErrProtocol)
 		}
+	} else if ok && (method == planRun || method == planAttach || method == planWait) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanVersion); err != nil {
+			return err
+		}
+	} else if ok && (method == planWorkspaceWait || method == planWorkspaceInspect || method == planWorkspaceHistory || method == planWorkspaceClose || method == planWorkspaceUse) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planWorkspace]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanWorkspaceVersion); err != nil {
+			return err
+		}
+	} else if ok && (method == planReviewWait || method == planReviewStart || method == planReviewCancel) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planReviewCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanReviewVersion); err != nil {
+			return err
+		}
 	} else if ok && method == loadedContextGet {
 		s.mu.Lock()
 		version := s.hello.Capabilities[loadedContextCapability]

@@ -70,6 +70,7 @@ type Model struct {
 	reportFeed                feedLease
 	directoryFeed             feedLease
 	gitDiffFeed               gitDiffPoll
+	planFeed                  feedLease
 	workspaceTrust            workspaceTrustProbe
 	directoryIDs              []sdk.ID
 	directoryEnabled          bool
@@ -239,6 +240,7 @@ func (m *Model) Close() {
 	m.stopFeed()
 	m.stopBackendReport()
 	m.stopGitDiff()
+	m.stopPlanWatch()
 	m.stopFileScope()
 	m.stopSkills()
 	for id, work := range m.pending {
@@ -330,7 +332,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nativeFiles, m.nativeFileSearch = v.files, v.fileSearch
 		m.fileScopePush, m.gitDiffPush = v.scopeWatch, v.gitWatch
 		m.nativeSkills, m.nativeSkillDraft = v.skills, v.skillDraft
-		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff())
+		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch())
 	case menuProbeFailed:
 		cmd = m.receiveMenuProbeFailure(uint64(v))
 	case menuProbeRetry:
@@ -362,6 +364,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case gitDiffSummaryMsg:
 		cmd = m.receiveGitSummary(v)
+	case planWorkspaceMsg:
+		cmd = m.receivePlanWorkspace(v)
+	case planReviewMsg:
+		cmd = m.receivePlanReview(v)
+	case namedPlanMsg:
+		cmd = m.receiveNamedPlan(v)
+	case planWatchMsg:
+		cmd = m.receivePlanWatch(v)
 	case gitDiffWatchMsg:
 		cmd = m.receiveGitDiffWatch(v)
 	case gitDiffPatchMsg:
@@ -501,7 +511,7 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 	m.overlays, m.sheet = nil, nil
 	m.reprojectBackgroundTab(previous)
 	m.emit(id, extension.Event{Kind: extension.ThreadSwitched, PreviousThreadID: previous})
-	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff()}
+	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch()}
 	budget := maxEffects
 	for _, d := range old {
 		cmds = append(cmds, m.replyDialog(d, nil, false, &budget))
@@ -866,6 +876,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	}
 	t := m.threads[r.owner]
 	switch e.Op {
+	case openPlanOp:
+		return m.openPlan(r)
 	case openLoadedContextOp:
 		return m.openLoadedContext(r, budget)
 	case openGitDiffOp:

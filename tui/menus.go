@@ -138,6 +138,9 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, scopeWatch := m.backend.(fileScopeWatchBackend)
 	_, skills := m.backend.(workspaceSkillsBackend)
 	_, skillDraft := m.backend.(workspaceSkillDraftBackend)
+	_, plans := m.backend.(planBackend)
+	_, planWorkspace := m.backend.(planWorkspaceBackend)
+	_, planReview := m.backend.(planReviewBackend)
 	_, loadedContext := m.backend.(loadedContextBackend)
 	_, native := m.backend.(modelCatalogBackend)
 	_, search := m.backend.(modelCatalogSearchBackend)
@@ -145,7 +148,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, settings := m.backend.(settingsBackend)
 	native = native && m.options.Services.Models == nil
 	if !ok || !native && !titles && !directory && !worktrees && !archive &&
-		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings {
+		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings && !plans {
 		return nil
 	}
 	token := m.token()
@@ -169,6 +172,15 @@ func (m *Model) menuProbe() tea.Cmd {
 				f |= x.NativeCatalogSearch
 				if draft && catalogVersion == sdk.ModelCatalogDraftVersion {
 					f |= x.NativeCatalogDraft
+				}
+			}
+		}
+		if plans && hello.Capabilities["plan"] == sdk.PlanVersion {
+			f |= x.Plans
+			if planWorkspace && hello.Capabilities["planWorkspace"] == sdk.PlanWorkspaceVersion {
+				f |= x.PlanWorkspace
+				if planReview && hello.Capabilities["planReview"] == sdk.PlanReviewVersion {
+					f |= x.PlanReview
 				}
 			}
 		}
@@ -219,6 +231,9 @@ func (m *Model) menuFeatures() x.Features {
 	}
 	if _, ok := m.skillScope(m.active); ok {
 		f |= x.Skills
+	}
+	if !m.planAvailable() {
+		f &^= x.Plans
 	}
 	if m.contextAvailable() {
 		f |= x.LoadedContext
@@ -536,6 +551,9 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 				return showNote("No thread to fork", x.Warning)
 			}
 			return forkMenu(id, "")
+		}),
+		da("plan", "Open plan", "", "i n", "plan", x.Plans, func(_ x.Context, _ x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: openPlanOp}}
 		}),
 		da("loaded-context", "Show loaded context", "", "i a", "", x.LoadedContext, func(_ x.Context, _ x.Invocation) x.Outcome {
 			return x.Outcome{x.Local{Op: openLoadedContextOp}}
