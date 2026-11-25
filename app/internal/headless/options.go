@@ -21,7 +21,8 @@ const usage = `Usage:
   hush --no-session [--backend BUNDLE] [PROMPT...]
   hush status [--thread ID] [--json]
   hush service install [--backend BUNDLE]
-  hush service status|pause|resume|restart|uninstall
+  hush service status [--json]
+  hush service pause|resume|restart|uninstall
   hush stop [--socket PATH] [--json | -q]
   hush restart [--backend BUNDLE] [--open [--thread ID]]
   hush auth login|status|logout [PROVIDER] [--backend BUNDLE]
@@ -235,10 +236,11 @@ func parse(args []string) (options, error) {
 		}
 		var invalid bool
 		f.Visit(func(v *pflag.Flag) {
-			invalid = invalid || v.Name != "profile" && !(v.Name == "backend" && rest[1] == "install")
+			invalid = invalid || v.Name != "profile" && !(v.Name == "backend" && rest[1] == "install") &&
+				!(v.Name == "json" && rest[1] == "status")
 		})
 		if invalid || f.Changed("backend") && o.bundle == "" || f.Changed("profile") && o.ui.Profile != "hush" {
-			return o, errors.New("service requires the local Hush profile; only install accepts --backend")
+			return o, errors.New("service requires the local Hush profile; only install accepts --backend and only status accepts --json")
 		}
 		o.command, o.serviceAction = localService, rest[1]
 		return o, nil

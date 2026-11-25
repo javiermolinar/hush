@@ -111,7 +111,22 @@ store. While installed or paused, Hush will not start a replacement on demand.
 `hush service uninstall` removes the job without removing history or credentials.
 Explicit sockets remain attach-only. To verify an install on the same format-1
 store, keep its existing `allowLegacyStore` opt-in; service install does not
-migrate the database.
+migrate the database. `hush service status --json` reports the same state for
+scripts and status displays.
+
+## Menu bar app (macOS)
+
+`mise run app:macos` builds `dist/macos/Hush.app`, a menu bar app with the `hush`
+CLI inside it. Copy it to `/Applications` and open it. The menu shows whether the
+service is running, how many threads are active, and which threads need attention;
+choose one to open it. It also opens Hush, restarts or resumes the backend, and
+shows the service log. **Open In** picks Rex, Terminal, iTerm, Ghostty or the
+default app for `.command` files. The menu reads state only when you open it.
+
+To have the login item listed as Hush, install the service from the bundled CLI:
+`/Applications/Hush.app/Contents/MacOS/hush service install`. The app is signed ad
+hoc, so Login Items shows a generic icon; a Developer ID signature would show the
+Hush icon.
 
 ## What it won’t do
 

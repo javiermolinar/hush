@@ -32,6 +32,11 @@ description = "Run the short Go suites with the race detector"
 depends = ["build"]
 run = 'HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs" go test -race -short ./sdk/... ./tui/... ./app/...'
 
+[tasks."app:macos"]
+description = "Build the macOS menu bar app at dist/macos/Hush.app (macOS only)"
+depends = ["build"]
+run = "sh app/macos/build.sh bin/hush dist/macos"
+
 [tasks."release:build"]
 description = "Build the installable hush with its embedded backend (without verification)"
 run = "sh app/release.sh build"

@@ -740,3 +740,15 @@ func TestReadyLine(t *testing.T) {
 		}
 	}
 }
+
+func TestParseServiceStatusJSON(t *testing.T) {
+	o, err := parse([]string{"service", "status", "--json"})
+	if err != nil || o.command != localService || o.serviceAction != "status" || !o.json {
+		t.Fatalf("service status --json options = %+v, %v", o, err)
+	}
+	for _, action := range []string{"install", "pause", "resume", "restart", "uninstall"} {
+		if _, err := parse([]string{"service", action, "--json"}); err == nil || !strings.Contains(err.Error(), "only status accepts --json") {
+			t.Errorf("service %s --json = %v, want a status-only error", action, err)
+		}
+	}
+}

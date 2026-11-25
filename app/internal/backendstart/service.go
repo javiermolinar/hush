@@ -416,14 +416,58 @@ func Service(ctx context.Context, action, bundle string, out, stderr io.Writer) 
 	return err
 }
 
-func (s loginService) report(ctx context.Context, out io.Writer) bool {
+// intro reads the running service's summary. It is attach-only.
+func (s loginService) intro(ctx context.Context) (sdk.IntroReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	client := sdk.NewClient(filepath.Join(s.agent, "runtime", "hush.sock"), sdk.ClientOptions{
 		Capabilities: map[string][]uint64{"intro": {sdk.IntroActionsVersion}}, RequiredCapabilities: map[string]uint64{"hushProfile": 1},
 	})
 	defer client.Close()
-	report, err := client.Intro(ctx, sdk.IntroScope{})
+	return client.Intro(ctx, sdk.IntroScope{})
+}
+
+// ServiceStatus is the machine-readable form of 'hush service status' for
+// status displays such as the macOS menu bar app.
+type ServiceStatus struct {
+	// State is not_installed, paused, running or unavailable (installed but
+	// not answering; see Log).
+	State         string               `json:"state"`
+	Sessions      *sdk.IntroSessions   `json:"sessions,omitempty"`
+	Attention     []sdk.IntroAttention `json:"attention"`
+	MoreAttention int                  `json:"moreAttention"`
+	StartedAtMS   int64                `json:"startedAtMs,omitempty"`
+	Log           string               `json:"log,omitempty"`
+}
+
+// ServiceStatusJSON reports the service state as one JSON object. Unlike the
+// text form, an unavailable service is a state, not an error.
+func ServiceStatusJSON(ctx context.Context, out io.Writer) error {
+	s, err := servicePaths()
+	if err != nil {
+		return err
+	}
+	status := ServiceStatus{State: "not_installed", Attention: []sdk.IntroAttention{}}
+	if installed, err := serviceInstalled(s.agent); err != nil {
+		return err
+	} else if installed {
+		status.Log = filepath.Join(s.agent, "supervisor.log")
+		if held, err := privateServiceFile(filepath.Join(s.agent, serviceHold)); err != nil {
+			return err
+		} else if held {
+			status.State = "paused"
+		} else if report, err := s.intro(ctx); err != nil {
+			status.State = "unavailable"
+		} else {
+			status.State, status.Sessions, status.MoreAttention, status.StartedAtMS = "running", &report.Sessions, report.MoreAttention, report.StartedAtMS
+			status.Attention = append(status.Attention, report.Attention...)
+		}
+	}
+	return json.NewEncoder(out).Encode(status)
+}
+
+func (s loginService) report(ctx context.Context, out io.Writer) bool {
+	report, err := s.intro(ctx)
 	if err != nil {
 		return false
 	}
