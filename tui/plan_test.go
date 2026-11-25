@@ -173,6 +173,7 @@ func TestPlanPickerRetriesExactScopeAndDiscardsStaleClicks(t *testing.T) {
 	if !d.plan.selected["save"] {
 		t.Fatal("click did not select the drawn step")
 	}
+	assertFrame(t, m)
 	var requests []sdk.PlanSelection
 	m.backend = planFixtureBackend{run: func(s sdk.PlanSelection) (sdk.ID, error) {
 		requests = append(requests, s)
@@ -198,6 +199,57 @@ func TestPlanPickerRetriesExactScopeAndDiscardsStaleClicks(t *testing.T) {
 	workflowWork(t, m, press(m, tea.KeyEnter, 0))
 	if len(requests) != 2 || !reflect.DeepEqual(requests[0], requests[1]) {
 		t.Fatalf("retry altered the request: %+v", requests)
+	}
+}
+
+func TestPlanRunRequiresVisibleAction(t *testing.T) {
+	m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	d := planPickerFixture(m, s)
+	var requested sdk.PlanSelection
+	m.backend = planFixtureBackend{run: func(selection sdk.PlanSelection) (sdk.ID, error) {
+		requested = selection
+		return "99", nil
+	}}
+	press(m, tea.KeySpace, 0)
+	if body := ansi.Strip(assertFrame(t, m)); !strings.Contains(body, "↵ Run Save a profile") {
+		t.Fatal(body)
+	}
+	checkBlocked := func() {
+		t.Helper()
+		if cmd := press(m, tea.KeyEnter, 0); cmd != nil || s.plan.sending || s.plan.request != nil {
+			t.Fatal("Enter admitted a Run without its action drawn")
+		}
+		if !d.plan.selected["save"] {
+			t.Fatal("resize or Enter discarded the selection")
+		}
+	}
+	press(m, tea.KeyDown, 0)
+	press(m, tea.KeySpace, 0)
+	if !d.plan.selected["restore"] {
+		t.Fatal("adding a second step failed")
+	}
+	checkBlocked() // the last frame showed only the first selected step
+	press(m, tea.KeySpace, 0)
+	press(m, tea.KeyUp, 0)
+	assertFrame(t, m)
+	m.Update(tea.WindowSizeMsg{Width: 12, Height: 3})
+	checkBlocked() // don't reuse the larger frame before View
+	minimum := ansi.Strip(assertFrame(t, m))
+	checkBlocked()
+	if !strings.Contains(minimum, "● Save") || strings.Contains(minimum, "↵ Run") {
+		t.Fatalf("one-row panel must show the selected step, not a Run or a heading:\n%s", minimum)
+	}
+
+	m.Update(tea.WindowSizeMsg{Width: 12, Height: 4})
+	checkBlocked() // even with room, wait until the action has been drawn
+	body := ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(body, "● Save") || !strings.Contains(body, "↵ Run 1") {
+		t.Fatalf("two-row panel must show the selection and Run:\n%s", body)
+	}
+	workflowWork(t, m, press(m, tea.KeyEnter, 0))
+	if !reflect.DeepEqual(requested.StepIDs, []string{"save"}) || requested.Revision != 7 {
+		t.Fatalf("visible Run did not dispatch the retained selection: %+v", requested)
 	}
 }
 

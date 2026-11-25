@@ -304,10 +304,10 @@ func (m *Model) segmentRow(t *threadState, w int, left x.SegmentSlot) displayRow
 		if len(m.tabs) < 2 && t.info.ID != "" && (t.info.Title != "" || dir == "") {
 			glyph, tone := tabStatus(t.info.Status)
 			label := fitTitle(threadTitle(ctx.Thread), max(2, w/2-2))
-			add("hush/thread", 28, -100, paint(tone, glyph)+" "+m.control(label))
+			add("hush/thread", 28, -100, m.paint(tone, glyph)+" "+m.control(label))
 		}
 		if t.info.Archived {
-			add("hush/archive", 25, -85, paint(x.Muted, "archived"))
+			add("hush/archive", 25, -85, m.paint(x.Muted, "archived"))
 		}
 		if m.connection != x.Connected && t.info.ID != "" {
 			label := "connecting"
@@ -318,10 +318,10 @@ func (m *Model) segmentRow(t *threadState, w int, left x.SegmentSlot) displayRow
 				label = "disconnected"
 			}
 			warning := []string{"◌", "◔", "◑", "◕"}[m.phase] + " " + label
-			add("hush/connection", 35, -80, paint(x.Warning, warning))
+			add("hush/connection", 35, -80, m.paint(x.Warning, warning))
 		}
 		for key, a := range t.status {
-			add(key, a.Priority, a.Order, paint(a.Tone, oneLine(a.Text)))
+			add(key, a.Priority, a.Order, m.paint(a.Tone, oneLine(a.Text)))
 		}
 	}
 	slices.SortFunc(dynamic, func(a, b segmentPiece) int { return compareSegmentPriority(a.rank, b.rank) })
@@ -423,7 +423,7 @@ func (m *Model) tabItem(id sdk.ID, w int) displayRow {
 	} else if t.Status == x.Parked {
 		ink = m.palette.parkedTab
 	}
-	row := displayRow{text: paint(tone, glyph) + " " + label}
+	row := displayRow{text: m.paint(tone, glyph) + " " + label}
 	if room := w - stringWidth(row.text) - 2; room > 5 {
 		mergeRow(&row, m.segmentRow(state, room-1, x.Tab), " ")
 	}

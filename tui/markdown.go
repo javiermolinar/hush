@@ -122,7 +122,7 @@ func (d *document) block(n ast.Node, w int) []string {
 	case *ast.Heading:
 		return wrapped("\x1b[1m"+d.inline(n, true)+"\x1b[22m", w)
 	case *ast.ThematicBreak:
-		return []string{paint(x.Muted, "· · ·")}
+		return []string{d.m.paint(x.Muted, "· · ·")}
 	case *ast.Paragraph, *ast.TextBlock:
 		return wrapped(d.inline(n, true), w)
 	case *ast.FencedCodeBlock:
@@ -135,7 +135,7 @@ func (d *document) block(n ast.Node, w int) []string {
 		}
 		rows := d.children(n, w-2)
 		for i, s := range rows {
-			rows[i] = paint(x.Muted, "│ ") + "\x1b[3m" + s + "\x1b[23m"
+			rows[i] = d.m.paint(x.Muted, "│ ") + "\x1b[3m" + s + "\x1b[23m"
 		}
 		return rows
 	case *ast.List:
@@ -164,7 +164,7 @@ func (d *document) block(n ast.Node, w int) []string {
 			rows := d.children(item, w-indent)
 			for i, s := range rows {
 				if i == 0 {
-					out = append(out, paint(x.Muted, bullet)+s)
+					out = append(out, d.m.paint(x.Muted, bullet)+s)
 				} else {
 					out = append(out, strings.Repeat(" ", indent)+s)
 				}
@@ -183,7 +183,7 @@ func (d *document) block(n ast.Node, w int) []string {
 		if strings.HasPrefix(s, "<!--") {
 			return nil
 		}
-		return wrapped(paint(x.Muted, s), w)
+		return wrapped(d.m.paint(x.Muted, s), w)
 	default:
 		return wrapped(d.inline(n, true), w)
 	}
@@ -214,7 +214,7 @@ func (d *document) inline(n ast.Node, links bool) string {
 			if links && !strings.ContainsAny(s, " \t") && (strings.ContainsRune(s, '/') || filepath.Ext(s) != "") {
 				params, uri := fileTarget(workspacePath(d.workspace, s))
 				if uri != "" {
-					s = hyperlink(s, params, uri)
+					s = d.m.hyperlink(s, params, uri)
 					break
 				}
 			}
@@ -229,13 +229,13 @@ func (d *document) inline(n ast.Node, links bool) string {
 			s = d.inline(v, false)
 			if links {
 				params, uri := markdownLink(d.workspace, string(v.Destination))
-				s = hyperlink(s, params, uri)
+				s = d.m.hyperlink(s, params, uri)
 			}
 		case *ast.Image:
 			s = "▣ " + d.inline(v, false)
 			if links {
 				params, uri := markdownLink(d.workspace, string(v.Destination))
-				s = hyperlink(s, params, uri)
+				s = d.m.hyperlink(s, params, uri)
 			}
 		case *ast.AutoLink:
 			s = safeText(string(v.Label(d.src)))
@@ -244,7 +244,7 @@ func (d *document) inline(n ast.Node, links bool) string {
 				if v.AutoLinkType == ast.AutoLinkEmail && !strings.HasPrefix(dest, "mailto:") {
 					dest = "mailto:" + dest
 				}
-				s = hyperlink(s, "", safeURL(dest))
+				s = d.m.hyperlink(s, "", safeURL(dest))
 			}
 		case *ast.Emphasis:
 			if v.Level == 2 {
@@ -264,7 +264,7 @@ func (d *document) inline(n ast.Node, links bool) string {
 			if strings.HasPrefix(s, "<!--") {
 				s = ""
 			} else {
-				s = paint(x.Muted, s)
+				s = d.m.paint(x.Muted, s)
 			}
 		default:
 			s = d.inline(c, links)
@@ -335,7 +335,7 @@ func (d *document) layoutTable(n *table.Table, w int) []string {
 			}
 			out = append(out, wrapped("\x1b[1m"+r[0]+"\x1b[22m", w)...)
 			for j := 1; j < min(len(r), len(widths)); j++ {
-				out = append(out, wrapped(paint(x.Muted, data[0][j]+": ")+r[j], w)...)
+				out = append(out, wrapped(d.m.paint(x.Muted, data[0][j]+": ")+r[j], w)...)
 			}
 		}
 		if len(out) == 0 {
@@ -354,7 +354,7 @@ func (d *document) layoutTable(n *table.Table, w int) []string {
 		}
 		line := strings.TrimRight(strings.Join(cells, "  "), " ")
 		if i == 0 {
-			out = append(out, "\x1b[1m"+line+"\x1b[22m", paint(x.Muted, strings.Repeat("─", need)))
+			out = append(out, "\x1b[1m"+line+"\x1b[22m", d.m.paint(x.Muted, strings.Repeat("─", need)))
 		} else {
 			out = append(out, line)
 		}
@@ -384,15 +384,15 @@ func (d *document) frameCode(lang string, width, index int, copyable bool) (stri
 	}
 	action := ""
 	if copyable && width >= 12 {
-		action = codeCopyAction
+		action = d.m.codeCopyAction()
 	}
 	actionWidth := stringWidth(action)
 	title = ansiCut(title, max(0, width-actionWidth-1))
-	top := paint(x.Muted, title) + action + paint(x.Muted, strings.Repeat("─", max(0, width-stringWidth(title)-actionWidth)))
+	top := d.m.paint(x.Muted, title) + action + d.m.paint(x.Muted, strings.Repeat("─", max(0, width-stringWidth(title)-actionWidth)))
 	if action != "" {
 		top = codeCopyLink(codeID(d.key, index)) + top + oscLinkEnd
 	}
-	return top, paint(x.Muted, strings.Repeat("─", width))
+	return top, d.m.paint(x.Muted, strings.Repeat("─", width))
 }
 
 func (d *document) code(source []string, lang string, w int, copyable bool) []string {
@@ -411,58 +411,64 @@ func (d *document) code(source []string, lang string, w int, copyable bool) []st
 	var state hlState
 	for _, s := range source {
 		var rs []string
-		rs, state = d.codeLine(s, lang, max(1, width-2), state)
+		rs, state = d.codeLine(s, lang, width, state)
 		out = append(out, rs...)
 	}
 	return append(out, bottom)
 }
 
 func (d *document) codeLine(s, lang string, w int, state hlState) ([]string, hlState) {
+	// Nested Markdown can leave only two cells. Drop the decoration before
+	// taking the space needed by a double-width character.
+	indent := ""
+	if w >= 4 {
+		indent = "  "
+	}
+	w = max(1, w-len(indent))
 	switch lang {
 	case "diff", "patch":
 		rs := d.m.diffRows(s, w)
 		for i := range rs {
-			rs[i] = "  " + rs[i]
+			rs[i] = indent + rs[i]
 		}
 		return rs, state
 	}
 	if sx := syntaxes[lang]; sx != nil {
 		var a []codeSpan
-		a, state = sx.line1(s, state)
+		a, state = sx.tokens(s, state)
 		var styles strings.Builder
 		for _, part := range a {
-			styles.WriteString(part.ink)
+			ink := d.m.palette.roles[part.role].ink
+			styles.WriteString(ink.start)
 			styles.WriteString(part.s)
-			if part.ink != "" {
-				styles.WriteString("\x1b[0m")
-			}
+			styles.WriteString(ink.end)
 		}
 		s = styles.String()
 	}
 	var out []string
 	for i, r := range strings.Split(ansi.Hardwrap(s, w, true), "\n") {
-		if i == 0 {
-			out = append(out, "  "+r)
+		if i == 0 || indent == "" {
+			out = append(out, indent+r)
 		} else {
-			out = append(out, paint(x.Muted, "↪ ")+r)
+			out = append(out, d.m.paint(x.Muted, "↪ ")+r)
 		}
 	}
 	return out, state
 }
 
 func (m *Model) diffRows(s string, w int) []string {
-	tone, idx := x.Muted, 0
+	tone := x.Muted
 	switch {
 	case strings.HasPrefix(s, "+") && !strings.HasPrefix(s, "+++"):
-		tone, idx = x.Good, 2
+		tone = x.Good
 	case strings.HasPrefix(s, "-") && !strings.HasPrefix(s, "---"):
-		tone, idx = x.Danger, 1
+		tone = x.Danger
 	}
 	rows := strings.Split(ansi.Hardwrap(s, max(1, w), true), "\n")
 	for i, r := range rows {
-		rows[i] = paint(tone, r)
-		if idx != 0 && m.theme.Fills {
-			rows[i] = fill(fit(rows[i], w), blendPalette(m.palette.background, m.palette.colors[idx], 0.20))
+		rows[i] = m.paint(tone, r)
+		if tone != x.Muted && m.theme.Fills {
+			rows[i] = fill(fit(rows[i], w), m.palette.diffFill(tone))
 		}
 	}
 	return rows
@@ -611,7 +617,7 @@ func (d *document) liveFence(st *markdownStream, s string) ([]string, bool) {
 		f.next += i + 1
 		f.source = append(f.source, line)
 		f.widest = max(f.widest, stringWidth(line))
-		rows, state := d.codeLine(line, f.lang, max(1, f.width-2), f.state)
+		rows, state := d.codeLine(line, f.lang, f.width, f.state)
 		f.state = state
 		f.rows = append(f.rows, rows...)
 	}
@@ -620,7 +626,7 @@ func (d *document) liveFence(st *markdownStream, s string) ([]string, bool) {
 	if width != f.width {
 		f.width, f.state, f.rows = width, hlState{}, f.rows[:0]
 		for _, line := range f.source {
-			rows, state := d.codeLine(line, f.lang, max(1, width-2), f.state)
+			rows, state := d.codeLine(line, f.lang, width, f.state)
 			f.state = state
 			f.rows = append(f.rows, rows...)
 		}
@@ -628,7 +634,7 @@ func (d *document) liveFence(st *markdownStream, s string) ([]string, bool) {
 	top, bottom := d.frameCode(f.lang, width, f.index, true)
 	rows := append([]string{top}, f.rows[max(0, len(f.rows)-recordRows):]...)
 	if partial != "" || len(f.source) == 0 {
-		p, _ := d.codeLine(partial, f.lang, max(1, width-2), f.state)
+		p, _ := d.codeLine(partial, f.lang, width, f.state)
 		rows = append(rows, p...)
 	}
 	return joinRows(append([]string(nil), f.before...), append(rows, bottom)), false
@@ -642,7 +648,9 @@ const (
 )
 
 // Reserve the same cells for the action and its confirmation.
-var codeCopyAction = " " + paint(x.Accent, "\x1b[4mcopy\x1b[24m") + "     "
+func (m *Model) codeCopyAction() string {
+	return " " + m.paint(x.Accent, "\x1b[4mcopy\x1b[24m") + "     "
+}
 
 func codeCopyLink(id string) string { return oscLink + ";" + codeCopyScheme + id + oscEnd }
 
@@ -684,23 +692,23 @@ func (m *Model) advanceCopySweep(tick copySweepTick) tea.Cmd {
 }
 
 // Decorate only the matching header in the frame, not the cached Markdown layout.
-func paintCopiedCode(line, link string, sweep int) (string, bool) {
+func (m *Model) paintCopiedCode(line, link string, sweep int) (string, bool) {
 	before, rest, ok := strings.Cut(line, link)
 	if !ok {
 		return line, false
 	}
 	header, after, closed := strings.Cut(rest, oscLinkEnd)
-	title, rule, button := strings.Cut(header, codeCopyAction)
+	title, rule, button := strings.Cut(header, m.codeCopyAction())
 	if !closed || !button {
 		return line, false
 	}
 	if sweep >= 0 {
-		rule = paintCopySweep(rule, sweep)
+		rule = m.paintCopySweep(rule, sweep)
 	}
-	return before + link + title + " " + paint(x.Good, "✓ copied") + " " + rule + oscLinkEnd + after, true
+	return before + link + title + " " + m.paint(x.Good, "✓ copied") + " " + rule + oscLinkEnd + after, true
 }
 
-func paintCopySweep(rule string, sweep int) string {
+func (m *Model) paintCopySweep(rule string, sweep int) string {
 	strokes := ansi.Strip(rule)
 	const cellBytes = len("─") // The generated rule contains only one-cell strokes.
 	n := len(strokes) / cellBytes
@@ -709,7 +717,7 @@ func paintCopySweep(rule string, sweep int) string {
 	}
 	center := sweep * (n - 1) / (copySweepFrames - 1)
 	a, b := max(0, center-1)*cellBytes, min(n, center+2)*cellBytes
-	return paint(x.Muted, strokes[:a]) + paint(x.Good, strokes[a:b]) + paint(x.Muted, strokes[b:])
+	return m.paint(x.Muted, strokes[:a]) + m.paint(x.Good, strokes[a:b]) + m.paint(x.Muted, strokes[b:])
 }
 
 func codeBlocks(source string) []string {
@@ -746,9 +754,9 @@ func (m *Model) copyCode(r ownerRoute, id string, budget *int) tea.Cmd {
 	t := m.threads[r.owner]
 	var content x.Content
 	if parts[0] == "" {
-		content = m.liveRecordContent(m.renderContext(t, m.width-4, recordRows, true), t)
+		content = m.liveRecordContent(m.renderContext(t, m.pane().width, recordRows, true), t)
 	} else if rec := t.entries[sdk.ID(parts[0])]; rec != nil {
-		ctx := m.renderContext(t, m.width-4, recordRows, false)
+		ctx := m.renderContext(t, m.pane().width, recordRows, false)
 		ctx.Expanded = rec.details(t)
 		ctx.ReasoningExpanded = rec.reasoningDetails(t)
 		content, _ = m.recordContent(ctx, t, rec)

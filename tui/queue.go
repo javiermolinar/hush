@@ -52,7 +52,7 @@ func (m *Model) probeQueuePlacement(owner, id sdk.ID, life uint64) tea.Cmd {
 	}
 }
 
-func (t *threadState) queueRows(w, limit int) []displayRow {
+func (m *Model) queueRows(t *threadState, w, limit int) []displayRow {
 	limit = min(maxQueueRows, limit)
 	if limit <= 0 {
 		return nil
@@ -69,7 +69,7 @@ func (t *threadState) queueRows(w, limit int) []displayRow {
 	start := max(0, total-limit)
 	if start > 0 && limit > 1 {
 		start++ // Reserve one row for the hidden entries, without scanning them.
-		rows = append(rows, displayRow{text: paint(x.Muted, fmt.Sprintf("… %d earlier pending", start))})
+		rows = append(rows, displayRow{text: m.paint(x.Muted, fmt.Sprintf("… %d earlier pending", start))})
 	}
 	for i := start; i < total; i++ {
 		var item sdk.QueueItem
@@ -93,7 +93,7 @@ func (t *threadState) queueRows(w, limit int) []displayRow {
 		if strings.TrimSpace(preview) == "" {
 			preview = "(no text)"
 		}
-		rows = append(rows, displayRow{text: paint(x.Muted, lead) + ansi.Truncate(preview, max(0, w-stringWidth(lead)), "…")})
+		rows = append(rows, displayRow{text: m.paint(x.Muted, lead) + ansi.Truncate(preview, max(0, w-stringWidth(lead)), "…")})
 	}
 	return rows
 }

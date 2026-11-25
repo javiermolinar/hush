@@ -6,7 +6,7 @@ license or attribution for each identified component. SHA-256 filenames
 deduplicate identical text. The notices do not claim that every compiled
 input was retained by the linker. See [WASM rebuilds](../wasm/README.md).
 
-- Snapshot scope: Go 1.27.4 and the 27 linked modules across four targets,
+- Snapshot scope: Go 1.27.4 and the 28 linked modules across four targets,
   including platform-specific D-Bus and dynamic-loading modules.
   The npm lock and esbuild byte-contributor maps cover the main bundle and
   both workers. Separate entries account for generated/vendored code, data,

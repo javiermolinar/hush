@@ -68,11 +68,12 @@ func activityFixture(t testing.TB, options Options) (*Model, *threadState) {
 
 func TestActivityGoldens(t *testing.T) {
 	m, s := activityFixture(t, Options{Fills: FillOff, ReducedMotion: true})
+	m.localTime = time.FixedZone("fixture", 5*60*60+30*60)
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
 	golden(t, "activity-running", m)
 	body := ansi.Strip(m.View().Content)
-	if strings.Count(body, "▸ ran 14 · 1 failed · 1m 12s") != 1 || strings.Contains(body, "Thought") || !strings.Contains(body, "Waiting for model · 8s") {
-		t.Fatalf("unexpected summary or live line:\n%s", body)
+	if strings.Count(body, "▸ ran 14 · 1 failed · 1m 12s") != 1 || strings.Contains(body, "Thought") || !strings.Contains(body, "Waiting for model · 8s") || !strings.Contains(body, "18:54") {
+		t.Fatalf("unexpected summary, local time or live line:\n%s", body)
 	}
 	if !strings.Contains(m.View().Content, "\x1b[31m1 failed\x1b[39m") || strings.Contains(m.View().Content, "\x1b[34m▸") {
 		t.Fatal("only failures should carry state color in a collapsed burst")

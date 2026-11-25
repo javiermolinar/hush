@@ -269,10 +269,10 @@ func (m *Model) planReviewRows(d *dialog, w, n int) (rows []string, targets []in
 		add("Loading review…")
 	} else {
 		if p.view.HeadRevision > p.target.Revision {
-			add(paint(x.Warning, fmt.Sprintf("Stale revision · head is r%d", p.view.HeadRevision)))
+			add(m.paint(x.Warning, fmt.Sprintf("Stale revision · head is r%d", p.view.HeadRevision)))
 		}
 		if p.note != "" {
-			add(paint(x.Warning, p.note))
+			add(m.paint(x.Warning, p.note))
 		} else if p.sending || p.awaiting != "" {
 			add(m.control("Updating review…"))
 		}
@@ -280,7 +280,7 @@ func (m *Model) planReviewRows(d *dialog, w, n int) (rows []string, targets []in
 		height := max(0, n-len(rows)-2)
 		start := min(p.offset, max(0, len(lines)-height))
 		for _, line := range lines[start:min(len(lines), start+height)] {
-			add(paint(line.tone, line.text))
+			add(m.paint(line.tone, line.text))
 		}
 	}
 	prefix := ""
@@ -298,7 +298,7 @@ func (m *Model) planReviewRows(d *dialog, w, n int) (rows []string, targets []in
 	if p.ready && (p.target.Revision > 1 || p.view.HeadRevision > p.target.Revision) {
 		keys += "  ←→ revisions"
 	}
-	add(paint(x.Muted, m.hintRow(w, prefix+keys, prefix+keys, "esc back")))
+	add(m.paint(x.Muted, m.hintRow(w, prefix+keys, prefix+keys, "esc back")))
 	if n >= 5 {
 		add("")
 	}

@@ -466,7 +466,7 @@ func (m *Model) layoutBlocks(ctx extension.RenderContext, key renderKey, content
 				lines = lines[len(lines)-(ctx.MaxLines-len(rows)):]
 			}
 			for _, line := range lines[:min(ctx.MaxLines-len(rows), len(lines))] {
-				rows = append(rows, displayRow{text: paint(b.Tone, line), user: b.Format == extension.UserText})
+				rows = append(rows, displayRow{text: m.paint(b.Tone, line), user: b.Format == extension.UserText})
 			}
 		}
 		if len(cards) > 0 && i >= cards[0].start {
@@ -525,7 +525,7 @@ func (m *Model) layoutLine(ctx extension.RenderContext, line extension.Line, byt
 				if hit && span.Tone == extension.Muted {
 					row.text += m.control(first)
 				} else {
-					row.text += paint(span.Tone, first)
+					row.text += m.paint(span.Tone, first)
 				}
 				if hit && w > 0 {
 					ref := span.Action
@@ -646,10 +646,10 @@ func (m *Model) scrollSpan(t *threadState, rows []transcriptLine, w int) (from, 
 
 func (m *Model) scroll(amount int) tea.Cmd {
 	t := m.threads[m.active]
-	if amount == 0 || m.width < 40 || m.height < 12 || len(t.visibleIDs()) == 0 && t.intro == nil && !t.stream.Present {
+	if amount == 0 || !m.canScrollTranscript() || len(t.visibleIDs()) == 0 && t.intro == nil && !t.stream.Present {
 		return nil
 	}
-	w := m.width - 4
+	w := m.pane().width
 	if t.following {
 		if amount > 0 {
 			return nil

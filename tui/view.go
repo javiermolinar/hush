@@ -16,7 +16,7 @@ type frameMemo struct {
 	rows                                        []string
 	hits                                        [][]spanHit
 	owner                                       sdk.ID
-	navigation                                  uint64
+	navigation, theme                           uint64
 	width, height                               int
 	transcriptHeight, ruleY                     int
 	hasAbove, hasBelow, hasTranscript           bool
@@ -26,6 +26,7 @@ type frameMemo struct {
 	openActivity                                string
 	dialogToken                                 uint64
 	dialogPlanRev                               string
+	dialogPlanSelectionRev                      uint64
 	dialogX, dialogY, dialogWidth, dialogHeight int
 	dialogFramed                                bool
 	dialogChoices                               []int
@@ -59,7 +60,7 @@ func (m *Model) scrollCell(f *frameMemo, y int) string {
 	if y >= f.thumbStart && y < f.thumbEnd {
 		return m.control("┃")
 	}
-	return paint(x.Muted, "│")
+	return m.paint(x.Muted, "│")
 }
 
 func (m *Model) currentFrame() bool {
@@ -77,19 +78,24 @@ func (m *Model) View() tea.View {
 			return v
 		}
 	}
-	f := frameMemo{owner: m.active, navigation: m.navigation, width: m.width, height: m.height, rows: make([]string, m.height), hits: make([][]spanHit, m.height)}
+	f := frameMemo{owner: m.active, navigation: m.navigation, theme: m.theme.Revision, width: m.width, height: m.height, rows: make([]string, m.height), hits: make([][]spanHit, m.height)}
 	v := tea.NewView("")
 	v.AltScreen = true
-	if m.width < 40 || m.height < 12 {
+	pane := m.pane()
+	if !pane.usable {
 		if m.height > 0 && m.width > 0 {
-			f.rows[0] = ansiCut("terminal too small", m.width)
+			warning := "terminal too small"
+			if m.width < len(warning) {
+				warning = "too small"
+			}
+			f.rows[0] = ansiCut(warning, m.width)
 		}
 		v.SetContent(strings.Join(f.rows, "\n"))
 		*m.frame = f
 		return v
 	}
 	t := m.threads[m.active]
-	w := m.width - 4
+	w := pane.width
 	var slash []registeredAction
 	var below []displayRow
 	var dockTargets []int
@@ -98,47 +104,53 @@ func (m *Model) View() tea.View {
 	continuation, filePicker := false, false
 	var fileChoices int
 	configDock := m.sheet != nil && m.sheet.config != nil
-	chrome := m.chromeRows(t, w)
+	var chrome []displayRow
+	if !pane.short {
+		chrome = m.chromeRows(t, w)
+	}
 	listEnd := m.height - len(chrome)
+	// Size lists against the maximum editor height so moving or typing in a
+	// visible list never steals a row from the prompt. At the minimum height,
+	// a focused sheet can use the one transcript row.
+	space := listEnd - 1 - pane.editorRows
+	listBudget := max(1, space-1)
 	var overlayRoom int
-	for _, d := range m.overlays {
-		if !d.promptDock {
-			overlayRoom = minOverlayBodyRows
-			break
+	if d := m.focusedDialog(); d != nil && !d.promptDock && d != m.sheet {
+		if configDock {
+			overlayRoom = min(minOverlayBodyRows, listEnd-1)
+		} else {
+			overlayRoom = min(minOverlayBodyRows, space)
 		}
+		listBudget = max(0, space-overlayRoom)
 	}
 	if configDock {
-		limit := min(12, max(6, m.height-4))
+		limit := min(12, max(6, m.height-4), listEnd-max(1, overlayRoom))
 		rows, targets, cursor := m.configDockRows(m.sheet, w, limit)
 		for _, row := range rows {
 			below = append(below, displayRow{text: row})
 		}
 		dockTargets, dockCursor = targets, cursor
 	} else if m.sheet != nil {
-		limit := m.dialogLimit(m.sheet)
-		if overlayRoom != 0 {
-			limit = min(limit, max(1, listEnd-1-max(1, m.height/4)-overlayRoom))
-		}
-		rows, choices := m.dialogRows(m.sheet, w, limit)
+		rows, choices := m.dialogRows(m.sheet, w, min(m.dialogLimit(m.sheet), listBudget))
 		for _, row := range rows {
 			below = append(below, displayRow{text: row})
 		}
-		f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, 2, w
+		f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, pane.edge, w
 		f.dialogY, f.dialogHeight = listEnd-len(rows), len(rows)
 		f.dialogChoices = choices
 	} else if len(m.overlays) != 0 {
 		continuation = true // an overlay owns focus; hide background completion lists
-	} else if files, n := m.fileRows(w); len(files) > 0 {
+	} else if files, n := m.fileRows(w, listBudget); len(files) > 0 {
 		below, filePicker, fileChoices = files, true, n
 	} else if slash = m.slashMatches(); len(slash) > 0 {
-		below = m.slashSheet(slash, w)
-		f.slashStart, f.slashEnd = listEnd-len(below)+1, listEnd
+		below = m.slashSheet(slash, w, listBudget)
+		f.slashStart, f.slashEnd = listEnd-len(below), listEnd
 	} else {
 		continuation = true
 	}
 	below = append(below, chrome...)
 
-	editorRows, cursor := m.promptRows(t, w, slash)
+	editorRows, cursor := m.promptRows(t, pane, slash)
 	fixedRows := 1
 	if configDock {
 		editorRows, cursor = nil, dockCursor
@@ -151,8 +163,8 @@ func (m *Model) View() tea.View {
 		attachments = []displayRow{m.attachmentRow(t, w)}
 		free--
 	}
-	if free > overlayRoom && m.notice.text != "" {
-		notice.text = paint(m.notice.tone, ansi.Truncate(oneLine(m.notice.text), w, "…"))
+	if free > max(1, overlayRoom) && m.notice.text != "" {
+		notice.text = m.paint(m.notice.tone, ansi.Truncate(oneLine(m.notice.text), w, "…"))
 		free--
 	}
 	noticeRows := 0
@@ -160,7 +172,7 @@ func (m *Model) View() tea.View {
 		noticeRows = 1
 	}
 	room := max(0, free-max(1, overlayRoom))
-	queued := t.queueRows(w, room)
+	queued := m.queueRows(t, w, room)
 	room -= len(queued)
 	widgetAbove := m.widgetRows(t, w, x.AboveEditor, min(3, room))
 	if continuation {
@@ -207,13 +219,14 @@ func (m *Model) View() tea.View {
 		}
 	}
 	padding := strings.Repeat(" ", m.width)
+	margin, railGap := padding[:pane.edge], padding[:pane.edge-1]
 	add := func(y int, r displayRow) {
 		if y < 0 || y >= len(f.rows) {
 			return
 		}
 		if copyLink != "" && y < f.transcriptHeight {
 			var copied bool
-			if r.text, copied = paintCopiedCode(r.text, copyLink, copySweep); copied {
+			if r.text, copied = m.paintCopiedCode(r.text, copyLink, copySweep); copied {
 				f.copyToken = m.copied.token
 				copyLink = ""
 			}
@@ -234,19 +247,19 @@ func (m *Model) View() tea.View {
 		}
 		prefix := margin
 		if r.user {
-			prefix = paint(x.Accent, "│") + " "
+			prefix = m.paint(x.Accent, "│") + railGap
 		}
 		f.rows[y] = prefix + line
 		if r.tabBand {
 			f.rows[y] = surface(f.rows[y]+margin, m.palette.softInk)
 		}
 		if rail && y < f.transcriptHeight {
-			f.rows[y] += " " + m.scrollCell(&f, y)
+			f.rows[y] += railGap + m.scrollCell(&f, y)
 		}
 		if len(r.hits) > 0 {
 			for _, hit := range r.hits {
-				hit.first += 2
-				hit.last = min(2+w, hit.last+2)
+				hit.first = pane.edge + max(0, hit.first)
+				hit.last = pane.edge + min(cells, hit.last)
 				if hit.last > hit.first {
 					f.hits[y] = append(f.hits[y], hit)
 				}
@@ -266,7 +279,7 @@ func (m *Model) View() tea.View {
 			} else {
 				f.rows[y] = margin + row.text // intro rows are already fitted
 				if rail {
-					f.rows[y] += " " + m.scrollCell(&f, y)
+					f.rows[y] += railGap + m.scrollCell(&f, y)
 				}
 			}
 			if canPatchIntro {
@@ -321,10 +334,14 @@ func (m *Model) View() tea.View {
 	}
 	if !configDock {
 		f.ruleY = y
-		add(y, m.promptRule(t, w, paused, m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)))
+		var hints []string
+		if !pane.short {
+			hints = m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)
+		}
+		add(y, m.promptRule(t, w, paused, hints))
 		y++
 		if cursor != nil && m.focused {
-			cursor.Position.X += len(margin)
+			cursor.Position.X += pane.edge
 			cursor.Position.Y += y
 			v.Cursor = cursor
 		}
@@ -336,11 +353,11 @@ func (m *Model) View() tea.View {
 	for i, row := range below {
 		if configDock && i == 0 {
 			f.ruleY = y
-			f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, 2, w
+			f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, pane.edge, w
 			f.dialogY, f.dialogHeight = y, len(dockTargets)
 			f.dialogChoices = dockTargets
-			if cursor != nil && m.focused {
-				cursor.Position.X += len(margin)
+			if cursor != nil && m.focused && m.focusedDialog() == m.sheet {
+				cursor.Position.X += pane.edge
 				cursor.Position.Y += y
 				v.Cursor = cursor
 			}
@@ -353,7 +370,7 @@ func (m *Model) View() tea.View {
 	// hyperlink under the click before mouse-up can resolve the target.
 	if m.selection.selected || m.selection.dragging && m.selection.from != m.selection.to {
 		for i := 0; i < f.transcriptHeight; i++ {
-			if a, b, ok := m.selection.span(i, m.width-2); ok {
+			if a, b, ok := m.selection.span(i, m.width-pane.edge); ok {
 				line := fit(f.rows[i], m.width)
 				f.rows[i] = ansi.Cut(line, 0, a) + ansiCut("\x1b[7m"+ansi.Strip(ansi.Cut(line, a, b))+"\x1b[27m", b-a) + ansi.Cut(line, b, m.width)
 			}
@@ -369,7 +386,7 @@ func (m *Model) View() tea.View {
 			bottom = f.ruleY
 		}
 		rows, choices := m.overlayRows(d, bottom)
-		framed := !d.promptDock && bottom >= minOverlayFrameRows
+		framed := m.overlayFramed(d, bottom)
 		width := m.dialogWidth(d)
 		left := max(0, (m.width-width)/2)
 		space := max(0, bottom-len(rows))
@@ -383,9 +400,10 @@ func (m *Model) View() tea.View {
 		}
 		for j, row := range rows {
 			y := top + j
+			f.hits[y] = nil // the overlay owns this row
 			if d.promptDock {
-				// Don't leave transcript bars or targets behind the edge of the panel.
-				f.rows[y], f.hits[y] = padding[:left]+fit(row, width)+padding[left+width:], nil
+				// Don't leave transcript bars behind the edge of the panel.
+				f.rows[y] = padding[:left] + fit(row, width) + padding[left+width:]
 				continue
 			}
 			if !framed && d.output == nil {
@@ -405,6 +423,7 @@ func (m *Model) View() tea.View {
 			f.dialogChoices = choices
 			if d.plan != nil {
 				f.dialogPlanRev = m.planViewFor(d).snapshot.Revision
+				f.dialogPlanSelectionRev = d.plan.selectionRev
 			}
 			if d.git != nil {
 				v.Cursor = nil
@@ -450,10 +469,14 @@ func (m *Model) widgetRows(t *threadState, w int, where x.WidgetPlacement, n int
 	return out
 }
 
-func (m *Model) slashSheet(matches []registeredAction, w int) []displayRow {
+func (m *Model) slashSheet(matches []registeredAction, w, budget int) []displayRow {
 	// Keep the selected command in view without making the transcript jump
 	// with every arrow press. All matching commands remain reachable.
-	limit := min(5, len(matches))
+	spacer := 0
+	if budget > 2 {
+		spacer = 1
+	}
+	limit := min(5, len(matches), budget-spacer)
 	selected := min(m.slashIndex, len(matches)-1)
 	start := min(max(0, selected-limit+1), len(matches)-limit)
 	visible := matches[start : start+limit]
@@ -467,13 +490,13 @@ func (m *Model) slashSheet(matches []registeredAction, w int) []displayRow {
 	if w-nameWidth-keyWidth < 12 {
 		keyWidth = 0
 	}
-	out := make([]displayRow, 1, limit+1) // one blank row separates input and list
+	out := make([]displayRow, spacer, limit+spacer)
 	for i, a := range visible {
 		active := start+i == selected
 		prefix := "  "
 		tone := x.Plain
 		if active {
-			prefix = paint(x.Accent, "› ")
+			prefix = m.paint(x.Accent, "› ")
 			tone = x.Accent
 		}
 		name := ansi.Truncate("/"+a.action.Slash.Name, nameWidth, "…")
@@ -486,7 +509,7 @@ func (m *Model) slashSheet(matches []registeredAction, w int) []displayRow {
 			labelEnd -= 2
 		}
 		noteWidth := max(0, labelEnd-nameWidth-4)
-		line := prefix + paint(tone, fit(name, nameWidth))
+		line := prefix + m.paint(tone, fit(name, nameWidth))
 		if noteWidth > 0 {
 			line += "  " + m.control(ansi.Truncate(oneLine(note), noteWidth, "…"))
 		}
@@ -495,7 +518,7 @@ func (m *Model) slashSheet(matches []registeredAction, w int) []displayRow {
 			line = fit(line, w-stringWidth(hint)) + m.control(hint)
 		}
 		if active && m.theme.Fills {
-			line = fill(fit(line, w), blendPalette(m.palette.background, m.palette.colors[4], .15))
+			line = fill(fit(line, w), m.palette.selected)
 		}
 		ref := x.ActionRef{ID: a.action.ID}
 		if ref.ID == stageSkillID {
@@ -506,8 +529,8 @@ func (m *Model) slashSheet(matches []registeredAction, w int) []displayRow {
 	return out
 }
 
-func (m *Model) promptRows(t *threadState, w int, slash []registeredAction) ([]displayRow, *tea.Cursor) {
-	label := "you › "
+func (m *Model) promptRows(t *threadState, pane paneLayout, slash []registeredAction) ([]displayRow, *tea.Cursor) {
+	w, label := pane.width, "you › "
 	intro := t.intro != nil && !t.intro.frozen
 	if intro {
 		label = "main › "
@@ -515,9 +538,11 @@ func (m *Model) promptRows(t *threadState, w int, slash []registeredAction) ([]d
 	if d := m.focusedDialog(); threadBusy(t) && (d == nil || d.promptDock) && len(slash) == 0 {
 		label = "steer › "
 	}
+	if pane.narrow {
+		label = "› "
+	}
 	prefix := stringWidth(label)
-	maxRows := max(1, m.height/4)
-	output, editorCursor := m.editor.layout(maxRows)
+	output, editorCursor := m.editor.layout(pane.editorRows)
 	var cursor *tea.Cursor
 	if m.focusedDialog() == nil && editorCursor != nil {
 		c := *editorCursor
@@ -541,7 +566,7 @@ func (m *Model) promptRows(t *threadState, w int, slash []registeredAction) ([]d
 				name := "/" + a.action.Slash.Name
 				plain := m.editor.value()
 				if tail, ok := strings.CutPrefix(name, plain); ok && tail != "" && stringWidth(name) < w-prefix {
-					text = strings.TrimRight(text, " ") + paint(x.Muted, tail)
+					text = strings.TrimRight(text, " ") + m.paint(x.Muted, tail)
 				}
 			}
 		}
@@ -565,7 +590,10 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 				resume = key
 			}
 		}
-		right.text = m.control(resume)
+		if stringWidth(resume) > w-3 {
+			resume = paused
+		}
+		right.text = m.control(ansi.Truncate(resume, max(0, w-3), "…"))
 	}
 	const ruleSpace = 3 // a stroke and room on each side
 	liveWidth := w - ruleSpace - stringWidth(right.text)
@@ -607,7 +635,7 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	if right.text != "" {
 		strokes--
 	}
-	out.text += paint(x.Muted, strings.Repeat("─", max(0, strokes)))
+	out.text += m.paint(x.Muted, strings.Repeat("─", max(0, strokes)))
 	mergeRow(&out, right, " ")
 	return out
 }
@@ -713,7 +741,7 @@ func (m *Model) picked() string {
 	var rows []string
 	a, b := m.selection.bounds()
 	for y := max(0, a.y); y <= min(b.y, m.frame.transcriptHeight-1); y++ {
-		lo, hi, ok := m.selection.span(y, m.width-2)
+		lo, hi, ok := m.selection.span(y, m.width-m.pane().edge)
 		if ok {
 			rows = append(rows, strings.TrimRight(ansi.Strip(ansi.Cut(m.frame.rows[y], lo, hi)), " "))
 		}
@@ -804,7 +832,7 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 		switch msg.(type) {
 		case tea.MouseClickMsg:
 			if !inside {
-				if p.Button == tea.MouseLeft {
+				if p.Button == tea.MouseLeft && (d.themePicker == nil || !d.themePicker.saving) {
 					return m.closeDialog(d, nil, false)
 				}
 			} else if d.custom == nil && p.Button == tea.MouseLeft {
@@ -861,7 +889,14 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				}
 			}
 		case tea.MouseWheelMsg:
-			if inside && d.output != nil {
+			if inside && d.themePicker != nil {
+				switch p.Button {
+				case tea.MouseWheelUp:
+					m.moveTheme(d, -1)
+				case tea.MouseWheelDown:
+					m.moveTheme(d, 1)
+				}
+			} else if inside && d.output != nil {
 				if p.Button == tea.MouseWheelUp {
 					m.outputMove(d, -3, 0)
 				} else if p.Button == tea.MouseWheelDown {

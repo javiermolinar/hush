@@ -231,7 +231,7 @@ func (m *Model) configInput(d *dialog, msg tea.Msg, chord string) tea.Cmd {
 	if p == nil {
 		return nil
 	}
-	if (m.width < 40 || m.height < 12) && chord != "esc" {
+	if !m.dialogCanInput(d) && chord != "esc" {
 		return nil
 	}
 	if p.pickingModel {

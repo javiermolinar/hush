@@ -252,14 +252,14 @@ func (directoryMenuBackend) ThreadDirectory(_ context.Context, limit int, cursor
 
 func TestDirectorySheetShowsNamesAndDatesAndOpensOlderPage(t *testing.T) {
 	m, state := demo(t, Options{ReducedMotion: true})
-	state.lastAnswer = "Preview text"
+	state.lastAnswer = previewMarkdown
 	m.backend = directoryMenuBackend{}
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 25})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 25})
 	open := m.runAction(m.host.byID[switcherID], "")
 	threadPickerStep(t, m, open)
 	frame := ansi.Strip(assertFrame(t, m))
 	if !strings.Contains(frame, "Investigate a latency regression") || !strings.Contains(frame, time.Date(2026, 11, 23, 14, 0, 0, 0, time.UTC).Local().Format("2006-01-02")+" · #17") ||
-		!strings.Contains(frame, "Workspace unknown") || !strings.Contains(frame, "Fix the date picker") || !strings.Contains(frame, "Preview text") || m.sheet.choices[0].ID != "17" {
+		!strings.Contains(frame, "Workspace unknown") || !strings.Contains(frame, "Fix the date picker") || !strings.Contains(frame, previewPlain) || m.sheet.choices[0].ID != "17" {
 		t.Fatalf("wrong thread directory:\n%s", frame)
 	}
 	press(m, tea.KeyEnd, 0)

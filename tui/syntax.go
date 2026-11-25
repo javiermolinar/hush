@@ -101,46 +101,47 @@ func init() {
 }
 
 // hlState carries what a line leaves open into the next: a block comment's closer, or a string's delimiter.
-type codeSpan struct{ s, ink string }
+type codeSpan struct {
+	s    string
+	role colorRole
+}
 
 type hlState struct {
 	comment, str string
 }
 
-func (sx *syntax) line1(l string, st hlState) ([]codeSpan, hlState) {
+func (sx *syntax) tokens(l string, st hlState) ([]codeSpan, hlState) {
 	var out []codeSpan
-	emit := func(s string, style codeSpan) {
+	emit := func(s string, role colorRole) {
 		if s == "" {
 			return
 		}
-		if n := len(out); n > 0 && out[n-1].ink == style.ink {
+		if n := len(out); n > 0 && out[n-1].role == role {
 			out[n-1].s += s
 			return
 		}
-		style.s = s
-		out = append(out, style)
+		out = append(out, codeSpan{s: s, role: role})
 	}
-	comment, literal, keyword := codeSpan{ink: "\x1b[2;3m"}, codeSpan{ink: "\x1b[36m"}, codeSpan{ink: "\x1b[35m"}
 	i, plainFrom := 0, 0
-	flush := func() { emit(l[plainFrom:i], codeSpan{}) }
+	flush := func() { emit(l[plainFrom:i], roleText) }
 	// what the line above left open
 	if st.comment != "" {
 		end := strings.Index(l, st.comment)
 		if end < 0 {
-			emit(l, comment)
+			emit(l, roleSyntaxComment)
 			return out, st
 		}
 		i = end + len(st.comment)
-		emit(l[:i], comment)
+		emit(l[:i], roleSyntaxComment)
 		st.comment, plainFrom = "", i
 	} else if st.str != "" {
 		end := sx.closeString(l, 0, st.str)
 		if end < 0 {
-			emit(l, literal)
+			emit(l, roleSyntaxLiteral)
 			return out, st
 		}
 		i = end
-		emit(l[:i], literal)
+		emit(l[:i], roleSyntaxLiteral)
 		st.str, plainFrom = "", i
 	}
 	for i < len(l) {
@@ -155,8 +156,8 @@ func (sx *syntax) line1(l string, st hlState) ([]codeSpan, hlState) {
 			for k < len(l) && (isIdentByte(l[k]) || l[k] == '-' || l[k] == ':') {
 				k++
 			}
-			emit(l[i:j], codeSpan{})
-			emit(l[j:k], keyword)
+			emit(l[i:j], roleText)
+			emit(l[j:k], roleSyntaxKeyword)
 			i, plainFrom = k, k
 			continue
 		}
@@ -164,31 +165,31 @@ func (sx *syntax) line1(l string, st hlState) ([]codeSpan, hlState) {
 			flush()
 			end := strings.Index(l[i+len(opener):], closer)
 			if end < 0 {
-				emit(l[i:], comment)
+				emit(l[i:], roleSyntaxComment)
 				st.comment = closer
 				return out, st
 			}
 			stop := i + len(opener) + end + len(closer)
-			emit(l[i:stop], comment)
+			emit(l[i:stop], roleSyntaxComment)
 			i, plainFrom = stop, stop
 			continue
 		}
 		if sx.lineAt(l, i) {
 			flush()
-			emit(l[i:], comment)
+			emit(l[i:], roleSyntaxComment)
 			return out, st
 		}
 		if q := sx.quoteAt(l, i); q != "" {
 			flush()
 			end := sx.closeString(l, i+len(q), q)
 			if end < 0 {
-				emit(l[i:], literal)
+				emit(l[i:], roleSyntaxLiteral)
 				if slices.Contains(sx.multi, q) {
 					st.str = q
 				}
 				return out, st
 			}
-			emit(l[i:end], literal)
+			emit(l[i:end], roleSyntaxLiteral)
 			i, plainFrom = end, end
 			continue
 		}
@@ -198,7 +199,7 @@ func (sx *syntax) line1(l string, st hlState) ([]codeSpan, hlState) {
 			for j < len(l) && (isIdentByte(l[j]) || l[j] == '.' && j+1 < len(l) && l[j+1] >= '0' && l[j+1] <= '9') {
 				j++
 			}
-			emit(l[i:j], literal)
+			emit(l[i:j], roleSyntaxLiteral)
 			i, plainFrom = j, j
 			continue
 		}
@@ -213,7 +214,7 @@ func (sx *syntax) line1(l string, st hlState) ([]codeSpan, hlState) {
 			}
 			if sx.keywords[w] && (i == 0 || l[i-1] != '.') { // obj.type is a name
 				flush()
-				emit(l[i:j], keyword)
+				emit(l[i:j], roleSyntaxKeyword)
 				plainFrom = j
 			}
 			i = j

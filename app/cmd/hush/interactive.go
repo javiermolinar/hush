@@ -59,7 +59,8 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 	defer client.Close()
 	m, err := tui.New(ctx, client, tui.Options{
 		ThreadID: o.Thread, NewThread: sdk.NewThread{CWD: cwd}, WorkspaceLocal: local,
-		Fills: tui.FillMode(o.Fills), Images: tui.ImageMode(o.Images), ReducedMotion: !o.Motion, CustomModels: true,
+		Fills: tui.FillMode(o.Fills), Images: tui.ImageMode(o.Images), ThemeName: o.Theme,
+		ReducedMotion: !o.Motion, CustomModels: true,
 		Extensions:        []extension.Registration{inbox.New()},
 		ProviderLogin:     localProviderLogin(o),
 		WorkspaceTrust:    workspaceTrustOptions(o),

@@ -321,8 +321,9 @@ func (p *promptEditor) syncViewport() {
 }
 
 func (m *Model) resizeEditors() tea.Cmd {
-	m.editor.area.SetWidth(max(1, m.width-12))
-	m.editor.area.SetHeight(max(1, m.height/4))
+	pane := m.pane()
+	m.editor.area.SetWidth(pane.editorWidth)
+	m.editor.area.SetHeight(pane.editorRows)
 	m.editor.syncViewport()
 	if m.sheet != nil {
 		m.resizeDialogEditor(m.sheet)
@@ -498,7 +499,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(k, shellKeys.pageDown):
 		return m.scroll(max(1, m.frame.transcriptHeight-1))
 	case key.Matches(k, shellKeys.top):
-		if t.intro != nil || len(t.ids) > 0 || t.stream.Present {
+		if m.canScrollTranscript() && (t.intro != nil || len(t.ids) > 0 || t.stream.Present) {
 			t.following = false
 			anchor := t.idAt(t.firstBlock())
 			if anchor == "" && len(t.ids) > 0 {
@@ -508,7 +509,9 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 			return m.maybeOlder(true)
 		}
 	case key.Matches(k, shellKeys.follow):
-		t.following = true
+		if m.canScrollTranscript() {
+			t.following = true
+		}
 	case key.Matches(k, shellKeys.escape):
 		if len(m.slashMatches()) > 0 {
 			m.slashHidden = true

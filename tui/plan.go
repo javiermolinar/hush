@@ -15,6 +15,7 @@ import (
 
 const planID x.ActionID = menusID + ".plan"
 const openPlanOp x.LocalOp = "plan.open"
+const planRunTarget = -2
 
 type planBackend interface {
 	WatchPlan(context.Context, sdk.ID) <-chan sdk.PlanUpdate
@@ -32,15 +33,16 @@ type planView struct {
 }
 
 type planPicker struct {
-	named    string
-	expected string // a workspace row may not follow a different binding mid-inspection
-	view     planView
-	cancel   context.CancelFunc
-	changing bool
-	focus    int
-	details  bool
-	scroll   int
-	selected map[string]bool
+	named        string
+	expected     string // a workspace row may not follow a different binding mid-inspection
+	view         planView
+	cancel       context.CancelFunc
+	changing     bool
+	focus        int
+	details      bool
+	scroll       int
+	selected     map[string]bool
+	selectionRev uint64
 }
 
 type planWatchMsg struct {
@@ -131,6 +133,7 @@ func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
 				for id := range d.plan.selected {
 					if v.progress(id).State == "verified" {
 						delete(d.plan.selected, id)
+						d.plan.selectionRev++
 					}
 				}
 			}
@@ -315,7 +318,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 			return nil
 		case "down", "pgdown":
 			width := planDetailWidth(m.dialogWidth(d))
-			count := len(planDetails(v, v.snapshot.Plan.Steps[p.focus], width))
+			count := len(m.planDetails(v, v.snapshot.Plan.Steps[p.focus], width))
 			delta := 1
 			if chord == "pgdown" {
 				delta = 4
@@ -366,10 +369,15 @@ func (m *Model) togglePlanStep(v *planView, p *planPicker) {
 		} else {
 			p.selected[id] = true
 		}
+		p.selectionRev++
 	}
 }
 
 func (m *Model) runPlan(d *dialog, v *planView) tea.Cmd {
+	if !m.dialogVisible(d) || m.frame.dialogPlanRev != v.snapshot.Revision ||
+		m.frame.dialogPlanSelectionRev != d.plan.selectionRev || !slices.Contains(m.frame.dialogChoices, planRunTarget) {
+		return nil // Enter is only a Run when the current scope's action was drawn.
+	}
 	b, ok := m.backend.(planBackend)
 	if !ok || !m.planAvailable() || !v.ready || v.snapshot.Plan == nil || v.snapshot.Closed || v.snapshot.Complete || v.snapshot.Settling || !planRunnable(v.snapshot.RunAvailability) || v.sending || (v.request == nil && v.locked()) {
 		return nil
@@ -386,6 +394,7 @@ func (m *Model) runPlan(d *dialog, v *planView) tea.Cmd {
 		selection = sdk.PlanSelection{ThreadID: d.route.owner, PlanID: p.ID, Revision: p.Revision, StepIDs: ids, RequestID: submissionKey()}
 	}
 	v.request, v.sending, v.note = &selection, true, ""
+	d.plan.selectionRev++ // a retry must be shown before the same request can be sent again
 	return m.startWork(d.route, func(ctx context.Context) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, menuTimeout)
 		defer cancel()
@@ -525,8 +534,8 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 	label = ansi.Truncate(label, max(1, w-stringWidth(progress)-2), "…")
 	strokes := max(0, w-stringWidth(label)-stringWidth(progress)-2)
 	listWidth := planListWidth(w)
-	showKeys := n >= 5
-	body := max(0, n-2) // header and consequence
+	showHeader, showRun, showKeys := n >= 3, n >= 2, n >= 5
+	body := max(1, n-2) // drop the heading, then the Run row, before the focused task
 	if showKeys {
 		body--
 	}
@@ -541,35 +550,45 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 	if gaps >= 4 {
 		add("", -1)
 	}
-	add(label+paint(x.Muted, " "+strings.Repeat("─", strokes)+" ")+progress, -1)
+	if showHeader {
+		add(label+m.paint(x.Muted, " "+strings.Repeat("─", strokes)+" ")+progress, -1)
+	}
 	if gaps >= 3 {
 		add("", -1)
 	}
 	if listWidth == w && p.details {
-		for _, line := range planDetailWindow(v, p, w, body) {
+		for _, line := range m.planDetailWindow(v, p, w, body) {
 			add(line, -1)
 		}
 	} else {
-		const stateWidth = 12 // "Not verified"; reserve space so the column doesn't move.
+		stateWidth := min(12, listWidth/2) // reserve room for both title and status
+		if listWidth < 20 {
+			stateWidth = 0 // keep the selection mark and some title in a narrow pane
+		}
 		lo := min(max(0, p.focus-body+1), max(0, len(plan.Steps)-body))
 		list := make([]string, 0, body)
 		for i := lo; i < min(lo+body, len(plan.Steps)); i++ {
 			s := plan.Steps[i]
 			focus, mark := "  ", "○ "
 			if i == p.focus {
-				focus = paint(x.Accent, "› ")
+				focus = m.paint(x.Accent, "› ")
 			}
 			if v.progress(s.ID).State == "verified" {
-				mark = paint(x.Good, "✓ ")
+				mark = m.paint(x.Good, "✓ ")
 			} else if p.selected[s.ID] || v.snapshot.Run != nil && v.snapshot.Run.State == "running" && slices.Contains(v.snapshot.Run.StepIDs, s.ID) {
-				mark = paint(x.Accent, "● ")
+				mark = m.paint(x.Accent, "● ")
 			}
-			status, tone := v.label(s, p.selected)
-			titleWidth := listWidth - stateWidth
-			lead := fit(ansi.Truncate(focus+mark+oneLine(s.Title), titleWidth-2, "…"), titleWidth)
-			line := lead + paint(tone, fit(status, stateWidth))
+			title := focus + mark + oneLine(s.Title)
+			line := ""
+			if stateWidth == 0 {
+				line = ansi.Truncate(title, listWidth, "…")
+			} else {
+				status, tone := v.label(s, p.selected)
+				titleWidth := listWidth - stateWidth
+				line = fit(ansi.Truncate(title, titleWidth-2, "…"), titleWidth) + m.paint(tone, fit(status, stateWidth))
+			}
 			if i == p.focus && m.theme.Fills {
-				line = fill(fit(line, listWidth), blendPalette(m.palette.background, m.palette.colors[4], .15))
+				line = fill(fit(line, listWidth), m.palette.selected)
 			}
 			list = append(list, line)
 		}
@@ -578,7 +597,7 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 				add(line, lo+i)
 			}
 		} else {
-			details := planDetailWindow(v, p, planDetailWidth(w), body)
+			details := m.planDetailWindow(v, p, planDetailWidth(w), body)
 			for i := range max(len(list), len(details)) {
 				left, right, target := "", "", -1
 				if i < len(list) {
@@ -587,15 +606,21 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 				if i < len(details) {
 					right = details[i]
 				}
-				add(fit(left, listWidth)+paint(x.Muted, planDetailGutter)+right, target)
+				add(fit(left, listWidth)+m.paint(x.Muted, planDetailGutter)+right, target)
 			}
 		}
 	}
 	if gaps >= 2 {
 		add("", -1)
 	}
-	bar, preview := m.planRunBar(v, p, w)
-	add(bar+preview, -1)
+	if showRun {
+		bar, preview, runnable := m.planRunBar(v, p, w)
+		target := -1
+		if runnable && stringWidth(bar) <= w {
+			target = planRunTarget
+		}
+		add(bar+preview, target)
+	}
 	if showKeys {
 		close := "esc close"
 		primary, compact, move := "space select  tab details", "space pick  tab info", "↑↓ move"
@@ -619,7 +644,7 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 		if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
 			close = "esc back"
 		}
-		add(paint(x.Muted, m.hintRow(w, primary+"  "+move, compact, close)), -1)
+		add(m.paint(x.Muted, m.hintRow(w, primary+"  "+move, compact, close)), -1)
 	}
 	if gaps >= 1 {
 		add("", -1)
@@ -627,48 +652,61 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 	return
 }
 
-func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview string) {
+func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview string, runnable bool) {
 	switch {
 	case v.snapshot.Settling:
-		return m.control("Closing Run · current task is settling"), ""
+		return m.control("Closing Run · current task is settling"), "", false
 	case v.snapshot.Complete:
-		return m.control("Complete · all tasks verified"), ""
+		return m.control("Complete · all tasks verified"), "", false
 	case v.snapshot.Closed:
-		return m.control("Closed · c reopen"), ""
+		return m.control("Closed · c reopen"), "", false
 	}
 	switch v.snapshot.RunAvailability {
 	case sdk.PlanRunUnbound:
-		return m.control("a Use in this thread"), ""
+		return m.control("a Use in this thread"), "", false
 	case sdk.PlanRunPinned:
-		return m.control("Pinned revision · cannot run"), ""
-	case sdk.PlanRunDisabled:
-		return m.control("Draft only · execution unavailable"), ""
+		return m.control("Pinned revision · cannot run"), "", false
+	}
+	if !planRunnable(v.snapshot.RunAvailability) {
+		return m.control("Draft only · execution unavailable"), "", false
 	}
 	switch {
 	case v.sending || v.awaiting != "":
-		return "Admitting selected steps…", ""
+		return "Admitting selected steps…", "", false
 	case v.request != nil:
-		return planRunEmphasis("↵ retry same Run"), paint(x.Muted, " · no receipt")
+		label := "↵ retry same Run"
+		if stringWidth(label) > width {
+			label = "↵ retry"
+		}
+		return planRunEmphasis(label), m.paint(x.Muted, " · no receipt"), true
 	case v.snapshot.Run != nil && v.snapshot.Run.State == "running":
-		return v.activity(), ""
+		return v.activity(), "", false
 	}
 	ids, reason := v.selection(p)
 	if reason != "" {
-		return paint(x.Warning, reason), ""
+		return m.paint(x.Warning, reason), "", false
 	}
 	if v.note != "" {
-		return m.control(oneLine(v.note)), ""
+		note := oneLine(v.note)
+		if len(ids) != 0 {
+			return planRunEmphasis("↵ retry"), m.paint(x.Warning, " · "+note), true
+		}
+		return m.control(note), "", false
 	}
 	if len(ids) == 0 {
 		if v.snapshot.Run != nil {
 			if v.snapshot.Run.Failure != "" {
-				return paint(x.Warning, oneLine(v.snapshot.Run.Failure)), ""
+				return m.paint(x.Warning, oneLine(v.snapshot.Run.Failure)), "", false
 			}
-			return v.activity(), ""
+			return v.activity(), "", false
 		}
-		return m.control("Select the steps to run"), ""
+		return m.control("Select the steps to run"), "", false
 	}
 	revision := fmt.Sprintf(" @ r%d", v.snapshot.Plan.Revision)
+	compact := fmt.Sprintf("↵ Run %d", len(ids))
+	if stringWidth(compact+revision) > width {
+		return planRunEmphasis(compact), "", true
+	}
 	count, dependent := v.unselected(p, ids[0])
 	remaining := ""
 	if count != 0 {
@@ -691,14 +729,14 @@ func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview 
 			}
 		}
 		if remaining != "" && stringWidth(remaining) <= room {
-			return bar, paint(x.Muted, "  "+remaining)
+			return bar, m.paint(x.Muted, "  "+remaining), true
 		}
-		return bar, ""
+		return bar, "", true
 	}
-	bar = planRunEmphasis(fmt.Sprintf("↵ Run %d", len(ids)) + revision)
+	bar = planRunEmphasis(compact + revision)
 	room := width - stringWidth(bar) - 2
 	if room <= 0 {
-		return bar, ""
+		return bar, "", true
 	}
 	labels := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -708,7 +746,7 @@ func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview 
 	if remaining != "" && stringWidth(order+" · "+remaining) <= room {
 		order += " · " + remaining
 	}
-	return bar, paint(x.Muted, "  "+ansi.Truncate(order, room, "…"))
+	return bar, m.paint(x.Muted, "  "+ansi.Truncate(order, room, "…")), true
 }
 
 func planRunEmphasis(label string) string { return "\x1b[1m" + label + "\x1b[22m" }
@@ -726,13 +764,13 @@ func (v *planView) unselected(p *planPicker, first string) (count int, dependent
 	return count, dependent
 }
 
-func planDetailWindow(v *planView, p *planPicker, width, height int) []string {
-	rows := planDetails(v, v.snapshot.Plan.Steps[p.focus], width)
+func (m *Model) planDetailWindow(v *planView, p *planPicker, width, height int) []string {
+	rows := m.planDetails(v, v.snapshot.Plan.Steps[p.focus], width)
 	from := min(p.scroll, max(0, len(rows)-height))
 	return rows[from:min(len(rows), from+height)]
 }
 
-func planDetails(v *planView, s sdk.PlanStep, width int) []string {
+func (m *Model) planDetails(v *planView, s sdk.PlanStep, width int) []string {
 	rows := wrapped(oneLine(s.Title), width)
 	rows = append(rows, wrapped(oneLine(s.Description), width)...)
 	rows = append(rows, "")
@@ -742,7 +780,7 @@ func planDetails(v *planView, s sdk.PlanStep, width int) []string {
 			return
 		}
 		const labelWidth = 10
-		prefix := paint(x.Muted, fit(label, labelWidth))
+		prefix := m.paint(x.Muted, fit(label, labelWidth))
 		for i, line := range wrapped(value, width-labelWidth) {
 			if i != 0 {
 				prefix = strings.Repeat(" ", labelWidth)

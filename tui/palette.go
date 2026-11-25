@@ -40,7 +40,7 @@ func paletteGroupFor(a registeredAction) paletteGroup {
 		return palettePrompt
 	case coreID + ".details", coreID + ".copy", coreID + ".code", expandRowID:
 		return paletteView
-	case coreID + ".quit":
+	case coreID + ".quit", themesID:
 		return paletteApp
 	case coreID + ".close":
 		return paletteThread
@@ -170,7 +170,7 @@ func (m *Model) filterInput(query string, w int, placeholder string) (text strin
 	if n := stringWidth(s); n > room {
 		s = ansi.TruncateLeft(s, n-room+1, "…")
 	}
-	label := paint(x.Accent, "› ")
+	label := m.paint(x.Accent, "› ")
 	if s == "" {
 		return label + m.control(ansi.Truncate(placeholder, max(0, w-2), "…")), 2
 	}
@@ -191,8 +191,8 @@ func (m *Model) paletteRows(d *dialog, w, h int) ([]string, []int) {
 		return nil, nil
 	}
 	if h >= 3 {
-		title := paint(x.Accent, d.title)
-		add(title+paint(x.Muted, " "+strings.Repeat("─", max(0, w-stringWidth(title)-1))), -1)
+		title := m.paint(x.Accent, d.title)
+		add(title+m.paint(x.Muted, " "+strings.Repeat("─", max(0, w-stringWidth(title)-1))), -1)
 	}
 	if h >= 2 {
 		filter, _ := m.paletteInput(d.query, w)
@@ -213,7 +213,7 @@ func (m *Model) paletteRows(d *dialog, w, h int) ([]string, []int) {
 	count := len(d.filtered)
 	start, end := 0, 0
 	if count == 0 {
-		add(paint(x.Muted, "No commands match"), -1)
+		add(m.paint(x.Muted, "No commands match"), -1)
 	} else {
 		// Find the earliest start that still leaves room for the selected row.
 		// Only inspect as many items as we can possibly show.
@@ -238,12 +238,12 @@ func (m *Model) paletteRows(d *dialog, w, h int) ([]string, []int) {
 				if len(rows)+1 >= h {
 					break // no orphaned heading at the bottom
 				}
-				add(paint(x.Muted, item.group.String()), -1)
+				add(m.paint(x.Muted, item.group.String()), -1)
 				previous = item.group
 			}
 			line := m.paletteActionRow(item.Choice, end == selected, w)
 			if end == selected && m.theme.Fills {
-				line = fill(fit(line, w), blendPalette(m.palette.background, m.palette.colors[4], .15))
+				line = fill(fit(line, w), m.palette.selected)
 			}
 			add(line, end)
 		}
@@ -305,9 +305,9 @@ func (m *Model) paletteActionRow(c x.Choice, selected bool, width int) string {
 	}
 	name := ansi.Truncate(prefix+oneLine(c.Label), max(1, width-keyWidth-gap), "…")
 	if keyWidth == 0 {
-		return paint(tone, name)
+		return m.paint(tone, name)
 	}
-	return fit(paint(tone, name), width-keyWidth) + m.control(key)
+	return fit(m.paint(tone, name), width-keyWidth) + m.control(key)
 }
 
 func (m *Model) paletteCursor(d *dialog, left, top, width, height int, framed bool) *tea.Cursor {

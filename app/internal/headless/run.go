@@ -70,7 +70,10 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 	if o.interactive(inputTTY, term.IsTerminal(int(out.Fd()))) {
 		return report(openUI(ctx, o.ui))
 	}
-	if o.uiFlags {
+	if o.uiFlags && !(o.command == restartBackend && o.restartOpen) {
+		if o.ui.Theme != "" {
+			return report(errors.New("--theme requires the interactive TUI"))
+		}
 		return report(errors.New("--local, --fills, --images and --motion require the interactive TUI"))
 	}
 	if o.command == printAnswer {

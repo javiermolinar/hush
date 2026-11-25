@@ -94,6 +94,28 @@ resolves for the active thread’s next submission. The inspector lists paths,
 not contents. Hush [discovers skills](backend/README.md#standalone-skills) from
 personal roots and trusted workspaces. Use `/skills` to stage one without submitting.
 
+## TUI themes
+
+Hush uses the terminal palette by default. Open `?` → **Themes** → **Copy starter JSON**,
+paste it into `~/.hush/themes/<name>.json`, and edit it in your editor. For example:
+
+```json
+{"version":1,"base":"terminal","colors":{"accent":"#8b9df5","syntax_keyword":"#c69af7"}}
+```
+
+Use a lowercase name with letters, digits, hyphens or underscores (starting with a letter
+or digit). The starter lists every supported foreground role. Remove any role to inherit
+the terminal default. The client rejects unknown roles, non-hex colors, and settings other
+than `version`, `base`, and `colors`.
+
+Reopen **Themes** to load the file. Use ↑/↓ to preview, Enter to save the choice locally,
+or Esc to restore the previous theme without saving. `hush --theme NAME` overrides the saved
+choice for that launch; `hush --theme terminal` always uses the terminal palette. If the
+override is invalid, Hush reports the error and keeps the saved choice if it is valid.
+The terminal still owns the background; custom RGB needs truecolor and a
+reported background with sufficient contrast. `NO_COLOR` suppresses custom colors and fills.
+`--fills off` (the automatic default in Rex) leaves backgrounds unpainted.
+
 ## Restart the local backend
 
 Run `hush restart` to shut down the local backend and wait for its replacement.

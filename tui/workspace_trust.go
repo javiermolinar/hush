@@ -256,7 +256,7 @@ func (m *Model) workspaceTrustRows(wt *workspaceTrustDialog, w, h int) (rows []s
 		if wt.trusted {
 			label, tone, reserved = "Trusted workspace", x.Good, reserved-1
 		}
-		add(paint(tone, label), -1)
+		add(m.paint(tone, label), -1)
 		for _, line := range access {
 			add(m.control(line), -1)
 		}
@@ -279,16 +279,16 @@ func (m *Model) workspaceTrustRows(wt *workspaceTrustDialog, w, h int) (rows []s
 			return rows, targets
 		}
 	default:
-		add(paint(x.Warning, "Workspace trust"), -1)
+		add(m.paint(x.Warning, "Workspace trust"), -1)
 		if wt.notice != "" {
-			add(paint(x.Warning, wt.notice), -1)
+			add(m.paint(x.Warning, wt.notice), -1)
 		}
 		add(m.control("On the backend host, run:"), -1)
 		for _, line := range strings.Split(ansi.Wrap("hush trust grant --cwd PATH", w, ""), "\n") {
 			add(m.control(line), -1)
 		}
 		if wt.cwd != "" {
-			add(paint(x.Muted, "PATH = "+gitReviewScope(wt.cwd, "", w-7)), -1)
+			add(m.paint(x.Muted, "PATH = "+gitReviewScope(wt.cwd, "", w-7)), -1)
 		}
 	}
 	add(m.keyHint("esc", "close"), -1)

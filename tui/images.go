@@ -155,7 +155,7 @@ func (m *Model) recordImageRows(ctx x.RenderContext, t *threadState, r *record, 
 }
 
 func (m *Model) imageRows(ref sdk.ImageRef, w int, prefix string, expanded bool) []displayRow {
-	summary := displayRow{text: prefix + paint(x.Muted, "▣ image")}
+	summary := displayRow{text: prefix + m.paint(x.Muted, "▣ image")}
 	kitty := m.canInlineImages()
 	if !m.images.capable || m.images.mode == ImageNone || !kitty && !expanded {
 		return []displayRow{summary}
@@ -167,7 +167,7 @@ func (m *Model) imageRows(ref sdk.ImageRef, w int, prefix string, expanded bool)
 		return []displayRow{summary}
 	}
 	if asset.pixels == nil {
-		return []displayRow{{text: prefix + paint(x.Muted, "▣ image unavailable")}}
+		return []displayRow{{text: prefix + m.paint(x.Muted, "▣ image unavailable")}}
 	}
 	cols, rows := previewCells(asset.pixels, need.width)
 	if cols <= 0 || rows <= 0 {

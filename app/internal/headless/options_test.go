@@ -62,6 +62,8 @@ func TestInteractiveRouting(t *testing.T) {
 		{nil, true, true, true},
 		{[]string{"--thread", "7", "--socket", "/tmp/sock", "--local=false", "--motion=false"}, true, true, true},
 		{[]string{"--backend", "/tmp/bundle.mjs"}, true, true, true},
+		{[]string{"--theme=violet"}, true, true, true},
+		{[]string{"--theme", "terminal"}, false, true, false},
 		{nil, false, true, false},
 		{nil, true, false, false},
 		{[]string{"status", "--json"}, true, true, false},
@@ -82,9 +84,28 @@ func TestInteractiveRouting(t *testing.T) {
 			t.Errorf("%v (tty %t/%t): interactive=%t error=%v, want %t", tc.args, tc.inTTY, tc.outTTY, o.interactive(tc.inTTY, tc.outTTY), err, tc.want)
 		}
 	}
-	o, err := parse([]string{"--thread", "7", "--socket", "/tmp/sock", "--local=false", "--fills=off", "--images=none", "--motion=false"})
-	if err != nil || o.ui.Thread != "7" || o.ui.Socket != "/tmp/sock" || o.ui.Local == nil || *o.ui.Local || o.ui.Motion || o.ui.Fills != "off" || o.ui.Images != "none" {
+	o, err := parse([]string{"--thread", "7", "--socket", "/tmp/sock", "--local=false", "--fills=off", "--images=none", "--motion=false", "--theme=violet"})
+	if err != nil || o.ui.Thread != "7" || o.ui.Socket != "/tmp/sock" || o.ui.Local == nil || *o.ui.Local || o.ui.Motion || o.ui.Fills != "off" || o.ui.Images != "none" || o.ui.Theme != "violet" || !o.uiFlags {
 		t.Fatalf("interactive options = %+v, %v", o.ui, err)
+	}
+}
+
+func TestThemeFlagDoesNotApplyToHeadlessCommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"--theme=violet", "--print", "test"}, {"status", "--theme=violet"},
+		{"--theme=violet", "schedule", "list"}, {"--theme=violet", "--mode=protocol"},
+		{"--theme=violet", "restart"}, {"--theme=violet", "--", "restart"},
+	} {
+		if _, err := parse(args); err == nil || !strings.Contains(err.Error(), "--theme requires the interactive TUI") {
+			t.Errorf("parse(%v): %v", args, err)
+		}
+	}
+	if _, err := parse([]string{"--theme="}); err == nil {
+		t.Fatal("empty theme name accepted")
+	}
+	o, err := parse([]string{"restart", "--open", "--theme=terminal"})
+	if err != nil || o.ui.Theme != "terminal" || !o.restartOpen {
+		t.Fatalf("restart --open flags: %+v %v", o, err)
 	}
 }
 

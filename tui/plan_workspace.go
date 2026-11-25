@@ -283,18 +283,18 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 			status, tone := workspacePlanStatus(r)
 			prefix := "  "
 			if d.selected == i {
-				prefix = paint(x.Accent, "› ")
+				prefix = m.paint(x.Accent, "› ")
 			}
 			if v := t.plan.snapshot; v.Plan != nil && v.Plan.ID == r.ID && v.RunAvailability != sdk.PlanRunPinned {
-				prefix += paint(x.Accent, "• ")
+				prefix += m.paint(x.Accent, "• ")
 			} else {
 				prefix += "  "
 			}
-			badge := paint(tone, status) + m.control(fmt.Sprintf("  %d/%d · r%d", r.Verified, r.Total, r.Revision))
+			badge := m.paint(tone, status) + m.control(fmt.Sprintf("  %d/%d · r%d", r.Verified, r.Total, r.Revision))
 			left := max(4, w-stringWidth(badge)-2)
 			line := fit(ansi.Truncate(prefix+oneLine(r.Title), left, "…"), left) + "  " + badge
 			if d.selected == i && m.theme.Fills {
-				line = fill(fit(line, w), blendPalette(m.palette.background, m.palette.colors[4], .15))
+				line = fill(fit(line, w), m.palette.selected)
 			}
 			add(line, i)
 		}
@@ -322,7 +322,7 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 		keys += "  p pinned revision"
 		compact += "  p pinned"
 	}
-	add(paint(x.Muted, m.hintRow(w, keys, compact, "esc close")), -1)
+	add(m.paint(x.Muted, m.hintRow(w, keys, compact, "esc close")), -1)
 	if n >= 6 {
 		add("", -1)
 	}
@@ -565,7 +565,7 @@ func (m *Model) planHistoryRows(d *dialog, w, n int) (rows []string, targets []i
 			add(m.control(line))
 		}
 	}
-	add(paint(x.Muted, m.hintRow(w, "↑↓ scroll  ← latest  → older  r refresh", "↑↓ scroll", "esc back")))
+	add(m.paint(x.Muted, m.hintRow(w, "↑↓ scroll  ← latest  → older  r refresh", "↑↓ scroll", "esc back")))
 	if n >= 5 {
 		add("")
 	}
