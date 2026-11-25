@@ -53,8 +53,49 @@ type planHistoryPicker struct {
 	loading, failed bool
 }
 
+func (m *Model) openDraftPlan(r ownerRoute) tea.Cmd {
+	if len(m.overlays) >= maxDialogs {
+		return nil
+	}
+	t := m.threads[r.owner]
+	if t.sending || t.attaching {
+		return m.notifyRoute(r, "Wait for the pending request", x.Warning)
+	}
+	d := &dialog{route: r, token: m.token(), promptDock: true, planWorkspace: &planWorkspacePicker{}}
+	show := m.pushDialog(d)
+	t.sending = true // serialize with first-prompt creation, even if the picker is dismissed
+	backend, options := m.backend, m.options.NewThread
+	model, thinking := t.info.Model, t.info.Thinking
+	create := m.startWork(r, func(ctx context.Context) (any, error) {
+		call, cancel := context.WithTimeout(ctx, menuTimeout)
+		defer cancel()
+		return createDraftThread(call, backend, options, model, thinking)
+	}, func(value any, err error, _ *int) tea.Cmd {
+		t.sending = false
+		if !m.foreground(r) || m.focusedDialog() != d {
+			return nil
+		}
+		if err != nil {
+			message := "Could not open plans: " + err.Error()
+			if isIndeterminate(err) {
+				message = "Thread creation unconfirmed; check /threads before retrying."
+			}
+			return tea.Batch(m.closeDialog(d, nil, false), m.notifyRoute(r, message, x.Warning))
+		}
+		id := value.(sdk.ID)
+		m.freezeIntro(t)
+		dst := m.prepareDraftThread(id, model, thinking)
+		dst.draft, dst.attachments, dst.stagedSkill = m.editor.promptDraft, t.attachments, t.stagedSkill
+		m.editor.set("")
+		t.attachments, t.stagedSkill = nil, stagedSkill{}
+		return tea.Batch(m.switchThread(id), m.openPlanWorkspace(m.route(id, r.extension)))
+	}, nil)
+	return tea.Batch(show, create)
+}
+
 func (m *Model) openPlanWorkspace(r ownerRoute) tea.Cmd {
-	if !m.foreground(r) || !m.planAvailable() || len(m.overlays) >= maxDialogs {
+	// A just-created thread may not have received its transcript feed yet.
+	if !m.foreground(r) || !r.owner.Valid() || len(m.overlays) >= maxDialogs {
 		return nil
 	}
 	d := &dialog{route: r, token: m.token(), promptDock: true, planWorkspace: &planWorkspacePicker{}}
@@ -74,7 +115,7 @@ func awaitPlanWorkspace(ctx context.Context, lease uint64, source <-chan sdk.Pla
 
 func (m *Model) watchPlanWorkspace(d *dialog, page int) tea.Cmd {
 	b, ok := m.backend.(planWorkspaceBackend)
-	if !ok {
+	if !ok || !d.route.owner.Valid() {
 		return nil
 	}
 	p := d.planWorkspace
@@ -177,6 +218,8 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	title := "Workspace plans"
 	if path := t.info.Workspace; path != "" {
 		title += " · " + oneLine(filepath.Base(path))
+	} else if d.route.owner == "" {
+		title += " · " + oneLine(filepath.Base(m.options.NewThread.CWD))
 	}
 	if n >= 8 {
 		add("", -1)

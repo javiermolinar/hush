@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -19,7 +19,7 @@ async function terminalPlan(t, mode) {
   const faux = mode === "faux", scoped = mode === "scoped", batch = mode === "fileset";
   const promptText = batch ? fileSetRequest : scoped ? executionRequest : createRequest;
   const startingFiles = batch ? { ...preparedFiles, ...fileSetReference } : scoped ? preparedFiles : {};
-  const home = await mkdtemp("/tmp/hush-plan-pty-");
+  const home = await realpath(await mkdtemp("/tmp/hush-plan-pty-"));
   const agentDir = join(home, ".hush"), dataDir = join(home, "data"), cwd = join(home, "work");
   const socket = join(dataDir, "hush.sock");
   let host, peer, observer, threadId;
@@ -99,8 +99,17 @@ async function terminalPlan(t, mode) {
       assert.deepEqual(current.progress, []);
       assert.deepEqual(current.plan.steps, draftArgs().steps);
     }
-    const { entries } = okay(await peer.send("history", { threadId, limit: 64, range: { kind: "before", beforeEntryId: null } }));
+    const history = async id => okay(await peer.send("history", { threadId: id, limit: 64, range: { kind: "before", beforeEntryId: null } }));
+    const { entries } = await history(threadId);
     assert.equal(entries.filter(e => e.kind === "pi.user").length, 1, "Enter admits a typed plan turn, not a normal chat submission");
+    if (faux) {
+      const { runs } = okay(await peer.send("ext.planWorkspace.history", { threadId, planId: current.plan.id }));
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].id, current.run.id);
+      assert.notEqual(runs[0].threadId, threadId, "the startup picker runs in a new thread, not the draft's thread");
+      const runHistory = await history(runs[0].threadId);
+      assert.ok(runHistory.entries.every(e => e.kind !== "pi.user"), "no chat message was needed to open the picker");
+    }
     if (mode === "draft") {
       assert.equal(provider.requests.filter(r => r.text.startsWith("Plan review brief\n")).length, 1);
       const view = okay(await peer.send("ext.planReview.wait", { threadId, planId: current.plan.id, revision: 1 }));
@@ -139,7 +148,7 @@ async function terminalPlan(t, mode) {
   }
 }
 
-test("terminal UI runs the selected fixture steps with one Enter", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI opens /plan at startup and runs the selected steps without a first message", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
 test("terminal UI saves and independently reviews a plan on a draft-only host", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
 test("one Enter visibly verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));
 

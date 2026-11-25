@@ -41,12 +41,14 @@ shell, or general test-suite execution. Prose `checks` are not executed.
 
 ## Browse, close, and reopen
 
-`/plan` first lists plans from the active thread's recorded working directory,
-not just the plan bound to that thread. The list shows status, numbered revision,
-and verified task count. Open plans precede closed plans. Enter opens the focused
-plan without attaching it or starting work. For a plan from another thread,
-`a` explicitly makes it the current plan for this thread; `p` in the list opens
-this thread's historical pin when it has one. Neither action authorizes Run.
+`/plan` lists plans from the active thread's recorded working directory, not
+just the plan bound to that thread. At the local startup prompt, `/plan` creates
+an empty thread in the launch directory and opens the list without sending a
+message. The list shows status, numbered revision, and verified task count. Open
+plans precede closed plans. Enter opens the focused plan without attaching it or
+starting work. For a plan from another thread, `a` explicitly makes it the current
+plan for this thread; `p` in the list opens this thread's historical pin when it
+has one. Neither action authorizes Run.
 
 `c` closes a plan or reopens an incomplete closed plan. Closing blocks new Run
 admissions immediately and lets the currently submitted task settle. It does

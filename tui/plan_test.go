@@ -245,6 +245,73 @@ func TestScopedPlanSelectionAndStop(t *testing.T) {
 	}
 }
 
+func TestDraftPlanCommandNeedsLocalWorkspaceCapability(t *testing.T) {
+	m := modelFor(t, Options{WorkspaceLocal: true})
+	m.editor.set("/plan")
+	for _, check := range []struct {
+		features x.Features
+		local    bool
+		visible  bool
+	}{
+		{0, true, false},
+		{x.Plans, true, false},
+		{x.Plans | x.PlanWorkspace, false, false},
+		{x.Plans | x.PlanWorkspace, true, true},
+	} {
+		m.menuFeaturesFromBackend, m.options.WorkspaceLocal = check.features, check.local
+		if got := len(m.slashMatches()) == 1; got != check.visible {
+			t.Fatalf("/plan visibility = %v with features %v and local = %v", got, check.features, check.local)
+		}
+	}
+}
+
+type draftPlanFixtureBackend struct {
+	inertBackend
+	create func(string, sdk.Model, string) (sdk.Thread, error)
+}
+
+func (b draftPlanFixtureBackend) NewCatalogThread(_ context.Context, cwd string, model sdk.Model, thinking string) (sdk.Thread, error) {
+	return b.create(cwd, model, thinking)
+}
+
+func TestDraftPlanOpenPreservesDraftAndRespectsDismissal(t *testing.T) {
+	for _, name := range []string{"open", "dismiss"} {
+		t.Run(name, func(t *testing.T) {
+			m := modelFor(t, Options{WorkspaceLocal: true})
+			m.menuFeaturesFromBackend = x.Plans | x.PlanWorkspace
+			model := sdk.Model{Provider: "fixture", ModelID: "test"}
+			draft := m.threads[""]
+			draft.info.Model, draft.info.Thinking = model, "high"
+			m.editor.set("keep this draft")
+			m.backend = draftPlanFixtureBackend{create: func(cwd string, chosen sdk.Model, thinking string) (sdk.Thread, error) {
+				if cwd != "/workspace" || chosen != model || thinking != "high" {
+					t.Fatalf("thread creation lost its workspace or model: %q, %+v, %q", cwd, chosen, thinking)
+				}
+				return sdk.Thread{ID: "42"}, nil
+			}}
+			cmd := m.runAction(m.host.byID[planID], "")
+			if d := m.focusedDialog(); d == nil || d.planWorkspace == nil || m.active != "" {
+				t.Fatal("expected the workspace picker to wait for thread creation")
+			}
+			if name == "dismiss" {
+				press(m, tea.KeyEscape, 0)
+			}
+			workflowWork(t, m, cmd)
+			if draft.sending || m.editor.value() != "keep this draft" {
+				t.Fatal("opening the picker lost or locked the current draft")
+			}
+			d := m.focusedDialog()
+			if name == "dismiss" {
+				if m.active != "" || d != nil {
+					t.Fatal("a late reply reopened the picker or changed threads")
+				}
+			} else if m.active != "42" || d == nil || d.planWorkspace == nil || d.route.owner != "42" {
+				t.Fatal("the workspace picker did not follow the new thread")
+			}
+		})
+	}
+}
+
 func TestPlanWorkspaceDockAndStatuses(t *testing.T) {
 	m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
 	m.Update(tea.WindowSizeMsg{Width: 104, Height: 24})

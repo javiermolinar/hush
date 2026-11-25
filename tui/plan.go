@@ -139,7 +139,22 @@ func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
 	return awaitPlanWatch(f, msg.source)
 }
 
+func (m *Model) draftPlanAvailable() bool {
+	// With no thread feed, use negotiated capabilities and the local launch
+	// directory. An attached client cannot assume its cwd is on the host.
+	return m.active == "" && m.menuFeaturesFromBackend.Has(x.Plans|x.PlanWorkspace) && m.introScope("").CWD != ""
+}
+
 func (m *Model) openPlan(r ownerRoute) tea.Cmd {
+	if !m.foreground(r) {
+		return nil
+	}
+	if m.draftPlanAvailable() {
+		return m.openDraftPlan(r)
+	}
+	if !m.planAvailable() {
+		return nil
+	}
 	if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
 		return m.openPlanWorkspace(r)
 	}

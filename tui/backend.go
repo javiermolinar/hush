@@ -493,6 +493,27 @@ func pageLimit(n int) int {
 	return min(n, 100)
 }
 
+// createDraftThread materializes the startup prompt using its staged model and
+// thinking level, if any. It does not submit an input.
+func createDraftThread(ctx context.Context, backend Backend, options sdk.NewThread, model sdk.Model, thinking string) (sdk.ID, error) {
+	var created sdk.Thread
+	var err error
+	if model == (sdk.Model{}) {
+		created, err = backend.NewThread(ctx, options)
+	} else if catalog, ok := backend.(modelCatalogDraftBackend); ok {
+		created, err = catalog.NewCatalogThread(ctx, options.CWD, model, thinking)
+	} else {
+		return "", extension.ErrUnavailable
+	}
+	if err != nil {
+		return "", err
+	}
+	if !created.ID.Valid() {
+		return "", &sdk.TransportError{Err: sdk.ErrProtocol, Indeterminate: true}
+	}
+	return created.ID, nil
+}
+
 func (m *Model) clientJob(r ownerRoute, operation extension.Operation) func(context.Context) (any, error) {
 	backend := m.backend
 	base := m.options.NewThread

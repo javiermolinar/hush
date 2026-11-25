@@ -232,7 +232,7 @@ func (m *Model) menuFeatures() x.Features {
 	if _, ok := m.skillScope(m.active); ok {
 		f |= x.Skills
 	}
-	if !m.planAvailable() {
+	if !m.planAvailable() && !m.draftPlanAvailable() {
 		f &^= x.Plans
 	}
 	if m.contextAvailable() {

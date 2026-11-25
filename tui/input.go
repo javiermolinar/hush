@@ -780,24 +780,11 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 	return m.startWork(r, func(ctx context.Context) (any, error) {
 		out := sendResult{id: r.owner}
 		if out.id == "" {
-			var created sdk.Thread
-			var err error
-			if model != (sdk.Model{}) {
-				catalog, ok := backend.(modelCatalogDraftBackend)
-				if !ok {
-					return out, extension.ErrUnavailable
-				}
-				created, err = catalog.NewCatalogThread(ctx, options.CWD, model, thinking)
-			} else {
-				created, err = backend.NewThread(ctx, options)
-			}
+			id, err := createDraftThread(ctx, backend, options, model, thinking)
 			if err != nil {
 				return out, err
 			}
-			if !created.ID.Valid() {
-				return out, &sdk.TransportError{Err: sdk.ErrProtocol, Indeterminate: true}
-			}
-			out.id = created.ID
+			out.id = id
 		}
 		if err := ctx.Err(); err != nil {
 			return out, err
@@ -820,24 +807,7 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 		show := m.foreground(r)
 		if r.owner == "" && out.id.Valid() {
 			target = out.id
-			dst := m.ensureThread(target)
-			if !dst.observed && dst.footer.workspace == "" {
-				dst.footer = t.footer // preview until this thread's own report arrives
-				if model != (sdk.Model{}) {
-					if dst.footer.model != model {
-						dst.footer.context = extension.ContextUse{}
-					}
-					dst.footer.model, dst.footer.thinking = model, thinking
-				}
-			}
-			if model != (sdk.Model{}) {
-				t.info.Model, t.info.Thinking = sdk.Model{}, ""
-				t.revision++
-			}
-			if t.intro != nil {
-				dst.intro, t.intro = t.intro, nil
-				t.following, t.anchor = true, rowAnchor{}
-			}
+			dst := m.prepareDraftThread(target, model, thinking)
 			if show {
 				if dst.draft.text == "" {
 					dst.draft = m.editor.promptDraft

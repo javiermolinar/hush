@@ -488,6 +488,30 @@ func (m *Model) ensureThread(id sdk.ID) *threadState {
 	return t
 }
 
+// prepareDraftThread transfers the startup presentation to a materialized
+// thread while its own feed and metadata are loading.
+func (m *Model) prepareDraftThread(id sdk.ID, model sdk.Model, thinking string) *threadState {
+	t, dst := m.threads[""], m.ensureThread(id)
+	if !dst.observed && dst.footer.workspace == "" {
+		dst.footer = t.footer
+		if model != (sdk.Model{}) {
+			if dst.footer.model != model {
+				dst.footer.context = extension.ContextUse{}
+			}
+			dst.footer.model, dst.footer.thinking = model, thinking
+		}
+	}
+	if model != (sdk.Model{}) {
+		t.info.Model, t.info.Thinking = sdk.Model{}, ""
+		t.revision++
+	}
+	if t.intro != nil {
+		dst.intro, t.intro = t.intro, nil
+		t.following, t.anchor = true, rowAnchor{}
+	}
+	return dst
+}
+
 func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 	if id == m.active {
 		return nil

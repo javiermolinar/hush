@@ -14,10 +14,9 @@ import time
 binary, socket, thread, mode, draft = sys.argv[1:]
 master, slave = os.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 26, 124, 0, 0))
-child = subprocess.Popen(
-    [binary, "--socket", socket, "--thread", thread, "--fills", "off"],
-    stdin=slave, stdout=slave, stderr=slave,
-)
+args = [binary, "--socket", socket, "--fills", "off"]
+args += ["--local"] if mode == "faux" else ["--thread", thread]
+child = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave)
 ansi = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*?(?:\x07|\x1b\\)|[()][A-Za-z0-9]|[=>])")
 pending = bytearray()
 
@@ -108,9 +107,15 @@ try:
         os.write(master, b"c")
         wait_for("Pending", "close plan")
     else:
-        wait_for("Saved Workspace profiles")
-        open_plan("Workspace profiles", "0/4 · r1")
-        wait_for("Plan · r1 · Workspace profiles")
+        wait_for("ask anything")
+        os.write(master, b"/plan")
+        wait_for("/plan", "Open plan")
+        os.write(master, b"\r")
+        wait_for("Workspace plans", "Workspace profiles", "0/4 · r1")
+        os.write(master, b"\r")
+        wait_for("Plan · r1 · Workspace profiles", "a Use in this thread")
+        os.write(master, b"a")
+        wait_for("Select the steps to run")
         os.write(master, b"\x1b[B ")
         wait_for("Blocked · select Save a profile")
         os.write(master, b"\x1b[A ")
