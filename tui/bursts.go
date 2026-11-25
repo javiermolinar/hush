@@ -45,13 +45,13 @@ const (
 )
 
 type toolBurst struct {
-	owner                  *record
-	slot                   int // message on owner at which the first tool result was committed
-	children               []toolChild
-	order                  [3][]int // stable child indexes: failures, edits, then other results
-	files                  map[string]struct{}
-	reads, commands, other int
-	start, end             uint64
+	owner                             *record
+	slot                              int // message on owner at which the first tool result was committed
+	children                          []toolChild
+	order                             [3][]int // stable child indexes: failures, edits, then other results
+	files                             map[string]struct{}
+	reads, commands, proposals, other int
+	start, end                        uint64
 }
 
 type burstView struct {
@@ -119,6 +119,11 @@ func (t *threadState) projectRecord(p *activityProjection, r *record) bool {
 	r.voice = voiceAgent
 	r.readableThought = false
 	e := r.entry.Record
+	if e.Kind == planReviewEntry {
+		// A background review does not break the current turn's tool burst.
+		r.visible = true
+		return true
+	}
 	visible := t.customEntries[r.entry.Kind()] || r.entry.Truncated || len(e.Messages) == 0 && e.Kind != "model"
 	for i, msg := range e.Messages {
 		if !r.hasImages && slices.ContainsFunc(msg.Blocks, isImageBlock) {
@@ -190,8 +195,12 @@ func (b *toolBurst) add(r *record, i int, msg sdk.Message, call callInfo) {
 	switch msg.Name {
 	case "bash":
 		b.commands++
-	case "read":
+	case "read", "hush_plan_read_file":
 		b.reads++
+	case "hush_plan_replace_text", "hush_plan_stage_file":
+		if !failed {
+			b.proposals++
+		}
 	case "edit", "write":
 		if !failed {
 			group = editedChild
@@ -412,10 +421,11 @@ func (b *toolBurst) summary(arrow string, width int) x.Line {
 		reads = iota
 		commands
 		edits
+		proposals
 		other
 		failures
 	)
-	var stats [5]x.Span
+	var stats [6]x.Span
 	if b.reads > 0 {
 		stats[reads] = x.Span{Text: fmt.Sprintf("read %d", b.reads), Tone: x.Muted}
 	}
@@ -427,6 +437,9 @@ func (b *toolBurst) summary(arrow string, width int) x.Line {
 	} else if n := len(b.order[editedChild]); n > 0 {
 		stats[edits] = x.Span{Text: nounCount(n, "edit"), Tone: x.Warning}
 	}
+	if b.proposals > 0 {
+		stats[proposals] = x.Span{Text: nounCount(b.proposals, "proposal"), Tone: x.Muted}
+	}
 	if b.other > 0 {
 		stats[other] = x.Span{Text: fmt.Sprintf("%d other", b.other), Tone: x.Muted}
 	}
@@ -437,7 +450,7 @@ func (b *toolBurst) summary(arrow string, width int) x.Line {
 	// summary. Choose complete segments before drawing or reserving duration.
 	gap := x.Span{Text: " · ", Tone: x.Muted}
 	space := width - stringWidth(arrow) + stringWidth(gap.Text)
-	for _, i := range [...]int{failures, edits, reads, commands, other} {
+	for _, i := range [...]int{failures, edits, proposals, reads, commands, other} {
 		if stats[i].Text == "" {
 			continue
 		}
@@ -497,6 +510,14 @@ func toolResultText(msg sdk.Message) string {
 }
 
 func toolActionLabel(tool x.Tool) string {
+	switch tool.Name {
+	case "hush_plan_read_file":
+		return "Read assigned file"
+	case "hush_plan_replace_text":
+		return "Propose replacement"
+	case "hush_plan_stage_file":
+		return "Propose file contents"
+	}
 	var args struct{ Command, Path string }
 	if json.Unmarshal([]byte(tool.ArgumentsJSON), &args) == nil {
 		if tool.Name == "bash" && args.Command != "" {

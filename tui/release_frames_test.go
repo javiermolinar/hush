@@ -271,6 +271,19 @@ func TestReleaseFrames(t *testing.T) {
 				!strings.Contains(body, deployCWD) || !strings.Contains(body, deployCheckout) {
 				t.Fatal("the directory chooser did not show both checkout paths")
 			}
+			press(m, tea.KeyEscape, 0)
+			press(m, tea.KeyEscape, 0)
+			planPickerFixture(m, s)
+			press(m, tea.KeyDown, 0)
+			press(m, tea.KeySpace, 0)
+			if body := shot("plan-blocked"); !strings.Contains(body, "Blocked · select Save a profile") {
+				t.Fatal("the plan picker did not explain the missing prerequisite")
+			}
+			press(m, tea.KeyUp, 0)
+			press(m, tea.KeySpace, 0)
+			if body := shot("plan-selection"); !strings.Contains(body, "Run 2 @ r7") || !strings.Contains(body, "Save a profile → Restore saved profiles") {
+				t.Fatal("the plan picker did not preview the selected run")
+			}
 		})
 	}
 }

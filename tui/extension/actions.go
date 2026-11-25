@@ -138,6 +138,15 @@ const Settings Features = 1 << 15
 // LoadedContext enables the host’s read-only instruction-source inspector.
 const LoadedContext Features = 1 << 16
 
+// Plans enables the negotiated plan picker for the active thread.
+const Plans Features = 1 << 17
+
+// PlanWorkspace enables the plan inventory for the active workspace.
+const PlanWorkspace Features = 1 << 18
+
+// PlanReview enables independent advisory review of a saved plan revision.
+const PlanReview Features = 1 << 19
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.

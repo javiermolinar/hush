@@ -117,7 +117,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "path-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning",
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "plan-picker", "plan-workspace", "plan-review", "image-preview", "queued-inputs", "expanded-reasoning",
 		// Contract cases; they run after the others so their garbage can't skew them.
 		"replica-streaming", "typing-1k", "typing-4k", "typing-16k", "typing-folded-paste", "image-typing"} {
 		t.Run(which, func(t *testing.T) {
@@ -269,6 +269,36 @@ func TestFrameBudget(t *testing.T) {
 					m.admit(m.route(m.active, menusID), stageSkillChoice(listed), &budget)
 				}
 			}
+			if which == "plan-workspace" {
+				rows := make([]sdk.PlanSummary, 48)
+				for i := range rows {
+					rows[i] = sdk.PlanSummary{ID: fmt.Sprint(i), Title: "Refresh saved workspace preferences", Revision: 3,
+						Verified: i % 5, Total: 5, Status: "pending", Closed: i >= 36}
+				}
+				m.pushDialog(&dialog{route: m.route(m.active, menusID), token: m.token(), promptDock: true,
+					planWorkspace: &planWorkspacePicker{ready: true, rows: rows, more: true}})
+			}
+			if which == "plan-review" {
+				findings := make([]sdk.PlanReviewFinding, 8)
+				for i := range findings {
+					findings[i] = sdk.PlanReviewFinding{Severity: "blocking", Area: "acceptance", StepID: fmt.Sprint(i),
+						Message: strings.Repeat("Make the acceptance check explicit. ", 10)}
+				}
+				m.pushDialog(&dialog{route: m.route(m.active, menusID), token: m.token(), promptDock: true,
+					planReview: &planReviewPicker{ready: true, title: "Refresh workspace preferences", target: sdk.PlanReviewTarget{Revision: 3},
+						view: sdk.PlanReviewView{Revision: 3, HeadRevision: 3, Review: &sdk.PlanReviewRecord{State: "complete", ReviewerThreadID: "24",
+							Report: &sdk.PlanReviewReport{Summary: "Acceptance is not fully specified.", Findings: findings}}}}})
+			}
+			if which == "plan-picker" {
+				planPickerFixture(m, s)
+				for len(s.plan.snapshot.Plan.Steps) < 24 {
+					n := len(s.plan.snapshot.Plan.Steps)
+					s.plan.snapshot.Plan.Steps = append(s.plan.snapshot.Plan.Steps, sdk.PlanStep{
+						ID: fmt.Sprint(n), Title: "Confirm plan behavior", Description: strings.Repeat("A long requirement needs to stay readable. ", 24),
+						Checks: []string{"Verified check"}, Thinking: "high",
+					})
+				}
+			}
 			if which == "loaded-context" {
 				var contents strings.Builder
 				for i := range 64 {
@@ -385,6 +415,16 @@ func TestFrameBudget(t *testing.T) {
 				case "file-picker", "path-picker", "skill-slash", "skill-sheet":
 					keys := [...]tea.KeyPressMsg{{Code: '0', Text: "0"}, {Code: tea.KeyBackspace}}
 					msg = keys[i%len(keys)]
+				case "plan-workspace":
+					msg = tea.KeyPressMsg{Code: tea.KeyDown}
+				case "plan-review":
+					if i%5 == 0 {
+						msg = tea.WindowSizeMsg{Width: 96 + i%3, Height: 24}
+					} else {
+						msg = tea.KeyPressMsg{Code: tea.KeyPgDown}
+					}
+				case "plan-picker":
+					msg = tea.KeyPressMsg{Code: []rune{tea.KeyDown, tea.KeySpace, tea.KeyTab, tea.KeyPgDown, tea.KeyTab}[i%5]}
 				case "loaded-context":
 					msg = tea.KeyPressMsg{Code: []rune{tea.KeyDown, tea.KeyPgDown, tea.KeyUp}[i%3]}
 				case "palette":

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
 import { createModels, InMemoryCredentialStore, type Models } from "@earendil-works/pi-ai";
 import {
-  createRegistry, Harness, hook, MemoryStorage, ROOT_CONVERSATION_ID, ToolTask, type AgentChange, type Conversation,
+  createRegistry, Harness, hook, LiveDoc, MemoryStorage, ROOT_CONVERSATION_ID, ToolTask, type AgentChange, type Conversation,
   type Extension, type HarnessSettings,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -27,6 +27,12 @@ import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
 import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
+import { Plans, fixtureExtensions, isPlanWorker, recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
+import { checkPlanAdmission, foregroundPlan, PlanForeground } from "./plan-turn.js";
+import { PlanReviews, planReviewExtension } from "./plan-review.js";
+import { planAuthor } from "./plan-author.js";
+import { planAcceptance, type PlanAcceptance } from "./plan-acceptance.js";
+import { PlanFiles } from "./plan-files.js";
 import { LoadedContext } from "./loaded-context.js";
 import { skillUnavailable, StandaloneSkills } from "./workspace-skills.js";
 import { readStandaloneSettings, StandaloneSettingsHost, standaloneModelDefault, standaloneSettingsView } from "./standalone-settings.js";
@@ -107,6 +113,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
   let workspaceFiles: WorkspaceFiles | undefined;
   let gitDiff: GitDiffService | undefined;
   let stopGrantWatch: (() => void) | undefined;
+  let acceptance: PlanAcceptance | undefined;
   let codemode: Awaited<ReturnType<typeof workspaceCodemode>> | undefined;
   let h: Harness | undefined, server: ReturnType<typeof createCoreServer> | undefined;
   let hushModels: Awaited<ReturnType<typeof loadModels>> | undefined;
@@ -130,6 +137,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       () => threadDirectory?.close(),
       () => h?.close(context),
       () => codemode?.sandbox.close(),
+      () => acceptance?.close(),
       () => wasm?.close(),
       () => hushModels?.writes.settle(),
       () => unlockRuntime?.(),
@@ -203,11 +211,24 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     if (config.dataDir && localSettings.codemode === true) {
       codemode = (await import("./codemode.js")).workspaceCodemode(wasm);
     }
+    const planEnabled = !!config.dataDir && !config.ephemeral && manifest?.format !== 1;
+    const fauxPlan = planEnabled && config.faux;
+    const browser = trust && config.dataDir ? await workspaceFileHelper() : undefined;
+    const planFiles = planEnabled && !config.faux && !modelIssue && browser && trust && config.dataDir
+      ? await PlanFiles.open(browser, trust, [config.agentDir, config.dataDir], cwd => {
+        gitDiff?.invalidate(cwd);
+        workspaceFiles?.invalidateSearch();
+      }) : undefined;
+    const author = planEnabled ? planAuthor(() => h!, cwd => resources.directory(cwd), fauxPlan, planFiles) : undefined;
     const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, coding,
-      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxTools] : [])];
-    const schedules = config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork) : undefined;
+      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxTools] : []), ...(author ? [author] : [])];
+    const planAdmission = planEnabled && !config.faux ? checkPlanAdmission : undefined;
+    const schedules = config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork,
+      planAdmission && (async (tx, id) => !!await foregroundPlan(tx, id))) : undefined;
     const checkpoints = trust && config.dataDir ? new CheckpointService(() => h!, config.dataDir, trust) : undefined;
     for (const extension of base) registry.install(extension);
+    if (fauxPlan) for (const extension of fixtureExtensions) registry.install(extension);
+    if (planEnabled) registry.install(planReviewExtension);
     if (schedules) registry.install(schedules.extension);
     if (checkpoints) registry.install(checkpoints.extension);
     if (manifest?.format === 1) {
@@ -246,9 +267,22 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
         : "Selected model unavailable. Configure provider credentials on the backend host or choose another with /model.");
       throw error;
     } : undefined;
+    const scopedPlans = planFiles && scopedPlanExecution(planFiles, acceptance = planAcceptance(wasm), async (agent, ctx) => {
+      const model = agent.model;
+      await requireModel?.(model);
+      ctx.abortSignal?.throwIfAborted();
+      const available = model && runtime.getModel(model.provider, model.modelId);
+      if (!model || !available) throw new WireError("invalid_request");
+      return { model: { provider: model.provider, modelId: model.modelId }, thinking: agent.thinkingLevel ?? "off" };
+    });
+    if (scopedPlans) registry.install(scopedPlans.extension);
+    else if (planEnabled) registry.install(scopedRecovery);
     const host: NativeHost = {
-      defaults, requireModel,
+      defaults, requireModel, checkAdmission: planAdmission,
       validateSelection: nativeSelectionValidator(runtime, requireModel),
+      async checkMutation(conv, ctx) {
+        if (planEnabled && await isPlanWorker(h!, conv.id, ctx)) throw new WireError("not_found");
+      },
       async prepare({ threadId, cwd, text, skillToken }, ctx) {
         // Native text, images, Continue and Retry share this admission path.
         refuseWork?.();
@@ -268,7 +302,15 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     };
     const harness = h = await Harness.open(store, {
       models: runtime, registry, settings, readOnly: !!modelIssue,
-      env: async ({ cwd }, ctx) => {
+      env: async ({ cwd, conversationId, read }, ctx) => {
+        // Scoped tools use the file helper, not the normal work environment.
+        // A terminal reservation left by a fault must not restrict later chat.
+        const run = planAdmission && (await read.snapshot(PlanForeground, conversationId, ctx))?.run;
+        if (run) {
+          const task = await h!.getTask(run.id, ctx);
+          const live = run.turn && (await read.snapshot(LiveDoc, conversationId, ctx))?.run;
+          if (task && task.state.status !== "terminal" || run.turn && live && live.first === run.turn.entry) return undefined;
+        }
         const path = resources.directory(cwd);
         // Durable builds the env for every tool attempt, also after a wake or
         // recovery that skips beforeTool. Do not hand a tool an unchecked cwd.
@@ -277,6 +319,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       },
       onReport: () => warn("harness_report"),
     }, context);
+    if (planAdmission && !modelIssue) await recoverPlanGeneration(harness, context);
     const root = modelIssue ? await h.conversation(ROOT_CONVERSATION_ID, context)
       : await h.root(context, { agent: await defaults(config.cwd, context) });
     if (!root) throw modelIssue; // A store without a root has no history to serve.
@@ -303,7 +346,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       const tools = base.flatMap(ext => ext.tools ?? [])
         .filter(tool => !tool.deferred && (tool.callers === undefined || tool.callers.includes("model")));
       intro = new IntroReports(harness, root, resources, runtime, startedAtMs, () => ({ ...defaultModel(), tools }),
-        host.prepare!, host.requireModel);
+        host.prepare!, host.requireModel, planAdmission);
     }
     if (config.dataDir && trust) {
       const title = !modelIssue && config.threadTitleModel ? threadTitleGenerator(runtime, config.threadTitleModel) : undefined;
@@ -312,7 +355,6 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }
     const modelCatalog = modelIssue ? undefined : nativeModelCatalog(harness, runtime, nativeDefault);
     gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
-    const browser = trust && config.dataDir ? await workspaceFileHelper() : undefined;
     workspaceFiles = trust && browser ? new WorkspaceFiles(harness, trust, browser) : undefined;
     if (gitDiff || workspaceFiles) stopGrantWatch = trust?.watchGrants(() => {
       gitDiff?.invalidate();
@@ -321,8 +363,14 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const loadedContext = trust && config.dataDir ? new LoadedContext(harness, resources, trust) : undefined;
     const settingsHost = config.dataDir && useStoredDefaults
       ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
+    const plans = planEnabled && !modelIssue ? new Plans(harness, store, cwd => resources.directory(cwd), fauxPlan, scopedPlans) : undefined;
+    const planReviews = plans && !fauxPlan ? new PlanReviews(harness, plans, async (cwd, model, ctx) => {
+      await authorizeWork?.(cwd, ctx);
+      await requireModel?.(model);
+    }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, readOnlyReason, capabilities: { intro, threadDirectory, images,
       schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
+      plan: plans, planReview: planReviews,
       gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
       workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });

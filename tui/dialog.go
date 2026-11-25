@@ -26,6 +26,7 @@ type dialog struct {
 	budget                      *int
 	placement                   x.Placement
 	anchorBottom                bool
+	promptDock                  bool // the existing input rule is the panel’s bottom edge
 	title, message, query       string
 	choices                     []x.Choice
 	filtered                    []int
@@ -43,6 +44,10 @@ type dialog struct {
 	git                         *gitReview
 	workTrust                   *workspaceTrustDialog
 	loadedContext               *contextDialog
+	plan                        *planPicker
+	planWorkspace               *planWorkspacePicker
+	planHistory                 *planHistoryPicker
+	planReview                  *planReviewPicker
 	result                      func(tea.Model) (any, bool)
 	done                        func(x.Context, any, bool) x.Outcome
 }
@@ -230,6 +235,15 @@ func (m *Model) customUpdate(d *dialog, msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) tea.Cmd {
+	if d.planWorkspace != nil && d.planWorkspace.cancel != nil {
+		d.planWorkspace.cancel()
+	}
+	if d.planReview != nil && d.planReview.cancel != nil {
+		d.planReview.cancel()
+	}
+	if d.plan != nil && d.plan.cancel != nil {
+		d.plan.cancel()
+	}
 	if d.modelSearch != nil {
 		d.modelSearch.stop()
 	}
@@ -459,6 +473,18 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	if d.custom != nil {
 		return m.customUpdate(d, msg)
 	}
+	if d.planWorkspace != nil {
+		return m.planWorkspaceKey(d, chord)
+	}
+	if d.planHistory != nil {
+		return m.planHistoryKey(d, chord)
+	}
+	if d.planReview != nil {
+		return m.planReviewKey(d, chord)
+	}
+	if d.plan != nil {
+		return m.planKey(d, chord)
+	}
 	if d.git != nil {
 		return m.gitDiffKey(d, chord)
 	}
@@ -606,7 +632,7 @@ func (m *Model) changeDialogQuery(d *dialog, query string) tea.Cmd {
 }
 
 func (m *Model) dialogWidth(d *dialog) int {
-	if d.placement == x.Sheet {
+	if d.placement == x.Sheet || d.promptDock {
 		return max(1, m.width-4)
 	}
 	if d.git != nil {
@@ -772,6 +798,18 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 		return nil, nil
 	}
 	w := m.dialogWidth(d)
+	if d.planWorkspace != nil {
+		return m.planWorkspaceRows(d, w, min(15, available))
+	}
+	if d.planHistory != nil {
+		return m.planHistoryRows(d, w, min(18, available))
+	}
+	if d.planReview != nil {
+		return m.planReviewRows(d, w, min(18, available))
+	}
+	if d.plan != nil {
+		return m.planRows(d, w, min(18, available))
+	}
 	if available < minOverlayFrameRows {
 		// At short heights, prefer usable body rows to a border.
 		if d.git != nil {

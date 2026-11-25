@@ -36,6 +36,10 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 	var cards []blockRange
 	gap := x.Block{Lines: []x.Line{nil}}
 	e := r.entry
+	if e.Record.Kind == planReviewEntry && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
+		heading, body, _ := strings.Cut(e.Record.Messages[0].Blocks[0].Text, "\n")
+		return x.Content{{Text: heading, Tone: x.Accent}, {Text: body}}, nil
+	}
 	if e.Record.Kind == "pi.compaction" {
 		out = append(out, x.Block{Text: "─  context compacted", Tone: x.Muted})
 		if !ctx.Expanded {
