@@ -165,11 +165,12 @@ type ClientResult struct {
 	Rewind           sdk.RewindResult
 	Modes            []Choice
 	Cursor           string
-	Directory        bool     // a recency-ordered thread directory page
-	Indexing         bool     // first page is incomplete; refresh rather than paging it
-	WorkspaceMatches []string // aligned with Threads; absent when workspace scope is not known
-	ScopeUnavailable bool     // default local scope is not supported; no unscoped rows were substituted
-	WorkspaceScoped  bool     // this page was filtered by workspace on the backend
+	Directory        bool                   // a recency-ordered thread directory page
+	Indexing         bool                   // first page is incomplete; refresh rather than paging it
+	WorkspaceMatches []string               // aligned with Threads; absent when workspace scope is not known
+	Workspaces       []*sdk.ThreadWorkspace // aligned with Threads when directory search is available
+	ScopeUnavailable bool                   // default local scope is not supported; no unscoped rows were substituted
+	WorkspaceScoped  bool                   // this page was filtered by workspace on the backend
 }
 
 // Submit sends text. An empty RequestID asks the host to allocate a submission
@@ -307,8 +308,9 @@ func (Reset) clientOperation() {}
 type ListThreads struct {
 	Cursor      string
 	Limit       int
-	LaunchScope bool // use the shell's launch workspace when local, not the active thread's cwd
-	BrowseAll   bool // with LaunchScope, opt out of filtering; classify rows when possible
+	LaunchScope bool   // use the shell's launch workspace when local, not the active thread's cwd
+	BrowseAll   bool   // with LaunchScope, opt out of filtering; classify rows when possible
+	Query       string // search workspace names, titles, and chat before pagination
 }
 
 func (ListThreads) clientOperation() {}

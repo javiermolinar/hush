@@ -221,10 +221,15 @@ func (s *session) receive(f map[string]any) error {
 		key := "successEnvelope"
 		if version == ThreadManagementVersion {
 			key = "successEnvelopeV2"
-			if method == threadDirectoryList && workspace == ThreadWorkspaceVersion {
-				if result, ok := f["result"].(map[string]any); ok {
-					if _, hasScope := result["workspaceMatches"]; hasScope {
-						key = "successWorkspace"
+			if method == threadDirectoryList {
+				switch workspace {
+				case ThreadWorkspaceSearchVersion:
+					key = "successWorkspaceSearch"
+				case ThreadWorkspaceVersion:
+					if result, ok := f["result"].(map[string]any); ok {
+						if _, hasScope := result["workspaceMatches"]; hasScope {
+							key = "successWorkspace"
+						}
 					}
 				}
 			}

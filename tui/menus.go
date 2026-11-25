@@ -413,7 +413,7 @@ func (m *Model) applyMenuResult(op x.Operation, result *x.ClientResult) {
 	switch v := op.(type) {
 	case x.ListThreads:
 		out := result.Threads[:0]
-		matches := result.WorkspaceMatches[:0]
+		matches, workspaces := result.WorkspaceMatches[:0], result.Workspaces[:0]
 		for i, row := range result.Threads {
 			if t := m.threads[row.ID]; t != nil {
 				managed := result.Directory && row.Status != ""
@@ -442,8 +442,11 @@ func (m *Model) applyMenuResult(op x.Operation, result *x.ClientResult) {
 			if i < len(result.WorkspaceMatches) {
 				matches = append(matches, result.WorkspaceMatches[i])
 			}
+			if i < len(result.Workspaces) {
+				workspaces = append(workspaces, result.Workspaces[i])
+			}
 		}
-		result.Threads, result.WorkspaceMatches = out, matches
+		result.Threads, result.WorkspaceMatches, result.Workspaces = out, matches, workspaces
 	case x.SetTitle:
 		if t := m.threads[result.ThreadID]; t != nil && (result.ThreadID != m.active || t.presentation == nil || m.options.Services.Rename != nil) {
 			// The active v2 watch is authoritative; a late command reply must
@@ -480,8 +483,12 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 		return a
 	}
 	r := x.Registration{ID: menusID, APIVersion: x.APIVersion, Actions: []x.Action{
-		da("switch", "Switch threads", "ctrl+t", "s", "threads", 0, func(c x.Context, _ x.Invocation) x.Outcome { return switcher(c, "") }),
-		da("switch-all", "Browse all workspaces", "", "shift+s", "threads-all", 0, func(_ x.Context, _ x.Invocation) x.Outcome { return workspaceSwitcher("", true) }),
+		da("switch", "Switch threads", "ctrl+t", "s", "threads", 0, func(x.Context, x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: openThreadPickerOp}}
+		}),
+		da("switch-all", "Browse all workspaces", "", "shift+s", "threads-all", 0, func(x.Context, x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: openThreadPickerOp, Text: "all"}}
+		}),
 		da("new", "New thread", "ctrl+n", "n", "new", 0, func(_ x.Context, _ x.Invocation) x.Outcome {
 			// Use the launch directory, not the active thread's workspace.
 			return x.Outcome{x.Client{Op: x.NewThread{}, Done: switchResult}}
@@ -600,115 +607,6 @@ func actionThread(c x.Context, v x.Invocation) sdk.ID {
 		return id
 	}
 	return c.Thread.ID
-}
-
-func switcher(_ x.Context, cursor string) x.Outcome { return workspaceSwitcher(cursor, false) }
-
-func workspaceSwitcher(cursor string, all bool) x.Outcome {
-	return x.Outcome{x.Client{Op: x.ListThreads{Limit: 50, Cursor: cursor, LaunchScope: true, BrowseAll: all}, Done: func(ctx x.Context, r x.ClientResult) x.Outcome {
-		if r.Err != nil {
-			return clientNote(r, "")
-		}
-		newThread := x.Choice{ID: "new", Label: "+ New thread"}
-		var choices []x.Choice
-		if !r.Directory {
-			choices = append(choices, newThread) // legacy order from thread.list
-		}
-		for i, t := range r.Threads {
-			glyph, _ := tabStatus(t.Status)
-			label := glyph + " " + threadTitle(t)
-			if t.Forked {
-				label = "  ⑂ " + label
-			}
-			if t.ID == ctx.ActiveThreadID {
-				label += " · current"
-			}
-			detail := string(t.Status)
-			if r.Directory {
-				parts := make([]string, 0, 4)
-				if !t.LastMessageAt.IsZero() {
-					parts = append(parts, t.LastMessageAt.Format("2006-01-02"))
-				}
-				if t.Title != "" {
-					parts = append(parts, "#"+string(t.ID))
-				}
-				if t.Status != "" {
-					parts = append(parts, string(t.Status))
-				}
-				if t.ParentID != "" {
-					parts = append(parts, "fork of #"+string(t.ParentID))
-				}
-				if t.Branch != "" {
-					parts = append(parts, "⎇ "+t.Branch)
-				}
-				if t.Preview != "" {
-					parts = append(parts, t.Preview)
-				}
-				detail = strings.Join(parts, " · ")
-			} else {
-				if t.ParentID != "" {
-					detail = fmt.Sprintf("from #%s · %s", t.ParentID, detail)
-				}
-				if t.Preview != "" {
-					detail = strings.TrimSpace(detail + " · " + t.Preview)
-				}
-			}
-			match := "unknown"
-			if i < len(r.WorkspaceMatches) {
-				match = r.WorkspaceMatches[i]
-			}
-			switch match {
-			case "outside":
-				label = "outside launch workspace · " + label
-			case "unknown":
-				label = "workspace unknown · " + label
-			}
-			choices = append(choices, x.Choice{ID: string(t.ID), Label: label, Description: detail})
-		}
-		if r.Directory {
-			choices = append(choices, newThread)
-		}
-		title := "Switch thread · workspace unverified"
-		switch {
-		case r.ScopeUnavailable:
-			title = "Switch thread · launch workspace scope unavailable"
-		case r.WorkspaceScoped:
-			title = "Switch thread · launch workspace"
-		case all:
-			title = "Switch thread · all workspaces"
-		}
-		if r.Indexing {
-			title += " · indexing"
-			choices = append(choices, x.Choice{ID: "refresh", Label: "Refresh thread list…"})
-		} else if r.Cursor != "" {
-			label := "More threads…"
-			if r.Directory {
-				label = "Older threads…"
-			}
-			choices = append(choices, x.Choice{ID: pageChoice, Label: label})
-		}
-		if !all && (r.WorkspaceScoped || r.ScopeUnavailable) {
-			choices = append(choices, x.Choice{ID: "all-workspaces", Label: "Browse all workspaces…"})
-		}
-		return x.Outcome{x.SelectDialog{Title: title, Placement: x.Sheet, Choices: choices,
-			Actions: []x.ActionID{newThreadID, forkPickerID, coreID + ".close", renameID}, Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
-				if !reply.Accepted {
-					return nil
-				}
-				switch reply.Value {
-				case "new":
-					return x.Outcome{x.Dispatch{Action: x.ActionRef{ID: newThreadID}}}
-				case pageChoice:
-					return workspaceSwitcher(r.Cursor, all)
-				case "refresh":
-					return workspaceSwitcher("", all)
-				case "all-workspaces":
-					return workspaceSwitcher("", true)
-				default:
-					return x.Outcome{x.Client{Op: x.Switch{ThreadID: sdk.ID(reply.Value)}}}
-				}
-			}}}
-	}}}
 }
 
 func forkMenu(id, before sdk.ID) x.Outcome {

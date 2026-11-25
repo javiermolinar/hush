@@ -1,16 +1,17 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as yieldTurn, setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
-import { AgentDoc, LiveDoc, type ConversationId, type ConversationRecord, type Cursor, type EntryRecord, type Harness } from "@earendil-works/pi-durable";
+import { AgentDoc, LiveDoc, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type Harness } from "@earendil-works/pi-durable";
 import { Cursors } from "../../server/src/cursor.js";
 import type { NativeHost } from "../../server/src/durable.js";
-import type { ManagedThreadRow, ThreadArchive, ThreadCreation, ThreadDirectoryHost, ThreadDirectoryPage, ThreadDirectoryQuery,
-  ThreadDirectoryReport, ThreadDirectoryRow, ThreadDirectoryVersion, ThreadLookup, ThreadStatus, WorkspaceMatch } from "../../server/src/thread-directory.js";
+import { threadWorkspaceSearchVersion, type ManagedThreadRow, type ThreadArchive, type ThreadCreation, type ThreadDirectoryHost,
+  type ThreadDirectoryPage, type ThreadDirectoryQuery, type ThreadDirectoryReport, type ThreadDirectoryRow, type ThreadDirectoryVersion,
+  type ThreadLookup, type ThreadStatus, type ThreadWorkspaceVersion, type WorkspaceMatch } from "../../server/src/thread-directory.js";
 import { WireError } from "../../server/src/wire.js";
 import { ProfileDoc } from "./pi/projection.js";
 import { actionableFailure, displayTitle, threadActivity, ThreadPresentationDoc, threadLabel, topicTitle } from "./thread-presentation.js";
@@ -29,22 +30,35 @@ function chatRole(message: Message) {
   return message.role === "user" || message.role === "assistant";
 }
 
-function chatText(message: Message, max = providerExcerpt) {
-  if (!chatRole(message)) return "";
-  const describe = (value: string) => {
-    if (message.role === "user" && value.startsWith("<skill name=")) {
-      const skill = /^<skill name="([^"\r\n]{1,96})" location=/.exec(value)?.[1];
-      return skill ? threadLabel("/skill:" + skill, 72) : "Skill invocation";
-    }
-    return threadLabel(value, max);
+function* chatBlocks(message: Message) {
+  if (!chatRole(message)) return;
+  const display = (text: string) => {
+    if (message.role !== "user" || !text.startsWith("<skill name=")) return text;
+    const skill = /^<skill name="([^"\r\n]{1,96})" location=/.exec(text)?.[1];
+    return skill ? threadLabel("/skill:" + skill, 72) : "Skill invocation";
   };
-  if (typeof message.content === "string") return describe(message.content);
-  for (const part of message.content) {
-    if (part.type !== "text") continue;
-    const text = describe(part.text);
+  if (typeof message.content === "string") yield display(message.content);
+  else for (const part of message.content) {
+    if (part.type === "text") yield display(part.text);
+  }
+}
+
+function chatText(message: Message, max = providerExcerpt) {
+  for (const block of chatBlocks(message)) {
+    const text = threadLabel(block, max);
     if (text) return text;
   }
   return "";
+}
+
+function searchText(text: string) {
+  return text.toWellFormed().normalize("NFC").toLowerCase().replace(/[\p{Cc}\s]+/gu, " ").trim();
+}
+
+function workspaceName(key: string) {
+  const path = key.slice(4);
+  const name = key.startsWith("git:") ? basename(path) === ".git" ? basename(dirname(path)) : basename(path, ".git") : basename(path);
+  return threadLabel(name || path, 96) || "Workspace";
 }
 
 function firstPrompt(entry: EntryRecord) {
@@ -89,7 +103,7 @@ const liveFields = new Set(["run", "runFailure", "compactions", "compactionFailu
 // the first completed exchange in Hush's presentation document, including for
 // older threads. Queries read bounded pages without opening conversation watches.
 export class ThreadDirectory implements ThreadDirectoryHost {
-  readonly workspace = true as const;
+  readonly workspace = threadWorkspaceSearchVersion;
   readonly #life = new AbortController();
   readonly #db = new DatabaseSync(":memory:");
   readonly #pending = new Set<ConversationId>();
@@ -99,6 +113,7 @@ export class ThreadDirectory implements ThreadDirectoryHost {
   readonly #waiters = new Set<() => void>();
   readonly #mutating = new Set<Promise<unknown>>();
   readonly #titleCandidates = new Set<ConversationId>();
+  readonly #chatThrough = new Map<ConversationId, EntryId>();
   #titlesGenerating = 0;
   readonly #graph: Promise<void>;
   #activity: ReadonlyMap<ConversationId, ThreadStatus> = new Map();
@@ -112,7 +127,10 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     this.#ctx = withAbortSignal(this.#life.signal, BACKGROUND_CONTEXT);
     this.#db.exec(`
       CREATE TABLE directory (id INTEGER PRIMARY KEY, parent INTEGER, title TEXT NOT NULL, last INTEGER NOT NULL,
-        archived INTEGER NOT NULL, status TEXT NOT NULL, cwd TEXT NOT NULL, branch TEXT NOT NULL, workspace TEXT NOT NULL);
+        archived INTEGER NOT NULL, status TEXT NOT NULL, cwd TEXT NOT NULL, branch TEXT NOT NULL, workspace TEXT NOT NULL,
+        search_title TEXT NOT NULL, search_workspace TEXT NOT NULL);
+      CREATE VIRTUAL TABLE directory_chat USING fts5(body, content = '', tokenize = 'trigram');
+      CREATE TABLE directory_chat_threads (entry INTEGER NOT NULL, thread INTEGER NOT NULL, PRIMARY KEY (entry, thread)) WITHOUT ROWID;
       CREATE INDEX directory_recent ON directory(last DESC, id DESC);
       CREATE INDEX directory_visible ON directory(last DESC, id DESC) WHERE archived = 0;
       CREATE INDEX directory_checkout ON directory(cwd);
@@ -236,6 +254,34 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     });
   }
 
+  async #indexChat(id: ConversationId, maxEntryId: EntryId) {
+    const through = this.#chatThrough.get(id);
+    if (through !== undefined && through >= maxEntryId) return;
+    const minEntryId = through === undefined ? undefined : (through + 1) as EntryId;
+    const query = { conversationId: id, order: "descending" as const, minEntryId, maxEntryId };
+    const known = this.#db.prepare("SELECT 1 FROM directory_chat_threads WHERE entry = ? LIMIT 1");
+    const index = this.#db.prepare("INSERT INTO directory_chat(rowid, body) VALUES (?, ?)");
+    const link = this.#db.prepare("INSERT INTO directory_chat_threads VALUES (?, ?)");
+    let cursor: Cursor | undefined;
+    do {
+      const page = await this.h.commit(tx => tx.scanEntries(query, historyBatch, cursor), this.#ctx);
+      this.#life.signal.throwIfAborted();
+      for (const entry of page.items) {
+        // A fork can see inherited entries. Index each entry once, then
+        // record which threads can match it. Keep no plaintext copy in FTS.
+        if (!known.get(entry.id)) {
+          const body = (entry.model ?? []).map(message => searchText([...chatBlocks(message)].join(" "))).filter(Boolean).join("\n");
+          if (!body) continue;
+          index.run(entry.id, body);
+        }
+        link.run(entry.id, id);
+      }
+      cursor = page.next;
+      if (cursor) await yieldTurn(undefined, { signal: this.#life.signal });
+    } while (cursor);
+    this.#chatThrough.set(id, maxEntryId);
+  }
+
   async #refresh(record: ConversationRecord, candidate: boolean, bootstrap = false) {
     const { id } = record;
     const [profile, presentation, agent, live] = await Promise.all([
@@ -244,8 +290,9 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     ]);
     let title = displayTitle(presentation, profile?.name);
     let last = 0;
-    let outcome: "idle" | "done" | undefined;
+    let newest: EntryId | undefined, outcome: "idle" | "done" | undefined;
     await this.#find(id, "descending", entry => {
+      newest ??= entry.id;
       last ||= lastMessage(entry);
       outcome ??= lastOutcome(entry);
       return last !== 0 && outcome !== undefined;
@@ -279,12 +326,15 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     // missing/unresolvable cwd never falls into another workspace's scope.
     const workspace = indexed?.workspace || (cwd ? await workspaceIdentity(resolve(this.cwd, cwd), this.#life.signal).catch(() => "") : "");
     this.#life.signal.throwIfAborted();
-    const update = this.#db.prepare(`INSERT INTO directory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    if (newest !== undefined) await this.#indexChat(id, newest);
+    const update = this.#db.prepare(`INSERT INTO directory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET parent=excluded.parent, title=excluded.title, last=excluded.last, archived=excluded.archived,
-        status=excluded.status, cwd=excluded.cwd, branch=excluded.branch, workspace=excluded.workspace
+        status=excluded.status, cwd=excluded.cwd, branch=excluded.branch, workspace=excluded.workspace,
+        search_title=excluded.search_title, search_workspace=excluded.search_workspace
       WHERE (parent, title, last, archived, status, cwd, branch, workspace) IS NOT
         (excluded.parent, excluded.title, excluded.last, excluded.archived, excluded.status, excluded.cwd, excluded.branch, excluded.workspace)`)
-      .run(id, record.parent?.conversationId ?? null, title ?? "", last, presentation?.archived ? 1 : 0, status, cwd, branch, workspace);
+      .run(id, record.parent?.conversationId ?? null, title ?? "", last, presentation?.archived ? 1 : 0, status, cwd, branch, workspace,
+        searchText(title ?? ""), workspace ? searchText(workspaceName(workspace)) : "");
     if (update.changes) this.#advance();
     if (remote && exchange?.user && exchange.answer) {
       this.#titlesGenerating++;
@@ -383,15 +433,18 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     }, ctx);
   }
 
-  async list(query: ThreadDirectoryQuery, peer: AbortSignal, version: ThreadDirectoryVersion): Promise<ThreadDirectoryPage> {
+  async list(query: ThreadDirectoryQuery, peer: AbortSignal, version: ThreadDirectoryVersion, workspaceVersion?: ThreadWorkspaceVersion): Promise<ThreadDirectoryPage> {
     const signal = this.#signal(peer);
     signal.throwIfAborted();
+    const term = query.query === undefined ? "" : searchText(query.query);
+    if (query.query !== undefined && !term) throw new WireError("invalid_request");
     if (version === 2) await this.#graph;
     const workspace = query.workspace === undefined ? undefined : await workspaceIdentity(resolve(this.cwd, query.workspace), signal);
     const scoped = workspace !== undefined && !query.browseAll;
     const base = `thread-directory:${version}:${query.includeArchived ? "all" : "visible"}`;
-    const scope = workspace === undefined ? base :
+    let scope = workspace === undefined ? base :
       `${base}:${query.browseAll ? "browse" : "within"}:${createHash("sha256").update(workspace).digest("base64url")}`;
+    if (term) scope += ":search:" + createHash("sha256").update(term).digest("base64url");
     const fence = query.cursor === undefined ? undefined : this.#cursors.decode<Fence>(scope, query.cursor);
     if (this.#task) {
       // Often the initial catalogue or a pending commit is ready immediately.
@@ -403,10 +456,26 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     }
     signal.throwIfAborted();
     if (this.#failed) throw new WireError("internal");
-    const filter = query.includeArchived ? "" : "archived = 0";
-    const where = [filter, scoped ? "workspace = ?" : "", fence ? "(last,id) < (?,?)" : ""].filter(Boolean).join(" AND ");
-    const rows = this.#db.prepare(`SELECT * FROM directory ${where && `WHERE ${where}`} ORDER BY last DESC,id DESC LIMIT ?`)
-      .all(...(scoped && workspace !== undefined ? [workspace] : []), ...(fence ? [fence.last, fence.id] : []), query.limit + 1) as unknown as DirectoryRow[];
+    const filters: string[] = [], params: Array<string | number> = [];
+    if (!query.includeArchived) filters.push("archived = 0");
+    if (scoped) { filters.push("workspace = ?"); params.push(workspace); }
+    if (fence) { filters.push("(last,id) < (?,?)"); params.push(fence.last, fence.id); }
+    if (term) {
+      const matches = ["instr(search_title, ?) > 0", "instr(search_workspace, ?) > 0",
+        "instr(replace(replace(search_workspace, '_', ' '), '-', ' '), ?) > 0"];
+      params.push(term, term, term);
+      if (Array.from(term).length >= 3) {
+        // Trigrams require three characters. Treat user input as a literal
+        // phrase, not FTS operators, column references, or wildcards.
+        matches.push(`id IN (SELECT thread FROM directory_chat JOIN directory_chat_threads ON entry = directory_chat.rowid
+          WHERE directory_chat MATCH ?)`);
+        params.push('"' + term.replaceAll('"', '""') + '"');
+      }
+      filters.push(`(${matches.join(" OR ")})`);
+    }
+    const where = filters.length ? "WHERE " + filters.join(" AND ") : "";
+    const rows = this.#db.prepare(`SELECT * FROM directory ${where} ORDER BY last DESC,id DESC LIMIT ?`)
+      .all(...params, query.limit + 1) as unknown as DirectoryRow[];
     const indexing = this.#indexing;
     const selected = rows.slice(0, query.limit), tail = selected.at(-1);
     return {
@@ -414,6 +483,8 @@ export class ThreadDirectory implements ThreadDirectoryHost {
       threads: selected.map(row => version === 2 ? this.#view(row) : this.#legacy(row)),
       ...(workspace !== undefined && { workspaceMatches: selected.map<WorkspaceMatch>(row =>
         !row.workspace ? "unknown" : row.workspace === workspace ? "inside" : "outside") }),
+      ...(workspaceVersion === threadWorkspaceSearchVersion && { workspaces: selected.map(({ workspace: key }) => key ?
+        { id: createHash("sha256").update(key).digest("hex"), name: workspaceName(key) } : null) }),
       nextCursor: !indexing && tail && rows.length > query.limit ? this.#cursors.encode(scope, { last: tail.last, id: tail.id }) : null,
     };
   }

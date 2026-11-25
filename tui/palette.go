@@ -161,6 +161,10 @@ func (d *dialog) paletteFilterText(i int) string {
 }
 
 func (m *Model) paletteInput(query string, w int) (text string, cursor int) {
+	return m.filterInput(query, w, "Type to filter")
+}
+
+func (m *Model) filterInput(query string, w int, placeholder string) (text string, cursor int) {
 	s := oneLine(query)
 	room := max(1, w-3) // leave a cell for the caret
 	if n := stringWidth(s); n > room {
@@ -168,7 +172,7 @@ func (m *Model) paletteInput(query string, w int) (text string, cursor int) {
 	}
 	label := paint(x.Accent, "› ")
 	if s == "" {
-		return label + m.control("Type to filter"), 2
+		return label + m.control(ansi.Truncate(placeholder, max(0, w-2), "…")), 2
 	}
 	return label + s, 2 + stringWidth(s)
 }

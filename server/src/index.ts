@@ -24,7 +24,8 @@ export type { ImagesHost } from "./images.js";
 import { checkIntroReply, parseIntroAction, parseIntroQuery, type IntroHost, type IntroVersion } from "./intro.js";
 export type { IntroAction, IntroAttention, IntroHost, IntroQuery, IntroReport, IntroRunIssue, IntroThread, IntroVersion } from "./intro.js";
 import { checkThreadDirectoryReply, parseThreadArchive, parseThreadCreation, parseThreadDirectoryQuery, parseThreadLookup,
-  threadDirectoryVersion, threadManagementVersion, threadWorkspaceVersion, type ThreadDirectoryHost, type ThreadDirectoryVersion } from "./thread-directory.js";
+  threadDirectoryVersion, threadManagementVersion, threadWorkspaceSearchVersion, threadWorkspaceVersion,
+  type ThreadDirectoryHost, type ThreadDirectoryVersion, type ThreadWorkspaceVersion } from "./thread-directory.js";
 export type { PiBinding, PiCommand, PiCommandAction, PiEventsHost, PiEventSink, PiHeader, PiOpen, PiResponse, PiService } from "./pi-events.js";
 import {
   MAX_RECORD, encode, cleanJSON, identity, isCoreMethod, object, parseRecord, patchShape,
@@ -162,7 +163,7 @@ class Peer {
   #version?: number;
   #pi?: PiPeer;
   #intro?: { host: IntroHost; version: IntroVersion };
-  #threadDirectory?: { host: ThreadDirectoryHost; version: ThreadDirectoryVersion; workspace: boolean };
+  #threadDirectory?: { host: ThreadDirectoryHost; version: ThreadDirectoryVersion; workspace?: ThreadWorkspaceVersion };
   #directoryPending = false;
   #images?: ImagesHost;
   #schedules?: SchedulesHost;
@@ -379,17 +380,29 @@ class Peer {
         if (parts[1] === "threadDirectory" && this.#threadDirectory) {
           const { host, version, workspace } = this.#threadDirectory;
           const signal = this.#abort.signal;
-          const reply = (result: object, rows: Parameters<typeof checkThreadDirectoryReply>[2], scoped = false) => {
-            if (!this.socket.destroyed) this.#write(encode(checkThreadDirectoryReply(version, { ...identity(req), ok: true, result }, rows, scoped)));
+          const reply = (result: object, rows: Parameters<typeof checkThreadDirectoryReply>[2], shape?: ThreadWorkspaceVersion) => {
+            if (!this.socket.destroyed) this.#write(encode(checkThreadDirectoryReply(version, { ...identity(req), ok: true, result }, rows, shape)));
           };
           if (parts[2] === "list") {
             const query = parseThreadDirectoryQuery(req.params, version, workspace);
-            const result = await host.list(query, signal, version);
-            const scoped = query.workspace !== undefined;
-            const matches = result.workspaceMatches;
-            if (result.threads.length > query.limit || scoped && (matches?.length !== result.threads.length ||
-                !query.browseAll && matches?.some(match => match !== "inside"))) throw new WireError("internal");
-            reply(result, result.threads, scoped);
+            const search = workspace === threadWorkspaceSearchVersion;
+            const list = async () => {
+              const result = await host.list(query, signal, version, workspace);
+              const scoped = query.workspace !== undefined, matches = result.workspaceMatches;
+              if (result.threads.length > query.limit || (scoped ? matches?.length !== result.threads.length ||
+                  !query.browseAll && matches?.some(match => match !== "inside") : matches !== undefined) ||
+                  search && result.workspaces?.length !== result.threads.length) throw new WireError("internal");
+              reply(result, result.threads, search || scoped ? workspace : undefined);
+            };
+            if (query.query === undefined) await list();
+            else {
+              if (this.#directoryPending) throw new WireError("limit");
+              this.#directoryPending = true;
+              // Keep observing EOF so a superseded picker search can be cancelled.
+              void list().catch(error => {
+                if (!this.socket.destroyed) this.#error(req, error);
+              }).finally(() => { this.#directoryPending = false; });
+            }
             return;
           }
           const actions = version === 2 ? host.management : undefined;
@@ -553,9 +566,11 @@ class Peer {
           const version = v2 && offeredDirectory?.includes(threadManagementVersion) ? threadManagementVersion
             : offeredDirectory?.includes(threadDirectoryVersion) ? threadDirectoryVersion : undefined;
           if (version !== undefined) {
-            const workspace = version === threadManagementVersion && directory.workspace === true &&
-              req.params.capabilities?.threadWorkspace?.includes(threadWorkspaceVersion) === true;
-            if (workspace) capabilities.threadWorkspace = threadWorkspaceVersion;
+            const offeredWorkspace = req.params.capabilities?.threadWorkspace;
+            const workspace = version !== threadManagementVersion || !directory.workspace ? undefined
+              : directory.workspace === threadWorkspaceSearchVersion && offeredWorkspace?.includes(threadWorkspaceSearchVersion) ? threadWorkspaceSearchVersion
+              : offeredWorkspace?.includes(threadWorkspaceVersion) ? threadWorkspaceVersion : undefined;
+            if (workspace) capabilities.threadWorkspace = workspace;
             capabilities.threadDirectory = version;
             this.#threadDirectory = { host: directory, version, workspace };
           }

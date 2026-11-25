@@ -88,3 +88,23 @@ filtered, but relative workspace membership is still returned. A workspace
 reply adds `workspaceMatches`, exactly one `inside`, `outside` or `unknown`
 value per thread in the same order. Filtered replies contain only `inside`
 rows. A partial index still returns `indexing: true` and no continuation.
+
+## Workspace names and search (`threadWorkspace:2`)
+
+Offer `threadWorkspace: [2, 1]` with a v2 directory. Version 2 preserves
+workspace scoping and returns `workspaces` on every list, scoped or unscoped.
+It is aligned one-to-one with `threads`. Each value is either `null` for an
+unknown workspace or `{id, name}`. `id` identifies the canonical workspace
+for grouping; `name` is a display label, not a unique key or a path. Linked
+worktrees share their repository’s name and ID. `workspaceMatches` is still
+present only when the request supplies `workspace`.
+
+An optional `query` (1–128 characters) finds a case-insensitive literal phrase
+in the workspace name, thread title, or committed user and assistant message
+text. Spaces can match underscores and hyphens in workspace names. Message
+search starts at three characters; it excludes reasoning, tool results and
+arguments, and expanded skill instructions. Forks can match inherited messages
+through their fork point. Matches are filtered before recency ordering and
+pagination, including under workspace and archive filters. Search cursors are
+also bound to the normalized query. While the index builds, partial results
+have `indexing: true` and no cursor; refresh the same query to see more matches.

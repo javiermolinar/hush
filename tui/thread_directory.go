@@ -136,6 +136,20 @@ func (m *Model) mergeDirectory(out *x.Thread, t *threadState) {
 	}
 }
 
+func directoryPageResult(page sdk.ThreadDirectoryPage, limit int) x.ClientResult {
+	count := len(page.Threads)
+	if count > limit || page.Workspaces != nil && len(page.Workspaces) != count ||
+		page.WorkspaceMatches != nil && len(page.WorkspaceMatches) != count {
+		return x.ClientResult{Err: sdk.ErrProtocol}
+	}
+	out := x.ClientResult{Cursor: deref(page.NextCursor), Directory: true, Indexing: page.Indexing,
+		Workspaces: slices.Clone(page.Workspaces), WorkspaceMatches: slices.Clone(page.WorkspaceMatches)}
+	for _, row := range page.Threads {
+		out.Threads = append(out.Threads, directoryThread(row))
+	}
+	return out
+}
+
 func directoryThread(t sdk.ThreadDirectoryRow) x.Thread {
 	thread := x.Thread{ID: t.ID, ParentID: t.ParentID, Forked: t.ParentID != "", Title: t.Title, Status: x.ThreadStatus(t.Status), Archived: t.Archived}
 	if t.Checkout != nil {

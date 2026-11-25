@@ -10,13 +10,14 @@ import (
 )
 
 const (
-	ThreadDirectoryVersion  = 1 // legacy titles and recency
-	ThreadManagementVersion = 2 // status, checkout ownership, and archive visibility
-	ThreadWorkspaceVersion  = 1 // server-side workspace query on a v2 directory
-	threadDirectoryList     = "ext.threadDirectory.list"
-	threadDirectoryGet      = "ext.threadDirectory.get"
-	threadDirectoryNew      = "ext.threadDirectory.new"
-	threadDirectoryArchive  = "ext.threadDirectory.archive"
+	ThreadDirectoryVersion       = 1 // legacy titles and recency
+	ThreadManagementVersion      = 2 // status, checkout ownership, and archive visibility
+	ThreadWorkspaceVersion       = 1 // server-side workspace scope on a v2 directory
+	ThreadWorkspaceSearchVersion = 2 // named workspaces and directory-wide search
+	threadDirectoryList          = "ext.threadDirectory.list"
+	threadDirectoryGet           = "ext.threadDirectory.get"
+	threadDirectoryNew           = "ext.threadDirectory.new"
+	threadDirectoryArchive       = "ext.threadDirectory.archive"
 )
 
 var directoryCursor = regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`)
@@ -49,6 +50,16 @@ type ThreadDirectoryPage struct {
 	Indexing bool `json:"indexing"`
 	// WorkspaceMatches, when requested, is aligned one-to-one with Threads.
 	WorkspaceMatches []string `json:"workspaceMatches,omitempty"`
+	// Workspaces is aligned with Threads when threadWorkspace v2 is negotiated.
+	// A nil element means the workspace is unknown.
+	Workspaces []*ThreadWorkspace `json:"workspaces,omitempty"`
+}
+
+// ThreadWorkspace labels a group of threads. ID identifies the backend's
+// canonical workspace; Name alone is not unique.
+type ThreadWorkspace struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type ThreadDirectoryOptions struct {
@@ -57,6 +68,7 @@ type ThreadDirectoryOptions struct {
 	IncludeArchived bool   `json:"includeArchived,omitempty"` // requires v2
 	Workspace       string `json:"workspace,omitempty"`       // requires threadWorkspace; host-local launch directory
 	BrowseAll       bool   `json:"browseAll,omitempty"`       // with Workspace, classify all rows instead of filtering
+	Query           string `json:"query,omitempty"`           // requires threadWorkspace v2; search workspace, title, and chat
 }
 
 // ThreadDirectory reads a page from newest last message to oldest. The client
@@ -69,34 +81,26 @@ func (c *Client) ListThreadDirectory(ctx context.Context, opts ThreadDirectoryOp
 	limit, cursor := opts.Limit, opts.Cursor
 	if limit < 1 || limit > 100 || cursor != "" && !directoryCursor.MatchString(cursor) ||
 		opts.BrowseAll && opts.Workspace == "" || !utf8.ValidString(opts.Workspace) ||
-		strings.ContainsRune(opts.Workspace, 0) || utf8.RuneCountInString(opts.Workspace) > 4096 {
+		strings.ContainsRune(opts.Workspace, 0) || utf8.RuneCountInString(opts.Workspace) > 4096 ||
+		opts.Query != "" && (strings.TrimSpace(opts.Query) == "" || !utf8.ValidString(opts.Query) || utf8.RuneCountInString(opts.Query) > 128 ||
+			strings.ContainsFunc(opts.Query, func(r rune) bool { return r < 32 || r == 127 })) {
 		return ThreadDirectoryPage{}, ErrProtocol
 	}
-	s, err := c.connect(ctx)
+	page, workspace, err := c.threadDirectoryPage(ctx, opts)
 	if err != nil {
 		return ThreadDirectoryPage{}, err
 	}
-	version := s.hello.Capabilities["threadDirectory"]
-	if opts.Workspace != "" && (version != ThreadManagementVersion || s.hello.Capabilities["threadWorkspace"] != ThreadWorkspaceVersion) {
-		return ThreadDirectoryPage{}, &ServerError{Code: "unsupported_capability", Message: "Workspace scope was not negotiated", Capability: "threadWorkspace"}
-	}
-	if version != ThreadManagementVersion && (version != ThreadDirectoryVersion || opts.IncludeArchived) {
-		return ThreadDirectoryPage{}, directoryUnsupported()
-	}
-	result, err := s.call(ctx, threadDirectoryList, opts, nil)
-	if err != nil {
-		return ThreadDirectoryPage{}, err
-	}
-	page, err := decode[ThreadDirectoryPage](result)
-	if err != nil || len(page.Threads) > limit || page.NextCursor != nil && (page.Indexing || len(page.Threads) != limit || *page.NextCursor == cursor) {
+	if len(page.Threads) > limit || page.NextCursor != nil && (page.Indexing || len(page.Threads) != limit || *page.NextCursor == cursor) ||
+		workspace == ThreadWorkspaceSearchVersion && (page.Workspaces == nil || len(page.Workspaces) != len(page.Threads)) {
 		return ThreadDirectoryPage{}, ErrProtocol
 	}
 	if opts.Workspace != "" {
 		if page.WorkspaceMatches == nil || len(page.WorkspaceMatches) != len(page.Threads) {
 			return ThreadDirectoryPage{}, ErrProtocol
 		}
-		for _, match := range page.WorkspaceMatches {
-			if !oneOf(match, "inside", "outside", "unknown") || !opts.BrowseAll && match != "inside" {
+		for i, match := range page.WorkspaceMatches {
+			if !oneOf(match, "inside", "outside", "unknown") || !opts.BrowseAll && match != "inside" ||
+				workspace == ThreadWorkspaceSearchVersion && (page.Workspaces[i] == nil) != (match == "unknown") {
 				return ThreadDirectoryPage{}, ErrProtocol
 			}
 		}
@@ -117,6 +121,31 @@ func (c *Client) ListThreadDirectory(ctx context.Context, opts ThreadDirectoryOp
 		seen[row.ID] = true
 	}
 	return page, nil
+}
+
+func (c *Client) threadDirectoryPage(ctx context.Context, opts ThreadDirectoryOptions) (ThreadDirectoryPage, uint64, error) {
+	if opts.Query != "" {
+		// A picker cancels searches while typing, so use a separate connection.
+		page, err := waitOnCapability[ThreadDirectoryPage](ctx, c, threadDirectoryList, opts, "threadWorkspace", ThreadWorkspaceSearchVersion)
+		return page, ThreadWorkspaceSearchVersion, err
+	}
+	s, err := c.connect(ctx)
+	if err != nil {
+		return ThreadDirectoryPage{}, 0, err
+	}
+	version, workspace := s.hello.Capabilities["threadDirectory"], s.hello.Capabilities["threadWorkspace"]
+	if opts.Workspace != "" && (version != ThreadManagementVersion || workspace != ThreadWorkspaceVersion && workspace != ThreadWorkspaceSearchVersion) {
+		return ThreadDirectoryPage{}, 0, &ServerError{Code: "unsupported_capability", Message: "Workspace scope was not negotiated", Capability: "threadWorkspace"}
+	}
+	if version != ThreadManagementVersion && (version != ThreadDirectoryVersion || opts.IncludeArchived) {
+		return ThreadDirectoryPage{}, 0, directoryUnsupported()
+	}
+	raw, err := s.call(ctx, threadDirectoryList, opts, nil)
+	if err != nil {
+		return ThreadDirectoryPage{}, 0, err
+	}
+	page, err := decode[ThreadDirectoryPage](raw)
+	return page, workspace, err
 }
 
 func directoryUnsupported() *ServerError {

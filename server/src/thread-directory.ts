@@ -5,8 +5,10 @@ import { durableID, WireError } from "./wire.js";
 export const threadDirectoryVersion = 1;
 export const threadManagementVersion = 2;
 export const threadWorkspaceVersion = 1;
+export const threadWorkspaceSearchVersion = 2;
 export type ThreadDirectoryVersion = 1 | 2;
-export type ThreadDirectoryQuery = { limit: number; cursor?: string; includeArchived?: boolean; workspace?: string; browseAll?: boolean };
+export type ThreadWorkspaceVersion = 1 | 2;
+export type ThreadDirectoryQuery = { limit: number; cursor?: string; includeArchived?: boolean; workspace?: string; browseAll?: boolean; query?: string };
 export type ThreadLookup = { threadIds: string[]; after?: number };
 export type ThreadCreation = { cwd?: string; title?: string; worktree?: boolean };
 export type ThreadArchive = { threadId: string; archived: boolean };
@@ -15,12 +17,14 @@ export type ThreadCheckout = { kind: "shared"; cwd?: string } | { kind: "managed
 export type ThreadDirectoryRow = { id: string; parentId?: string; title?: string; lastMessageMs?: number };
 export type ManagedThreadRow = ThreadDirectoryRow & { status: ThreadStatus; archived: boolean; checkout: ThreadCheckout };
 export type WorkspaceMatch = "inside" | "outside" | "unknown";
-export type ThreadDirectoryPage = { threads: ThreadDirectoryRow[]; nextCursor: string | null; indexing: boolean; workspaceMatches?: WorkspaceMatch[] };
+export type WorkspaceLabel = { id: string; name: string };
+export type ThreadDirectoryPage = { threads: ThreadDirectoryRow[]; nextCursor: string | null; indexing: boolean;
+  workspaceMatches?: WorkspaceMatch[]; workspaces?: Array<WorkspaceLabel | null> };
 export type ThreadDirectoryReport = { revision: number; threads: ManagedThreadRow[] };
 
 export interface ThreadDirectoryHost {
-  workspace?: true;
-  list(query: ThreadDirectoryQuery, signal: AbortSignal, version: ThreadDirectoryVersion): Promise<ThreadDirectoryPage>;
+  workspace?: true | typeof threadWorkspaceSearchVersion;
+  list(query: ThreadDirectoryQuery, signal: AbortSignal, version: ThreadDirectoryVersion, workspaceVersion?: ThreadWorkspaceVersion): Promise<ThreadDirectoryPage>;
   management?: {
     get(query: ThreadLookup, signal: AbortSignal): Promise<ThreadDirectoryReport>;
     create(query: ThreadCreation, signal: AbortSignal): Promise<ManagedThreadRow>;
@@ -32,10 +36,12 @@ const ajv = new AjvModule.Ajv2020({ strict: false, ownProperties: true }).addSch
 const def = (name: keyof typeof schema.$defs) => ajv.compile({ $ref: schema.$id + "#/$defs/" + name });
 const listShape = def("list"), listV2Shape = def("listV2"), getShape = def("get"), newShape = def("newThread"), archiveShape = def("archive");
 const listWorkspaceShape = def("listWorkspace"), envelopeWorkspace = def("successWorkspace");
+const listSearchShape = def("listWorkspaceSearch"), envelopeSearch = def("successWorkspaceSearch");
 const envelope = def("successEnvelope"), envelopeV2 = def("successEnvelopeV2");
 
-export function parseThreadDirectoryQuery(params: Record<string, unknown>, version: ThreadDirectoryVersion, workspace = false): ThreadDirectoryQuery {
-  const shape = workspace && Object.hasOwn(params, "workspace") ? listWorkspaceShape : version === 2 ? listV2Shape : listShape;
+export function parseThreadDirectoryQuery(params: Record<string, unknown>, version: ThreadDirectoryVersion, workspace?: ThreadWorkspaceVersion): ThreadDirectoryQuery {
+  const shape = workspace === threadWorkspaceSearchVersion ? listSearchShape : workspace && Object.hasOwn(params, "workspace") ?
+    listWorkspaceShape : version === 2 ? listV2Shape : listShape;
   if (!shape(params)) throw new WireError("invalid_request");
   return params as ThreadDirectoryQuery;
 }
@@ -55,8 +61,9 @@ export function parseThreadArchive(params: Record<string, unknown>): ThreadArchi
   return params as ThreadArchive;
 }
 
-export function checkThreadDirectoryReply(version: ThreadDirectoryVersion, frame: object, rows: readonly ThreadDirectoryRow[], workspace = false) {
-  if (!(workspace ? envelopeWorkspace : version === 2 ? envelopeV2 : envelope)(frame) || rows.some(row => !durableID(row.id) || (row.parentId && !durableID(row.parentId)))) {
+export function checkThreadDirectoryReply(version: ThreadDirectoryVersion, frame: object, rows: readonly ThreadDirectoryRow[], workspace?: ThreadWorkspaceVersion) {
+  const shape = workspace === threadWorkspaceSearchVersion ? envelopeSearch : workspace ? envelopeWorkspace : version === 2 ? envelopeV2 : envelope;
+  if (!shape(frame) || rows.some(row => !durableID(row.id) || (row.parentId && !durableID(row.parentId)))) {
     throw new WireError("internal");
   }
   return frame;

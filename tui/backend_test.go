@@ -351,7 +351,7 @@ func TestBackendE2E(t *testing.T) {
 	m.finishWork(archive().(workMsg))
 	waitDirectory(func() bool { return child.info.Archived })
 	threads := m.runAction(m.host.byID[switcherID], "")
-	m.finishWork(threads().(workMsg))
+	threadPickerStep(t, m, threads)
 	for _, choice := range m.sheet.choices {
 		if choice.ID == string(child.info.ID) {
 			t.Fatal("picker listed archived thread")

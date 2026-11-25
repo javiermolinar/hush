@@ -378,6 +378,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelSearchResult:
 		m.receiveModelSearch(v)
 		scanImages = true
+	case threadPickerResult:
+		cmd = m.receiveThreadPicker(v)
+		scanImages = true
 	case openFinished:
 		if v.err != nil {
 			cmd = m.notifyRoute(v.route, v.err.Error(), extension.Danger)
@@ -848,6 +851,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 		return m.openUsage(r, t, budget)
 	case openConfigOp:
 		return m.openConfig(r, budget)
+	case openThreadPickerOp:
+		return m.openThreadPicker(r, e.Text == "all", budget)
 	case retryFailureOp, dismissFailureOp:
 		return m.recoverRun(r, e, budget)
 	case providerLoginOp:

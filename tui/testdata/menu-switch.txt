@@ -1,7 +1,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -14,9 +13,10 @@
   ────────────────────────────────────────────────────────────────────────────
   you ›
   Switch thread · workspace unverified
-  › Type to filter
-  › + New thread
-    workspace unknown · ◌ workspace #1  idle · # Answer  See [the docs](https:
-    workspace unknown ·   ⑂ ◌ thread 14  from #1 ·
+  › Workspace, thread, or message
+    Workspace unknown
+    › ◌ workspace #1 · current  idle · # Answer  See [the docs](https://examp…
+      ⑂ thread 14  fork of #1
+    + New thread
   enter choose  ↑↓ move  esc close
   dir workspace

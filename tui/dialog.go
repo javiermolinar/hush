@@ -38,6 +38,7 @@ type dialog struct {
 	output                      *outputViewer
 	review                      bool
 	modelSearch                 *modelSearchState
+	threadPicker                *threadPicker
 	config                      *configPanel
 	git                         *gitReview
 	workTrust                   *workspaceTrustDialog
@@ -232,6 +233,9 @@ func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) te
 	if d.modelSearch != nil {
 		d.modelSearch.stop()
 	}
+	if d.threadPicker != nil {
+		d.threadPicker.stop()
+	}
 	if d.git != nil {
 		d.git.stop()
 	}
@@ -303,11 +307,19 @@ func fuzzyMatch(value, query string) bool {
 func (d *dialog) filter() {
 	d.filtered = d.filtered[:0]
 	for i, c := range d.choices {
-		if d.query == "" || d.modelSearch != nil {
+		if d.query == "" || d.modelSearch != nil || d.threadPicker != nil && d.threadPicker.searchable {
 			d.filtered = append(d.filtered, i)
 			continue
 		}
 		text := c.Label + " " + c.Description
+		if p := d.threadPicker; p != nil {
+			switch c.ID {
+			case pageChoice, "refresh", "all-workspaces":
+				d.filtered = append(d.filtered, i)
+				continue
+			}
+			text = p.rows[i].workspaceName + " " + string(p.rows[i].status) + " " + text
+		}
 		if d.palette {
 			text = d.paletteFilterText(i)
 		}
@@ -361,6 +373,17 @@ func (m *Model) acceptChoice(d *dialog) tea.Cmd {
 	c, ok := d.choice()
 	if !ok {
 		return nil
+	}
+	if p := d.threadPicker; p != nil {
+		switch c.ID {
+		case pageChoice:
+			return m.loadThreadPicker(d, p.cursor, 0)
+		case "refresh":
+			return m.loadThreadPicker(d, "", 0)
+		case "all-workspaces":
+			p.all = true
+			return m.loadThreadPicker(d, "", 0)
+		}
 	}
 	if d.palette {
 		if item := d.paletteItems[d.filtered[d.selected]]; len(item.keys) != 0 {
@@ -555,6 +578,14 @@ func (m *Model) changeDialogQuery(d *dialog, query string) tea.Cmd {
 	if d.modelSearch != nil {
 		return m.searchModels(d, modelSearchDelay)
 	}
+	if p := d.threadPicker; p != nil {
+		if p.searchable {
+			return m.loadThreadPicker(d, "", threadSearchDelay)
+		}
+		if p.cancel == nil {
+			d.token = m.token()
+		}
+	}
 	d.filter()
 	return nil
 }
@@ -578,6 +609,9 @@ func (m *Model) dialogWidth(d *dialog) int {
 	return min(72, max(12, m.width-8))
 }
 func (m *Model) dialogLimit(d *dialog) int {
+	if d.threadPicker != nil {
+		return max(2, min(12, m.height/2))
+	}
 	if d.placement == x.Sheet {
 		return max(2, min(9, m.height/3))
 	}
@@ -614,7 +648,7 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 		return rows, targets
 	}
 
-	footer := n >= 3
+	footer := n >= 3 && (d.threadPicker == nil || n >= 5)
 	if d.confirm {
 		// Preserve the question and choices before optional chrome. A one-row
 		// confirmation can show the question, but cannot be accepted.
@@ -652,28 +686,44 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 		add(m.control(oneLine(d.message)), -1)
 	}
 	if !d.confirm && n-len(rows) >= 2 {
-		filter, _ := m.paletteInput(d.query, w)
+		placeholder := "Type to filter"
+		if d.threadPicker != nil {
+			placeholder = "Workspace, thread, or message"
+		}
+		filter, _ := m.filterInput(d.query, w, placeholder)
 		add(filter, -1)
 	}
 	count, budget := len(d.filtered), n-len(rows)
-	lo := min(max(0, d.selected-budget+1), max(0, count-budget))
-	hi := min(lo+budget, count)
-	for i := lo; i < hi; i++ {
-		item := d.choices[d.filtered[i]]
-		prefix, tone := "  ", x.Plain
-		if i == d.selected {
-			prefix, tone = "› ", x.Accent
+	lo, hi := 0, 0
+	if p := d.threadPicker; p != nil {
+		if status := p.message(d); status != "" && budget > 0 && (count == 0 || budget > 1) {
+			add(m.control(ansi.Truncate("  "+status, w, "…")), -1)
+			budget--
+			if count == 0 {
+				budget = 0 // do not also show the generic empty-list row
+			}
 		}
-		if item.Disabled {
-			tone = x.Muted
+		lo, hi = m.threadPickerRows(d, w, budget, add)
+	} else {
+		lo = min(max(0, d.selected-budget+1), max(0, count-budget))
+		hi = min(lo+budget, count)
+		for i := lo; i < hi; i++ {
+			item := d.choices[d.filtered[i]]
+			prefix, tone := "  ", x.Plain
+			if i == d.selected {
+				prefix, tone = "› ", x.Accent
+			}
+			if item.Disabled {
+				tone = x.Muted
+			}
+			label, detail := oneLine(item.Label), oneLine(item.Description)
+			text := paint(tone, prefix+label)
+			if detail != "" {
+				tail := ansiCut(detail, max(0, w/2))
+				text = paint(tone, ansiCut(prefix+label, max(0, w-stringWidth(tail)-2))) + "  " + m.control(tail)
+			}
+			add(text, i)
 		}
-		label, detail := oneLine(item.Label), oneLine(item.Description)
-		text := paint(tone, prefix+label)
-		if detail != "" {
-			tail := ansiCut(detail, max(0, w/2))
-			text = paint(tone, ansiCut(prefix+label, max(0, w-stringWidth(tail)-2))) + "  " + m.control(tail)
-		}
-		add(text, i)
 	}
 	if count == 0 && budget > 0 {
 		status := "No matches"
@@ -687,7 +737,7 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 		add(m.control(ansi.Truncate("  "+status, w, "…")), -1)
 	}
 	if footer {
-		if d.modelSearch != nil && count == 0 {
+		if (d.modelSearch != nil || d.threadPicker != nil) && count == 0 {
 			hint := m.keyHint("esc", "close")
 			add(m.hintRow(w, hint, hint, ""), -1)
 		} else {

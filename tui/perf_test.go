@@ -29,7 +29,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning"} {
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -173,6 +173,19 @@ func TestFrameBudget(t *testing.T) {
 				b := maxEffects
 				m.openDialog(m.route(m.active, coreID), x.SelectDialog{Placement: x.Sheet, Title: "Select", Choices: []x.Choice{{ID: "1", Label: "one"}, {ID: "2", Label: "two"}}}, &b)
 			}
+			var threadPage x.ClientResult
+			if which == "thread-picker" {
+				page := groupedThreadPage()
+				for i := len(page.Threads); i < 50; i++ {
+					page.Threads = append(page.Threads, sdk.ThreadDirectoryRow{ID: sdk.ID(fmt.Sprint(i + 1)), Title: fmt.Sprintf("Thread %d", i+1), Status: "running"})
+					page.Workspaces = append(page.Workspaces, &sdk.ThreadWorkspace{ID: fmt.Sprint(i), Name: fmt.Sprintf("Workspace %d", i)})
+					page.WorkspaceMatches = append(page.WorkspaceMatches, "outside")
+				}
+				threadPage = directoryPageResult(page, 50)
+				budget := maxEffects
+				m.openThreadPicker(m.route(m.active, menusID), true, &budget)
+				m.receiveThreadPicker(threadPickerResult{token: m.sheet.token, result: threadPage})
+			}
 			var modelPage sdk.ModelCatalog
 			if which == "model-catalog" {
 				m.backend = modelSearchFixture{}
@@ -220,6 +233,13 @@ func TestFrameBudget(t *testing.T) {
 					msg = tea.MouseMotionMsg(tea.Mouse{X: 2 + i%10, Y: m.frame.transcriptHeight - 4})
 				case "sheet", "git-diff":
 					msg = tea.KeyPressMsg{Code: tea.KeyDown}
+				case "thread-picker":
+					if i%25 == 0 {
+						// Run the result projection often enough to measure it at p99.
+						msg = threadPickerResult{token: m.sheet.token, result: threadPage}
+					} else {
+						msg = tea.KeyPressMsg{Code: tea.KeyDown}
+					}
 				case "model-catalog":
 					switch i % 4 {
 					case 0:

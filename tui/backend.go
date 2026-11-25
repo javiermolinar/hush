@@ -561,33 +561,27 @@ func (m *Model) clientJob(r ownerRoute, operation extension.Operation) func(cont
 			return extension.ClientResult{Err: backend.Reset(ctx, id, optionalText(op.Handoff))}
 		}
 	case extension.ListThreads:
-		launch := ""
-		if op.LaunchScope && m.options.WorkspaceLocal {
-			launch = base.CWD
-		}
+		local := op.LaunchScope && m.options.WorkspaceLocal
 		job = func(ctx context.Context) extension.ClientResult {
 			limit := pageLimit(op.Limit)
 			workspaceCursor, continued := strings.CutPrefix(op.Cursor, workspaceThreadCursor)
-			if launch != "" && (op.Cursor == "" || continued) {
+			if local && base.CWD != "" && (op.Cursor == "" || continued) {
 				if source, ok := backend.(workspaceDirectoryBackend); ok {
 					page, err := source.ListThreadDirectory(ctx, sdk.ThreadDirectoryOptions{
-						Limit: limit, Cursor: workspaceCursor, Workspace: launch, BrowseAll: op.BrowseAll,
+						Limit: limit, Cursor: workspaceCursor, Workspace: base.CWD, BrowseAll: op.BrowseAll, Query: op.Query,
 					})
 					if err == nil {
-						if len(page.Threads) > limit || len(page.WorkspaceMatches) != len(page.Threads) {
+						if len(page.WorkspaceMatches) != len(page.Threads) {
 							return extension.ClientResult{Err: sdk.ErrProtocol}
 						}
-						out := extension.ClientResult{Directory: true, Indexing: page.Indexing,
-							WorkspaceScoped: !op.BrowseAll, WorkspaceMatches: slices.Clone(page.WorkspaceMatches)}
-						if page.NextCursor != nil {
-							out.Cursor = workspaceThreadCursor + *page.NextCursor
-						}
-						for _, t := range page.Threads {
-							out.Threads = append(out.Threads, directoryThread(t))
+						out := directoryPageResult(page, limit)
+						out.WorkspaceScoped = !op.BrowseAll
+						if out.Cursor != "" {
+							out.Cursor = workspaceThreadCursor + out.Cursor
 						}
 						return out
 					}
-					if continued || !(sdk.IsCode(err, "unsupported_capability") || op.BrowseAll && sdk.IsCode(err, "not_found")) {
+					if continued || !(sdk.IsCode(err, "unsupported_capability") || sdk.IsCode(err, "not_found")) {
 						return extension.ClientResult{Err: err}
 					}
 				}
@@ -595,19 +589,26 @@ func (m *Model) clientJob(r ownerRoute, operation extension.Operation) func(cont
 			if continued {
 				return extension.ClientResult{Err: sdk.ErrProtocol}
 			}
-			if op.LaunchScope && m.options.WorkspaceLocal && !op.BrowseAll {
+			if local && !op.BrowseAll {
 				return extension.ClientResult{ScopeUnavailable: true}
 			}
 			cursor, legacy := strings.CutPrefix(op.Cursor, nativeThreadCursor)
+			if op.Query != "" {
+				source, ok := backend.(workspaceDirectoryBackend)
+				if !ok || legacy {
+					return extension.ClientResult{Err: extension.ErrUnavailable}
+				}
+				page, err := source.ListThreadDirectory(ctx, sdk.ThreadDirectoryOptions{Limit: limit, Cursor: cursor, Query: op.Query})
+				if err != nil {
+					return extension.ClientResult{Err: err}
+				}
+				return directoryPageResult(page, limit)
+			}
 			if source, ok := backend.(threadDirectoryBackend); ok && !legacy {
 				page, err := source.ThreadDirectory(ctx, limit, cursor)
 				switch {
 				case err == nil:
-					out := extension.ClientResult{Cursor: deref(page.NextCursor), Directory: true, Indexing: page.Indexing}
-					for _, t := range page.Threads[:min(limit, len(page.Threads))] {
-						out.Threads = append(out.Threads, directoryThread(t))
-					}
-					return out
+					return directoryPageResult(page, limit)
 				case cursor == "" && (sdk.IsCode(err, "unsupported_capability") || sdk.IsCode(err, "internal")):
 					// The bare native server has no metadata. Preserve basic
 					// switching if the optional directory isn't available.

@@ -156,8 +156,8 @@ func TestMouseOpensTabOverflow(t *testing.T) {
 			if cmd == nil {
 				t.Fatal("overflow click produced no switcher command")
 			}
-			m.finishWork(cmd().(workMsg))
-			if m.sheet == nil {
+			threadPickerStep(t, m, cmd)
+			if m.sheet == nil || m.sheet.threadPicker == nil || len(m.sheet.choices) == 0 {
 				t.Fatal("overflow click did not open the thread switcher")
 			}
 			return

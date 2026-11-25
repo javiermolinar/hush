@@ -29,7 +29,7 @@ var imagesSchema []byte
 // compile validators for Pi events or other negotiated features. Compile each
 // group once on first use and share the immutable validators across clients.
 var imagesWire = lazySchema(imagesSchema, "urn:hush:protocol:images:1", "successEnvelope")
-var threadDirectoryWire = lazySchema(threadDirectorySchema, "urn:hush:protocol:thread-directory:1", "successEnvelope", "successEnvelopeV2", "successWorkspace")
+var threadDirectoryWire = lazySchema(threadDirectorySchema, "urn:hush:protocol:thread-directory:1", "successEnvelope", "successEnvelopeV2", "successWorkspace", "successWorkspaceSearch")
 var intros = lazySchema(introSchema, "urn:hush:protocol:intro:1", "successEnvelope", "successEnvelopeV2")
 var wireSchema = lazySchema(coreSchema, "urn:hush:protocol:core:1", "request", "success", "failureReply", "state", "stateEnd", "patch")
 var orderedSchema = lazySchema(piSchema, "urn:hush:protocol:pi-events:1", "successEnvelope", "open", "command", "ready", "frame", "end", "callResult", "catalogResult")

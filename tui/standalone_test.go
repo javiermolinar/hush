@@ -79,7 +79,7 @@ func grantStandaloneFixture(t *testing.T, root, cwd string) {
 func standaloneFixtureCapabilities() map[string][]uint64 {
 	return map[string][]uint64{
 		"intro": {sdk.IntroActionsVersion, sdk.IntroVersion}, "modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion},
-		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceVersion},
+		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceSearchVersion, sdk.ThreadWorkspaceVersion},
 		"nativeStop": {sdk.NativeStopVersion}, "clientEnvironment": {sdk.ClientEnvironmentVersion},
 	}
 }
@@ -1079,6 +1079,10 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 	if err != nil || len(page.Threads) != 1 || page.Threads[0].ID != insideID || !reflect.DeepEqual(page.WorkspaceMatches, []string{"inside"}) {
 		t.Fatalf("outside thread stole a scoped pagination slot: %+v, %v", page, err)
 	}
+	if len(page.Workspaces) != 1 || len(first.Workspaces) != 1 || page.Workspaces[0] == nil || first.Workspaces[0] == nil ||
+		*page.Workspaces[0] != *first.Workspaces[0] || page.Workspaces[0].Name != filepath.Base(inside) {
+		t.Fatalf("Git root and subfolder did not share a workspace name and identity: %+v vs %+v", page.Workspaces, first.Workspaces)
+	}
 	workspace.Workspace = outside
 	if _, err := client.ListThreadDirectory(ctx, workspace); !sdk.IsCode(err, "invalid_cursor") {
 		t.Fatalf("changed workspace reused a scope cursor: %v", err)
@@ -1130,14 +1134,21 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 	}
 	m := open(client, outsideID, true)
 	ask(m, paths[outside])
-	workflowWork(t, m, m.runAction(m.host.byID[switcherID], ""))
+	threadPickerStep(t, m, m.runAction(m.host.byID[switcherID], ""))
 	if _, ok := choice(m, string(outsideID)); ok || !strings.Contains(m.sheet.title, "launch workspace") {
 		t.Fatal("active outside thread changed the default switcher scope")
 	}
-	workflowWork(t, m, pick(m, "all-workspaces"))
-	if outsideRow, ok := choice(m, string(outsideID)); !ok || !strings.Contains(outsideRow.Label, "outside launch workspace") {
-		t.Fatalf("explicit browse did not label the outside workspace: %+v", outsideRow)
+	query := paths[outside] // committed assistant text, not the title or workspace name
+	threadPickerStep(t, m, m.changeDialogQuery(m.sheet, query))
+	if _, ok := choice(m, string(outsideID)); ok {
+		t.Fatal("scoped search returned a conversation in another workspace")
 	}
+	threadPickerStep(t, m, pick(m, "all-workspaces"))
+	if _, ok := choice(m, string(outsideID)); !ok || m.sheet.query != query ||
+		m.sheet.threadPicker.rows[m.sheet.filtered[m.sheet.selected]].workspaceName != "outside" {
+		t.Fatal("explicit browse did not retain the query and find the outside workspace by chat text")
+	}
+	threadPickerStep(t, m, m.changeDialogQuery(m.sheet, ""))
 	_ = pick(m, string(insideID))
 	if m.active != insideID {
 		t.Fatal("picker did not switch projects")
@@ -1150,7 +1161,7 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 	back := sdk.NewClient(socket, sdk.ClientOptions{Capabilities: standaloneFixtureCapabilities(), RequiredCapabilities: map[string]uint64{"hushProfile": 1}})
 	defer back.Close()
 	m = open(back, "", true)
-	workflowWork(t, m, m.runAction(m.host.byID[switcherID], ""))
+	threadPickerStep(t, m, m.runAction(m.host.byID[switcherID], ""))
 	_ = pick(m, string(insideID))
 	workflowWatch(t, m)
 	if m.active != insideID || !strings.Contains(ansi.Strip(assertFrame(t, m)), paths[sub]) {
@@ -1184,18 +1195,32 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 	legacy := sdk.NewClient(socket, sdk.ClientOptions{Capabilities: legacyCaps})
 	defer legacy.Close()
 	old := open(legacy, "", true)
-	workflowWork(t, old, old.runAction(old.host.byID[switcherID], ""))
+	threadPickerStep(t, old, old.runAction(old.host.byID[switcherID], ""))
 	if _, ok := choice(old, string(outsideID)); ok || !strings.Contains(old.sheet.title, "scope unavailable") {
 		t.Fatal("older directory was silently substituted for launch workspace scope")
 	}
-	workflowWork(t, old, pick(old, "all-workspaces"))
-	if outsideRow, ok := choice(old, string(outsideID)); !ok || !strings.Contains(outsideRow.Label, "workspace unknown") {
-		t.Fatalf("legacy explicitly browsed workspace is not visibly unknown: %+v", outsideRow)
+	threadPickerStep(t, old, pick(old, "all-workspaces"))
+	if _, ok := choice(old, string(outsideID)); !ok || old.sheet.threadPicker.searchable ||
+		old.sheet.threadPicker.rows[old.sheet.filtered[old.sheet.selected]].workspaceName != "Workspace unknown" {
+		t.Fatal("legacy explicitly browsed workspace is not visibly unknown")
+	}
+	v1Caps := standaloneFixtureCapabilities()
+	v1Caps["threadWorkspace"] = []uint64{sdk.ThreadWorkspaceVersion}
+	v1 := sdk.NewClient(socket, sdk.ClientOptions{Capabilities: v1Caps})
+	defer v1.Close()
+	v1Opts := sdk.ThreadDirectoryOptions{Limit: 10, Workspace: outside}
+	if got, err := v1.ListThreadDirectory(ctx, v1Opts); err != nil || !reflect.DeepEqual(got.WorkspaceMatches, []string{"inside"}) || got.Workspaces != nil {
+		t.Fatalf("v1 directory workspace shape changed: %+v (%v)", got, err)
+	}
+	v1Opts.Query = "outside"
+	if _, err := v1.ListThreadDirectory(ctx, v1Opts); !sdk.IsCode(err, "unsupported_capability") {
+		t.Fatalf("v1 unexpectedly allowed a search: %v", err)
 	}
 	remote := open(back, "", false)
-	workflowWork(t, remote, remote.runAction(remote.host.byID[switcherID], ""))
-	if outsideRow, ok := choice(remote, string(outsideID)); !ok || !strings.Contains(outsideRow.Label, "workspace unknown") ||
-		!strings.Contains(remote.sheet.title, "unverified") {
-		t.Fatalf("remote attach without local opt-in should preserve unscoped browsing: %+v", outsideRow)
+	threadPickerStep(t, remote, remote.runAction(remote.host.byID[switcherID], ""))
+	threadPickerStep(t, remote, remote.changeDialogQuery(remote.sheet, "OUTSIDE"))
+	if _, ok := choice(remote, string(outsideID)); !ok || !strings.Contains(remote.sheet.title, "all workspaces") ||
+		remote.sheet.threadPicker.rows[remote.sheet.filtered[remote.sheet.selected]].workspaceName != "outside" {
+		t.Fatal("remote attach without local opt-in should search named workspaces without a launch path")
 	}
 }

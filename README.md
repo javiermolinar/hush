@@ -44,9 +44,14 @@ $ hush --thread 7 --print 'Now check the install instructions'
 Faux: Now check the install instructions
 ```
 
-In the Go TUI, you can open threads in tabs. It caches transcript blocks and
-renders the visible window, rather than rewrapping the whole thread on each keystroke.
-Use `/config` to set the default model and thinking effort for new threads, and to show live and
+In the Go TUI, open the thread switcher with `Ctrl+X S` or `/threads`. It groups
+threads under workspace names and shows which are running, need attention, or have stopped.
+Type a workspace name, thread title, or phrase from a message to search. Chat search starts
+at three characters. Local sessions start in the launch workspace; choose **Browse all
+workspaces** or run `/threads-all` to search across them.
+
+The TUI caches transcript blocks and renders the visible window rather than rewrapping
+the whole thread on each keystroke. Use `/config` to set the default model and thinking effort for new threads, and to show live and
 historical reasoning without expanding tool output. `/model` still changes only the current thread.
 
 On a supported standalone backend, click the `±` badge or use `/diff` or

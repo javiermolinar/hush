@@ -27,7 +27,9 @@ without metadata.
 Version 2 includes status and checkout metadata. `ListThreadDirectory` can include archived
 threads, and `WatchThreadDirectory` keeps up to 24 explicit IDs current on one connection.
 `CreateThread` can opt into a managed Git worktree; `SetThreadArchived` changes visibility
-without changing history or files. See the [wire contract](../protocol/v1/thread-directory.md).
+without changing history or files. Offer `threadWorkspace: [2, 1]` for named workspace
+metadata and `ThreadDirectoryOptions.Query` for searching workspace names, titles, and
+committed chat before paging. See the [wire contract](../protocol/v1/thread-directory.md).
 
 ## Optional native images
 

@@ -215,6 +215,13 @@ func TestReleaseFrames(t *testing.T) {
 			if body := shot("file-search-results"); !strings.Contains(body, "› tempo.fork/modules/generator/generator.go") || !strings.Contains(body, "partial results") {
 				t.Fatal("file search did not show the selected path and scan state")
 			}
+
+			m.editor.set("")
+			openGroupedThreadPicker(t, m)
+			if body := shot("thread-switcher"); !strings.Contains(body, "Deployment tools") ||
+				!strings.Contains(body, "needs attention") || !strings.Contains(body, "stopped") {
+				t.Fatal("the thread picker did not show workspace groups and statuses")
+			}
 		})
 	}
 }

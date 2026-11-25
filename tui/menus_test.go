@@ -48,7 +48,7 @@ func TestMenusGoldens(t *testing.T) {
 		}
 		return m.runAction(at, "")
 	}
-	m.finishWork(act(switcherID)().(workMsg))
+	threadPickerStep(t, m, act(switcherID))
 	golden(t, "menu-switch", m)
 	press(m, tea.KeyEscape, 0)
 	m.finishWork(act(forkPickerID)().(workMsg))
@@ -256,15 +256,15 @@ func TestDirectorySheetShowsNamesAndDatesAndOpensOlderPage(t *testing.T) {
 	m.backend = directoryMenuBackend{}
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 25})
 	open := m.runAction(m.host.byID[switcherID], "")
-	m.finishWork(open().(workMsg))
+	threadPickerStep(t, m, open)
 	frame := ansi.Strip(assertFrame(t, m))
 	if !strings.Contains(frame, "Investigate a latency regression") || !strings.Contains(frame, time.Date(2026, 11, 23, 14, 0, 0, 0, time.UTC).Local().Format("2006-01-02")+" · #17") ||
-		!strings.Contains(frame, "workspace unknown · ◌ Fix the date") || !strings.Contains(frame, "Preview text") || m.sheet.choices[0].ID != "17" {
+		!strings.Contains(frame, "Workspace unknown") || !strings.Contains(frame, "Fix the date picker") || !strings.Contains(frame, "Preview text") || m.sheet.choices[0].ID != "17" {
 		t.Fatalf("wrong thread directory:\n%s", frame)
 	}
 	press(m, tea.KeyEnd, 0)
 	next := m.acceptChoice(m.sheet)
-	m.finishWork(next().(workMsg))
+	threadPickerStep(t, m, next)
 	frame = ansi.Strip(assertFrame(t, m))
 	if !strings.Contains(frame, "Earlier debugging session") || !strings.Contains(frame, "fork of #1") || strings.Contains(frame, "Older threads") {
 		t.Fatalf("wrong older page:\n%s", frame)
