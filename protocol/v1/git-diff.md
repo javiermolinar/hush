@@ -80,9 +80,11 @@ connection. Close the passive connection to cancel it. Clients can use
 locator or compare against a checkpoint.
 
 The standalone host shares the expensive comparison across clients of the
-same verified worktree. A write-capable tool result or changes to HEAD or the
-index trigger a refresh. Other outside edits are picked up on a 20-second
-host-side fallback. No reply is sent when the observation is unchanged.
+same verified worktree. A write-capable tool completion refreshes watched
+checkouts when the tool cannot report which checkout it changed. Changes to
+HEAD or the index also trigger a refresh. Other outside edits are picked up on
+a 20-second host-side fallback. No reply is sent when the observation is
+unchanged.
 Workspace grants and the thread's checkout are rechecked before each
 published snapshot; a cached comparison is not authorization. The
 [Go SDK](../../sdk/git_diff.go) exposes `WatchGitDiff`.

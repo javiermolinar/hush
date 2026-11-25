@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import { gitDiffFiles, gitDiffLines, type GitDiffFile, type GitDiffHost, type GitDiffLine, type GitDiffRange,
@@ -125,15 +125,11 @@ type Worktree = { identity: GitWorkspaceIdentity; version: number; value?: Workt
   flight?: Promise<WorktreeSnapshot> };
 type ThreadSnapshot = { revision: string } & ({ summary: Summary; cwd: string; identity: GitWorkspaceIdentity } |
   { error: { code: string; message: string } });
-type WatchedThread = { peers: number; changes: ChangePulse; stop: AbortController; cwd?: string; tree?: Worktree;
+type WatchedThread = { peers: number; changes: ChangePulse; stop: AbortController; tree?: Worktree;
   read?: Promise<ThreadSnapshot> };
 
 const directoryKey = (dir: DirectoryIdentity) => [dir.path, String(dir.device), String(dir.inode), String(dir.birth)];
 const treeKey = (id: GitWorkspaceIdentity) => JSON.stringify([directoryKey(id.root), directoryKey(id.gitDir), directoryKey(id)]);
-const inside = (root: string, cwd: string) => {
-  const path = relative(root, cwd);
-  return !isAbsolute(path) && path !== ".." && !path.startsWith(".." + sep);
-};
 
 async function treeStamp({ root, gitDir, path: common }: GitWorkspaceIdentity, branch?: string) {
   // HEAD and index belong to the linked checkout; the current ref and
@@ -172,24 +168,12 @@ export class GitDiffService implements GitDiffHost {
     this.#seen.clear();
   }
 
-  toolFinished(id: ConversationId) {
-    if (!this.#watching.size && !this.#trees.size) return;
-    const signal = AbortSignal.any([this.#stop.signal, AbortSignal.timeout(4_000)]);
-    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    // Read off the tool hook; neither Git nor disk metadata waits on a tool result.
-    void this.h.snapshot(AgentDoc, id, ctx).then(async agent => {
-      const cwd = agent?.cwd;
-      const path = cwd ? await realpath(cwd).catch(() => cwd) : undefined;
-      if (!signal.aborted) this.invalidate(path);
-    }).catch(() => { if (!this.#stop.signal.aborted) this.invalidate(); });
-  }
-
-  invalidate(cwd?: string) {
-    for (const tree of this.#trees.values()) {
-      if (cwd === undefined || inside(tree.identity.root.path, cwd)) this.#dirty(tree);
-    }
+  invalidate() {
+    // Dirty the bounded cache and wake waiters; each watch rechecks its own
+    // authority before using the shared worktree scan.
+    for (const tree of this.#trees.values()) this.#dirty(tree);
     for (const thread of this.#watching.values()) {
-      if (!thread.tree && (cwd === undefined || !thread.cwd || thread.cwd === cwd)) thread.changes.emit();
+      if (!thread.tree) thread.changes.emit();
     }
   }
 
@@ -277,7 +261,7 @@ export class GitDiffService implements GitDiffHost {
     const signal = AbortSignal.any([life, AbortSignal.timeout(4_000)]);
     const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT), id = Number(threadId) as ConversationId;
     try {
-      const cwd = thread.cwd = await this.#cwd(id, ctx);
+      const cwd = await this.#cwd(id, ctx);
       // Each thread must still authorize its own exact directory. A shared
       // checkout, or a cached successful observation, is not a grant.
       const identity = await this.trust.withGit(cwd, signal, value => value);

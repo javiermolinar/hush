@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -221,4 +221,66 @@ test("Git watches share one linked-worktree scan and observe tool writes, index 
   const regrant = b.send(method, { threadId: sameTree, after: denied.revision });
   await trust("grant", sub);
   assert.equal(ok(await regrant).summary.commit, commit);
+});
+
+test("a native tool write in checkout A wakes the Git watch in checkout B", { timeout: 15_000 }, async t => {
+  const home = await realpath(await mkdtemp("/tmp/hush-git-cross-"));
+  const agentDir = join(home, ".hush"), dataDir = join(agentDir, "runtime"), socket = join(dataDir, "hush.sock");
+  const a = join(home, "a"), b = join(home, "b"), target = join(b, "tracked.txt");
+  const env = { HOME: home, PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+  const git = async (cwd, ...args) => (await run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args],
+    { cwd, env })).stdout.trim();
+  let app, peer;
+  t.after(async () => {
+    peer?.close();
+    await app?.close();
+    await rm(home, { recursive: true, force: true });
+  });
+
+  for (const cwd of [a, b]) {
+    await mkdir(cwd);
+    await git(cwd, "init", "-q", "-b", "main");
+    await writeFile(join(cwd, "tracked.txt"), "base\n");
+    await git(cwd, "add", "tracked.txt");
+    await git(cwd, "commit", "-qm", "seed");
+    await run(process.execPath, [bundle, "trust", "grant", "--cwd", cwd], { cwd, env });
+  }
+  // The faux provider calls the native write tool with a path relative to A.
+  await symlink(target, join(a, "workspace-marker.txt"));
+  const head = await git(b, "rev-parse", "HEAD");
+  const metadata = () => Promise.all(["HEAD", "index"].map(async name => {
+    const path = join(b, ".git", name);
+    const { ino, mtimeNs, ctimeNs } = await stat(path, { bigint: true });
+    return { ino, mtimeNs, ctimeNs, content: await readFile(path) };
+  }));
+  const before = await metadata();
+
+  app = await startBackend({ cwd: a, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
+  peer = await dial(socket);
+  const call = async (method, params) => ok(await peer.send(method, params));
+  const method = "ext.gitDiffWatch.wait";
+  assert.equal((await call("hello", { versions: [1], capabilities: { gitDiff: [1], gitDiffWatch: [1] } })).capabilities.gitDiffWatch, 1);
+  const { id: writer } = await call("thread.new", { cwd: a });
+  const { id: watcher } = await call("thread.new", { cwd: b });
+  const started = performance.now(); // Before the first watch can start the host's 20 s fallback timer.
+  const clean = await call(method, { threadId: watcher });
+  assert.deepEqual(clean.summary.files, []);
+  assert.equal(clean.summary.commit, head);
+  const change = peer.send(method, { threadId: watcher, after: clean.revision })
+    .then(frame => ({ frame, elapsed: performance.now() - started }));
+  void change.catch(() => {}); // Await below, after independently confirming the tool write.
+  assert.equal((await peer.send(method, { threadId: watcher })).error.code, "limit");
+
+  const { submissionId } = await call("submit", { threadId: writer, text: "!workspace-write", requestId: "git-watch-cross-write", whenBusy: "reject" });
+  assert.equal((await call("submission.wait", { threadId: writer, submissionId })).status, "done");
+  assert.equal(await readFile(target, "utf8"), "Written by the faux tool.\n");
+  assert.equal(await git(b, "rev-parse", "HEAD"), head);
+  assert.deepEqual(await metadata(), before);
+  const { frame, elapsed } = await change;
+  assert.ok(elapsed < 10_000, `cross-checkout update took ${elapsed} ms; expected it before host fallback`);
+  t.diagnostic(`initial watch through cross-checkout update: ${elapsed.toFixed(0)} ms`);
+  const updated = ok(frame);
+  assert.notEqual(updated.revision, clean.revision);
+  assert.equal(updated.summary.commit, head);
+  assert.deepEqual(updated.summary.files, [{ path: "tracked.txt", status: "M", staged: false, text: true, added: 1, removed: 1 }]);
 });

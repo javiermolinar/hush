@@ -192,10 +192,11 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     // hook too. Observe every write-capable result, including failed tools
     // that may have changed files before reporting the failure.
     const withWorkspaceChanges: Extension = trust ? { ...prompt, hooks: [...prompt.hooks ?? [], hook(ToolTask, {
-      afterTool: (call, _result, api) => {
-        if (!workspaceWriters.has(call.name) && call.name !== codemode?.toolName) return;
-        gitDiff?.toolFinished(api.conversationId);
-        // Shell and Codemode can write outside the thread's own directory.
+      afterTool: call => {
+        if (!workspaceWriters.has(call.name)) return;
+        // Tool results don't identify all destinations. Shell commands and
+        // writes through aliases can change a different checkout.
+        gitDiff?.invalidate();
         workspaceFiles?.invalidateSearch();
       },
     })] } : prompt;
