@@ -44,6 +44,7 @@ type Options struct {
 
 	// Set WorkspaceLocal only when the client and backend share the workspace.
 	Fills          FillMode
+	ThemeName      string    // interactive client-local theme; empty uses the saved choice
 	Images         ImageMode // auto uses known Unicode-placeholder terminals; none keeps text only
 	WorkspaceLocal bool
 	RepositoryURL  string // optional repository root for #PR links
@@ -86,6 +87,8 @@ type Model struct {
 	width, height             int
 	theme                     extension.Theme
 	palette                   palette
+	themes                    clientThemes
+	themeProblem              string
 	hover                     string
 	copied                    copyLabel
 	editorTemp                string
@@ -95,6 +98,7 @@ type Model struct {
 	clock, clockPending       uint64
 	phase                     int
 	now                       time.Time
+	localTime                 *time.Location
 	frame                     *frameMemo
 	selection                 selection
 	slashIndex                int
@@ -162,13 +166,30 @@ func New(ctx context.Context, backend Backend, options Options) (*Model, error) 
 	}
 	options.Extensions, options.Keymap, options.InterceptedKeys = nil, nil, nil
 	life, cancel := context.WithCancel(ctx)
+	local := time.Now()
+	local.Zone() // resolve the system timezone before rendering activity
 	m := &Model{
 		ctx: life, cancel: cancel, backend: backend, options: options, host: reg,
 		threads: make(map[sdk.ID]*threadState), pending: make(map[uint64]pendingWork),
 		active: options.ThreadID, connection: extension.Connecting,
 		focused: true, tabFeeds: make(map[sdk.ID]feedLease),
 		editor: newPrompt(), width: 80, height: 24, frame: &frameMemo{},
-		images: imageState{mode: options.Images},
+		images: imageState{mode: options.Images}, localTime: local.Location(),
+	}
+	m.palette.resolveRoles(false)
+	m.palette.noColor = os.Getenv("NO_COLOR") != ""
+	m.themes.active.name = terminalTheme
+	if store, err := clientThemeStore(); err == nil {
+		m.themes.store = store
+		chosen, err := store.launch(options.ThemeName)
+		if err != nil {
+			m.themeProblem = err.Error()
+		}
+		if chosen.name != terminalTheme {
+			m.applyTheme(chosen)
+		}
+	} else if options.ThemeName != "" && options.ThemeName != terminalTheme {
+		m.themeProblem = err.Error()
 	}
 	m.editor.area.SetVirtualCursor(false)
 	m.ensureThread("")
@@ -218,6 +239,10 @@ func (m *Model) Init() tea.Cmd {
 	budget := maxEffects
 	for i, out := range initial {
 		commands = append(commands, m.admit(m.route(owner, m.host.registrations[i].ID), out, &budget))
+	}
+	if m.themeProblem != "" {
+		commands = append(commands, m.notify(owner, m.themeProblem+" · using "+m.themes.active.name+" theme", extension.Warning))
+		m.themeProblem = ""
 	}
 	return tea.Batch(append(commands, m.syncClock(), m.syncWorkspaceTrust(), m.loadSettings())...)
 }
@@ -354,6 +379,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.receiveNativeFilePage(v)
 	case nativeFileSearchMsg:
 		m.receiveNativeFileSearch(v)
+	case themeSaved:
+		cmd = m.receiveThemeSaved(v)
 	case settingsMsg:
 		if v.err == nil {
 			m.applySettings(v.settings)
@@ -610,7 +637,7 @@ func (m *Model) syncClock() tea.Cmd {
 	moving := phase != liveIdle && phase != liveFailed && phase != liveResponding && phase != liveWorking
 	timed := moving && phase != liveSending && phase != liveStarting
 	animated := !m.options.ReducedMotion && (moving || m.connection == extension.Connecting && m.active != "" && (t.intro == nil || t.intro.frozen))
-	visible := m.width >= 40 && m.height >= 12 && (animated || timed)
+	visible := m.pane().usable && (animated || timed)
 	if !visible {
 		if m.clockPending != 0 {
 			m.clock++
@@ -912,6 +939,10 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 		return m.openUsage(r, t, budget)
 	case openConfigOp:
 		return m.openConfig(r, budget)
+	case openThemesOp:
+		if r.extension == coreID {
+			return m.openThemes(r, budget)
+		}
 	case openThreadPickerOp:
 		return m.openThreadPicker(r, e.Text == "all", budget)
 	case retryFailureOp, dismissFailureOp:

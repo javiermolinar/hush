@@ -15,7 +15,7 @@
   Switch thread · workspace unverified
   › Workspace, thread, or message
     Workspace unknown
-    › ◌ workspace #1 · current  idle · # Answer  See [the docs](https://examp…
+    › ◌ workspace #1 · current  idle · Answer See the docs and app/main.go:12…
       ⑂ thread 14  fork of #1
     + New thread
   enter choose  ↑↓ move  esc close

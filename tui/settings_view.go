@@ -25,7 +25,7 @@ func (m *Model) configSelectedValue(value string) string {
 	if m.palette.activeTab != "" {
 		return surface(value, m.palette.activeTab)
 	}
-	return paint(x.Accent, value)
+	return m.paint(x.Accent, value)
 }
 
 func (m *Model) configScopeLabel(label string, active bool) string {
@@ -37,16 +37,16 @@ func (m *Model) configScopeLabel(label string, active bool) string {
 
 func (m *Model) configHeader(d *dialog, w int) string {
 	p := d.config
-	left := paint(x.Muted, "─ ") + m.control("settings") + paint(x.Muted, " · ")
+	left := m.paint(x.Muted, "─ ") + m.control("settings") + m.paint(x.Muted, " · ")
 	thread := m.configScopeLabel("this thread", p.scope == configThread)
 	defaults := m.configScopeLabel("default", p.scope == configDefault)
-	middle := thread + paint(x.Muted, "  ") + defaults
-	tail := paint(x.Muted, " · tab switches scope")
+	middle := thread + m.paint(x.Muted, "  ") + defaults
+	tail := m.paint(x.Muted, " · tab switches scope")
 	if p.pending {
-		tail = paint(x.Muted, " · saving…")
+		tail = m.paint(x.Muted, " · saving…")
 	}
 	line := left + middle + tail + " "
-	line += paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(line))))
+	line += m.paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(line))))
 	return ansiCut(line, w)
 }
 
@@ -55,8 +55,8 @@ func (m *Model) configModelHeader(d *dialog, w int) string {
 	if d.config.scope == configDefault {
 		scope = "default"
 	}
-	line := paint(x.Muted, "─ ") + m.control("model") + paint(x.Muted, " · ") + m.configSelectedValue(scope) + " "
-	line += paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(line))))
+	line := m.paint(x.Muted, "─ ") + m.control("model") + m.paint(x.Muted, " · ") + m.configSelectedValue(scope) + " "
+	line += m.paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(line))))
 	return ansiCut(line, w)
 }
 
@@ -116,11 +116,11 @@ func (m *Model) configSettingRow(d *dialog, setting configSetting, w int) string
 	selected := d.config.selected == setting
 	marker := "  "
 	if selected {
-		marker = paint(x.Accent, "› ")
+		marker = m.paint(x.Accent, "› ")
 	}
 	labelWidth := 17
 	if w < 56 {
-		labelWidth = 12
+		labelWidth = min(12, w/2)
 	}
 	label := ""
 	value := ""
@@ -131,7 +131,7 @@ func (m *Model) configSettingRow(d *dialog, setting configSetting, w int) string
 	case configModelSetting:
 		label = "model"
 		value = modelRef(model)
-		hint := paint(x.Muted, "  ↵ pick")
+		hint := m.paint(x.Muted, "  ↵ pick")
 		if stringWidth(value)+stringWidth(hint) <= max(1, w-labelWidth) {
 			value += hint
 		}
@@ -147,9 +147,9 @@ func (m *Model) configSettingRow(d *dialog, setting configSetting, w int) string
 	if selected {
 		styledLabel = "\x1b[1m" + styledLabel + "\x1b[22m"
 	}
-	line := marker + fit(styledLabel, labelWidth-2) + ansi.Truncate(value, max(1, w-labelWidth), "…")
+	line := marker + fit(ansi.Truncate(styledLabel, labelWidth-2, "…"), labelWidth-2) + ansi.Truncate(value, max(1, w-labelWidth), "…")
 	if selected && m.theme.Fills {
-		line = fill(fit(line, w), blendPalette(m.palette.background, m.palette.colors[4], .15))
+		line = fill(fit(line, w), m.palette.selected)
 	}
 	return line
 }
@@ -194,6 +194,14 @@ func (m *Model) configDockRows(d *dialog, w, n int) ([]string, []int, *tea.Curso
 			rows, targets = append(rows, row), append(targets, target)
 		}
 	}
+	if n <= 3 {
+		selected := int(d.config.selected)
+		first := min(selected, 3-n)
+		for i := first; i < first+n; i++ {
+			add(m.configSettingRow(d, configSetting(i), w), i)
+		}
+		return rows, targets, nil
+	}
 	add(m.configHeader(d, w), -1)
 	if n >= 12 {
 		add("", -1)
@@ -235,13 +243,18 @@ func (m *Model) configModelRows(d *dialog, w, n int) ([]string, []int, *tea.Curs
 			rows, targets = append(rows, row), append(targets, target)
 		}
 	}
-	add(m.configModelHeader(d, w), -1)
+	if n >= 3 {
+		add(m.configModelHeader(d, w), -1)
+	}
 	if n >= 7 {
 		add("", -1)
 	}
-	queryRow := len(rows)
-	input, cursorX := m.paletteInput(d.query, w)
-	add(input, -1)
+	var cursor *tea.Cursor
+	if n >= 2 {
+		input, x := m.paletteInput(d.query, w)
+		cursor = tea.NewCursor(x, len(rows))
+		add(input, -1)
+	}
 	footer := n >= 4
 	budget := n - len(rows)
 	if footer {
@@ -259,7 +272,7 @@ func (m *Model) configModelRows(d *dialog, w, n int) ([]string, []int, *tea.Curs
 		model := d.modelSearch.models[choice.ID]
 		prefix := "  "
 		if i == d.selected {
-			prefix = paint(x.Accent, "› ")
+			prefix = m.paint(x.Accent, "› ")
 		}
 		ref := modelRef(model.Model)
 		detail := model.Label
@@ -272,7 +285,7 @@ func (m *Model) configModelRows(d *dialog, w, n int) ([]string, []int, *tea.Curs
 			line = ansi.Truncate(line, max(1, w-stringWidth(tail)-2), "…") + "  " + tail
 		}
 		if i == d.selected && m.theme.Fills {
-			line = fill(fit(line, w), blendPalette(m.palette.background, m.palette.colors[4], .15))
+			line = fill(fit(line, w), m.palette.selected)
 		}
 		add(line, i)
 		if spacious && i+1 < hi {
@@ -296,5 +309,5 @@ func (m *Model) configModelRows(d *dialog, w, n int) ([]string, []int, *tea.Curs
 		compact := m.keyCap("enter") + "  " + m.keyCap("ctrl+d") + "  " + m.keyCap("esc")
 		add(m.hintRow(w, full, compact, fmt.Sprintf("%d models", count)), -1)
 	}
-	return rows, targets, tea.NewCursor(cursorX, queryRow)
+	return rows, targets, cursor
 }

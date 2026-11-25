@@ -402,9 +402,9 @@ func (m *Model) threadPickerLine(item x.Choice, row threadPickerRow, selected bo
 	if row.directory != "" {
 		labelText = shortenDirectory(labelText, room-stringWidth(prefix))
 	}
-	line := paint(tone, ansi.Truncate(prefix+labelText, room, "…"))
+	line := m.paint(tone, ansi.Truncate(prefix+labelText, room, "…"))
 	if label != "" {
-		line += "  " + paint(statusTone, label)
+		line += "  " + m.paint(statusTone, label)
 	}
 	sep := "  "
 	if label != "" {

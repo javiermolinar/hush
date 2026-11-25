@@ -15,7 +15,7 @@ import (
 )
 
 const usage = `Usage:
-  hush [--backend BUNDLE | --socket PATH] [--thread ID] [--local] [--fills auto|on|off] [--images auto|kitty|blocks|none] [--motion=false]
+  hush [--backend BUNDLE | --socket PATH] [--thread ID] [--local] [--theme NAME] [--fills auto|on|off] [--images auto|kitty|blocks|none] [--motion=false]
   hush (--print | --mode text) [--socket PATH] [--thread ID] [--request-id KEY] [PROMPT...]
   hush [--socket PATH] [--thread ID] [--request-id KEY] -- PROMPT...
   hush --no-wait [--json] [--thread ID] [--request-id KEY] [PROMPT...]
@@ -25,7 +25,7 @@ const usage = `Usage:
   hush service status [--json]
   hush service pause|resume|restart|uninstall
   hush stop [--socket PATH] [--json | -q]
-  hush restart [--backend BUNDLE] [--open [--thread ID]]
+  hush restart [--backend BUNDLE] [--open [--thread ID] [--theme NAME]]
   hush auth login|status|logout [PROVIDER] [--backend BUNDLE]
   hush trust status|grant|revoke [--cwd PATH | --scope home] [--json]
   hush store inspect|activate|rollback [--backend BUNDLE]
@@ -81,10 +81,10 @@ const (
 
 // InteractiveOptions are passed to the terminal frontend only after routing.
 type InteractiveOptions struct {
-	Socket, Bundle, Fills, Images string
-	Thread                        sdk.ID
-	Local                         *bool // nil: infer from socket selection
-	Motion                        bool
+	Socket, Bundle, Fills, Images, Theme string
+	Thread                               sdk.ID
+	Local                                *bool // nil: infer from socket selection
+	Motion                               bool
 }
 
 type options struct {
@@ -140,6 +140,7 @@ func parse(args []string) (options, error) {
 	f.BoolVar(&o.directory.IncludeArchived, "all", false, "")
 	f.StringVar(&atEntry, "at-entry", "", "")
 	f.BoolVar(&local, "local", false, "")
+	f.StringVar(&o.ui.Theme, "theme", "", "")
 	f.StringVar(&o.ui.Fills, "fills", "auto", "")
 	f.StringVar(&o.ui.Images, "images", "auto", "")
 	f.BoolVar(&o.ui.Motion, "motion", true, "")
@@ -165,6 +166,15 @@ func parse(args []string) (options, error) {
 		return o, errors.New("only the Hush backend is supported")
 	}
 	rest := f.Args()
+	if f.Changed("theme") {
+		if o.ui.Theme == "" {
+			return o, errors.New("--theme must not be empty")
+		}
+		if f.Changed("mode") || f.Changed("print") || f.Changed("no-session") || f.Changed("no-wait") ||
+			len(rest) != 0 && !(len(rest) == 1 && rest[0] == "restart" && o.restartOpen && f.ArgsLenAtDash() != 0) {
+			return o, errors.New("--theme requires the interactive TUI")
+		}
+	}
 	// Reserve unescaped auth syntax even in an explicit generation mode. An
 	// incompatible option must not accidentally send a login command as chat.
 	if len(rest) != 0 && rest[0] == "auth" && f.ArgsLenAtDash() != 0 {
@@ -349,7 +359,7 @@ func parse(args []string) (options, error) {
 	}
 	o.thread, o.submission, o.atEntry = sdk.ID(thread), sdk.ID(submission), sdk.ID(atEntry)
 	o.ui.Socket, o.ui.Bundle, o.ui.Thread = o.socket, o.bundle, o.thread
-	o.uiFlags = f.Changed("local") || f.Changed("fills") || f.Changed("images") || f.Changed("motion")
+	o.uiFlags = f.Changed("local") || f.Changed("fills") || f.Changed("images") || f.Changed("motion") || f.Changed("theme")
 	if f.Changed("local") {
 		o.ui.Local = &local
 	}
@@ -409,7 +419,8 @@ func parse(args []string) (options, error) {
 		}
 		var invalid string
 		f.Visit(func(v *pflag.Flag) {
-			if invalid == "" && !slices.Contains([]string{"backend", "profile", "open", "thread"}, v.Name) {
+			if invalid == "" && !slices.Contains([]string{"backend", "profile", "open", "thread"}, v.Name) &&
+				!(v.Name == "theme" && o.restartOpen) {
 				invalid = v.Name
 			}
 		})

@@ -537,10 +537,10 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 	if !g.patch {
 		footer += "  " + m.keyHint("u", "refresh")
 	}
-	add(paint(x.Accent, title), target)
+	add(m.paint(x.Accent, title), target)
 	if h >= 3 {
 		if scope := gitReviewScope(m.gitReviewCWD(d), g.list.Branch, w); scope != "" {
-			add(paint(x.Muted, scope), -1)
+			add(m.paint(x.Muted, scope), -1)
 		}
 	}
 	body := h - len(rows)
@@ -553,7 +553,7 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 		case g.cancel != nil || !g.patch && g.err == nil && g.list.Revision == "":
 			add(m.control("Loading…"), -1)
 		case sdk.GitDiffNeedsTrust(g.err):
-			add(paint(x.Warning, "Workspace trust required for Git review"), -1)
+			add(m.paint(x.Warning, "Workspace trust required for Git review"), -1)
 			if body >= 3 {
 				add(m.control("On the backend host, run:"), -1)
 			}
@@ -561,23 +561,23 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 				add(m.control("hush trust grant --cwd PATH"), -1)
 			}
 		case g.err != nil:
-			add(paint(x.Warning, oneLine(g.err.Error())), -1)
+			add(m.paint(x.Warning, oneLine(g.err.Error())), -1)
 		case g.patch && g.view != nil:
 			for _, row := range m.gitPatchRows(g.view, w, body) {
 				add(row, -1)
 			}
 			if g.view.truncated {
-				footer += "  " + paint(x.Warning, "preview clipped")
+				footer += "  " + m.paint(x.Warning, "preview clipped")
 			}
 		case len(g.list.Files) == 0:
-			add(paint(x.Muted, "No changes"), -1)
+			add(m.paint(x.Muted, "No changes"), -1)
 		case !g.patch:
 			lo := min(max(0, g.selected-body+1), max(0, len(g.list.Files)-body))
 			for i := lo; i < min(lo+body, len(g.list.Files)); i++ {
 				f := g.list.Files[i]
 				prefix := "  "
 				if i == g.selected {
-					prefix = paint(x.Accent, "› ")
+					prefix = m.paint(x.Accent, "› ")
 				}
 				status, tone := f.Status, x.Warning
 				switch status {
@@ -588,14 +588,14 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
 				}
 				var stats string
 				if f.Added != nil && f.Removed != nil {
-					stats = paint(x.Good, "+"+strconv.FormatInt(*f.Added, 10)) + " " + paint(x.Danger, "−"+strconv.FormatInt(*f.Removed, 10))
+					stats = m.paint(x.Good, "+"+strconv.FormatInt(*f.Added, 10)) + " " + m.paint(x.Danger, "−"+strconv.FormatInt(*f.Removed, 10))
 				} else {
-					stats = paint(x.Muted, "—")
+					stats = m.paint(x.Muted, "—")
 				}
 				if f.Staged {
 					stats = m.control("index") + "  " + stats
 				}
-				left := prefix + paint(tone, status) + "  " + oneLine(f.Path)
+				left := prefix + m.paint(tone, status) + "  " + oneLine(f.Path)
 				room := max(5, w-stringWidth(stats)-2)
 				add(fit(ansi.Truncate(left, room, "…"), room)+"  "+stats, i)
 			}
@@ -687,15 +687,15 @@ func (m *Model) gitPatchRows(v *gitPatchView, width, height int) []string {
 		for ; part < len(parts) && len(rows) < height; part++ {
 			text := parts[part]
 			if line.Kind == "hunk" || line.Kind == "note" {
-				rows = append(rows, paint(x.Muted, text))
+				rows = append(rows, m.paint(x.Muted, text))
 				continue
 			}
-			n, sign, tone, color := line.NewLine, " ", x.Plain, 0
+			n, sign, tone := line.NewLine, " ", x.Plain
 			switch line.Kind {
 			case "add":
-				sign, tone, color = "+", x.Good, 2
+				sign, tone = "+", x.Good
 			case "remove":
-				n, sign, tone, color = line.OldLine, "−", x.Danger, 1
+				n, sign, tone = line.OldLine, "−", x.Danger
 			}
 			prefix := strings.Repeat(" ", gitLineGutter)
 			if part == 0 {
@@ -703,11 +703,11 @@ func (m *Model) gitPatchRows(v *gitPatchView, width, height int) []string {
 				if len(number) > 6 {
 					number = "…" + number[len(number)-5:]
 				}
-				prefix = paint(x.Muted, fmt.Sprintf("%6s", number)) + " " + paint(tone, sign+" ")
+				prefix = m.paint(x.Muted, fmt.Sprintf("%6s", number)) + " " + m.paint(tone, sign+" ")
 			}
-			row := prefix + paint(tone, text)
-			if color != 0 && m.theme.Fills {
-				row = fill(fit(row, width), blendPalette(m.palette.background, m.palette.colors[color], 0.20))
+			row := prefix + m.paint(tone, text)
+			if tone != x.Plain && m.theme.Fills {
+				row = fill(fit(row, width), m.palette.diffFill(tone))
 			}
 			rows = append(rows, row)
 		}

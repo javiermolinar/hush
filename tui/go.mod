@@ -12,4 +12,6 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/yuin/goldmark v1.7.17
 	golang.org/x/image v0.48.0
+	golang.org/x/net v0.61.0
+	golang.org/x/sys v0.50.0
 )

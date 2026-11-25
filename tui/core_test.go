@@ -61,23 +61,44 @@ func press(m *Model, code rune, mod tea.KeyMod) tea.Cmd {
 
 func assertFrame(t testing.TB, m *Model) string {
 	t.Helper()
-	s := m.View().Content
+	view := m.View()
+	s := view.Content
 	rows := strings.Split(s, "\n")
+	if m.height == 0 && s == "" {
+		rows = nil
+	}
 	if len(rows) != m.height {
 		t.Fatalf("got %d rows; want %d\n%s", len(rows), m.height, s)
 	}
 	for i, row := range rows {
-		if w := ansi.StringWidth(row); w > m.width {
+		w := ansi.StringWidth(row)
+		if w > m.width {
 			t.Fatalf("row %d spans %d > %d cells: %q", i, w, m.width, row)
+		}
+		for _, hit := range m.frame.hits[i] {
+			if hit.first < 0 || hit.last <= hit.first || hit.last > w {
+				t.Fatalf("row %d (%d cells) has an out-of-bounds target: %+v", i, w, hit)
+			}
 		}
 		if strings.ContainsAny(ansi.Strip(row), "\x00\x07\x1b\r\t") {
 			t.Fatalf("control in row %d: %q", i, row)
 		}
 	}
+	if c := view.Cursor; c != nil && (c.Position.X < 0 || c.Position.X >= m.width || c.Position.Y < 0 || c.Position.Y >= m.height) {
+		t.Fatalf("cursor %+v outside %dx%d pane", c.Position, m.width, m.height)
+	}
+	f := m.frame
+	if f.dialogHeight > 0 && (f.dialogX < 0 || f.dialogY < 0 ||
+		f.dialogX+f.dialogWidth > m.width || f.dialogY+f.dialogHeight > m.height ||
+		len(f.dialogChoices) != f.dialogHeight) {
+		t.Fatalf("dialog geometry outside the pane: x=%d y=%d w=%d h=%d targets=%d",
+			f.dialogX, f.dialogY, f.dialogWidth, f.dialogHeight, len(f.dialogChoices))
+	}
 	return s
 }
 
 func TestFrameGeometry(t *testing.T) {
+	t.Run("compact", testCompactFrameGeometry)
 	t.Run("folded-paste", testFoldedPasteFrameGeometry)
 	t.Run("workspace-trust", testWorkspaceTrustFrameGeometry)
 	t.Run("file-picker", testFilePickerFrameGeometry)
@@ -86,15 +107,10 @@ func TestFrameGeometry(t *testing.T) {
 	t.Run("plan-picker", testPlanFrameGeometry)
 	t.Run("plan-review", testPlanReviewFrameGeometry)
 	t.Run("configuration", testConfigFrameGeometry)
+	t.Run("themes", testThemeFrameGeometry)
 	for _, size := range [][2]int{{39, 11}, {40, 12}, {64, 16}, {80, 24}, {120, 30}, {200, 60}} {
 		m, s := demo(t, Options{Fills: FillOff, ProviderLogin: loginFixture()})
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
-		if size[0] < 40 {
-			if v := assertFrame(t, m); !strings.Contains(v, "terminal too small") {
-				t.Fatal(v)
-			}
-			continue
-		}
 		v := assertFrame(t, m)
 		if assertFrame(t, m) != v {
 			t.Fatal("repeat view is not deterministic")
@@ -517,8 +533,8 @@ func TestControlInkChecksContrast(t *testing.T) {
 		m.Update(tea.BackgroundColorMsg{Color: colors.background})
 		m.Update(tea.ForegroundColorMsg{Color: colors.foreground})
 		m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
-		ink := m.palette.control
-		if ink == nil || contrastRatio(ink, colors.background) < 4.5 {
+		ink := m.palette.swatch(roleControl)
+		if ink == nil || m.palette.roles[roleControl].ink.start == "" || contrastRatio(ink, colors.background) < 4.5 {
 			t.Fatalf("insufficient contrast with %v", colors.background)
 		}
 		s.info.Status = x.Running

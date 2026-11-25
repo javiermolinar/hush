@@ -169,7 +169,7 @@ func (v *outputViewer) reflowReview(width int) {
 	}
 }
 
-func (m *Model) outputCopyHint() string { return paint(x.Accent, "c copy all") }
+func (m *Model) outputCopyHint() string { return m.paint(x.Accent, "c copy all") }
 
 // Output rows are already padded to exactly w cells.
 func (m *Model) outputRows(d *dialog, w, n int) ([]string, []int) {
@@ -182,7 +182,7 @@ func (m *Model) outputRows(d *dialog, w, n int) ([]string, []int) {
 		rows, targets = append(rows, s), append(targets, target)
 	}
 	if n >= 3 {
-		add(fit(paint(x.Accent, ansi.Truncate(d.title, w, "…")), w), -1)
+		add(fit(m.paint(x.Accent, ansi.Truncate(d.title, w, "…")), w), -1)
 	}
 	for i := top; i < top+page; i++ {
 		add(v.window(i, left, w), -1)

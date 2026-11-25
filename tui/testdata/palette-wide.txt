@@ -18,7 +18,7 @@
 │ What changed in │ Prompt                                                   │
                   │   Edit prompt                                   ctrl+x e │
   Answer          │                                                          │
-                  │ enter run  ↑↓ move  esc close                  1–11 / 21 │
+                  │ enter run  ↑↓ move  esc close                  1–11 / 22 │
   See the docs and╰──────────────────────────────────────────────────────────╯
 
   ── go  copy     ────────────────────────

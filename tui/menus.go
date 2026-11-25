@@ -481,7 +481,7 @@ func (m *Model) applyMenuResult(op x.Operation, result *x.ClientResult) {
 					info.Workspace = row.Workspace
 				}
 				info.LastMessageAt = row.LastMessageAt
-				info.Preview = limitText(oneLine(t.lastAnswer), 100)
+				info.Preview = menuPreview(t.lastAnswer, true)
 				row = info
 			}
 			out = append(out, row)
@@ -672,7 +672,7 @@ func forkMenu(id, before sdk.ID) x.Outcome {
 			for _, msg := range e.Messages {
 				for _, b := range msg.Blocks {
 					if b.Type == "text" && body == "" {
-						body = oneLine(limitText(b.Text, 100))
+						body = menuPreview(b.Text, msg.Role == "assistant" && !checkpointMarker(e.Kind))
 					}
 				}
 			}

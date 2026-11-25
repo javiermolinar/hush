@@ -22,7 +22,7 @@ func codeCopyPoint(t *testing.T, m *Model, id string, onButton bool) tea.Mouse {
 		}
 		col := stringWidth(prefix)
 		if onButton {
-			title, _, ok := strings.Cut(header, codeCopyAction)
+			title, _, ok := strings.Cut(header, m.codeCopyAction())
 			if !ok {
 				t.Fatal("header has no copy button")
 			}
@@ -70,7 +70,7 @@ func TestCodeCopyClick(t *testing.T) {
 			}
 			assertFrame(t, m)
 			row := m.frame.rows[p.Y]
-			if !strings.Contains(row, paint(x.Good, "✓ copied")) || strings.Contains(row, "\x1b[32m─") ||
+			if !strings.Contains(row, m.paint(x.Good, "✓ copied")) || strings.Contains(row, "\x1b[32m─") ||
 				stringWidth(row) != stringWidth(before) || m.notice.text != "" {
 				t.Fatalf("expected stationary inline confirmation only, got %q (notice %q)", row, m.notice.text)
 			}
@@ -92,7 +92,7 @@ func TestCodeCopySweep(t *testing.T) {
 	row := m.frame.rows[p.Y]
 	plain := ansi.Strip(row)
 	for i := 0; i < copySweepFrames; i++ {
-		if !strings.Contains(row, paint(x.Good, "✓ copied")) || !strings.Contains(row, "\x1b[32m─") {
+		if !strings.Contains(row, m.paint(x.Good, "✓ copied")) || !strings.Contains(row, "\x1b[32m─") {
 			t.Fatalf("sweep frame %d has no green band and inline label: %q", i, row)
 		}
 		_, next := m.Update(copySweepTick{token})
@@ -106,7 +106,7 @@ func TestCodeCopySweep(t *testing.T) {
 		}
 		row = newRow
 	}
-	if strings.Contains(row, "\x1b[32m─") || !strings.Contains(row, paint(x.Good, "✓ copied")) {
+	if strings.Contains(row, "\x1b[32m─") || !strings.Contains(row, m.paint(x.Good, "✓ copied")) {
 		t.Fatalf("label should stay after the band stops: %q", row)
 	}
 }

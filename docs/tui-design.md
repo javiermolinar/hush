@@ -14,7 +14,7 @@
 
 ## Colors and contrast
 
-- Use the terminal palette, with semantic ANSI colors and faint secondary text. Derive backgrounds from OSC 11 (retry if unanswered), never hardcode them. `auto` disables fills in Rex; with fills off, don't paint or blend toward a background. Themes must not change layout.
+- Use the terminal palette by default, with semantic ANSI colors and faint secondary text. [Client-local themes](../README.md#tui-themes) can opt in to RGB foreground overrides; fall back to terminal roles without truecolor, a reported background, or sufficient contrast. Derive backgrounds from OSC 11 (retry if unanswered), never hardcode them. `auto` disables fills in Rex; with fills off, don't paint or blend toward a background. Themes must not change layout.
 - Soft fills mark the tab band, inline code, expanded tool cards, and key caps. Step OKLab lightness by −0.03 on light or +0.045 on dark, with 1.8 steps for caps. Omit soft fills when contrast is below 0.015, the background is unknown, or truecolor is unavailable. Without soft fills use emphasis for inline code and plain text for keys.
 - Strong fills mark state only: active tab blue 0.26, parked tab amber 0.20, diff lines green/red 0.20, selected row blue 0.15. Without a known background, use foreground color alone.
 - Blue foreground marks live activity and the user bar, not links, tab titles, or input labels. Agent prose uses the terminal foreground. Code uses ANSI magenta for keywords, cyan for strings and numbers, and faint comments; red/green are reserved for diffs.

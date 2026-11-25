@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-	x "github.com/javiermolinar/hush/tui/extension"
 )
 
 // FillMode controls background fills. FillAuto disables them in Rex.
@@ -25,31 +24,14 @@ const (
 )
 
 type palette struct {
-	background, foreground color.Color
-	colors                 [16]color.Color
-	soft, key, control     color.Color
-	controlInk, softInk    string
-	activeTab, parkedTab   string
-}
-
-func paint(t x.Tone, s string) string {
-	if s == "" {
-		return s
-	}
-	switch t {
-	case x.Accent:
-		return "\x1b[34m" + s + "\x1b[39m"
-	case x.Muted:
-		return "\x1b[2m" + s + "\x1b[22m"
-	case x.Good:
-		return "\x1b[32m" + s + "\x1b[39m"
-	case x.Warning:
-		return "\x1b[33m" + s + "\x1b[39m"
-	case x.Danger:
-		return "\x1b[31m" + s + "\x1b[39m"
-	default:
-		return s
-	}
+	background, foreground        color.Color
+	ansiColors                    [16]color.Color
+	overrides                     themeColors
+	noColor                       bool
+	roles                         [roleCount]resolvedRole
+	soft, key, selected           color.Color
+	added, removed                color.Color
+	softInk, activeTab, parkedTab string
 }
 
 func fill(s string, c color.Color) string {
@@ -76,10 +58,7 @@ func surface(s, ink string) string {
 // Controls need readable text even when the terminal has no measurable solid
 // palette. Faint (SGR 2) is for decorative metadata, not labels or key hints.
 func (m *Model) control(s string) string {
-	if m.palette.controlInk == "" || s == "" {
-		return s
-	}
-	return m.palette.controlInk + s + "\x1b[39m"
+	return m.palette.roles[roleControl].ink.paint(s)
 }
 
 func (m *Model) keyHint(key, label string) string { return m.keyCap(key) + m.control(" "+label) }
@@ -89,6 +68,9 @@ func (m *Model) keyCap(key string) string {
 		return m.control(key)
 	}
 	// Padding is independent of theme so it never changes row geometry.
+	if m.palette.roles[roleControl].custom {
+		key = m.control(key)
+	}
 	return fill(key, m.palette.key)
 }
 
@@ -131,7 +113,7 @@ func (m *Model) terminalMessage(msg tea.Msg) (bool, tea.Cmd) {
 			}
 			rgb[i] = n
 		}
-		m.palette.colors[p[1][0]-'0'] = color.NRGBA{R: rgb[0], G: rgb[1], B: rgb[2], A: 255}
+		m.palette.ansiColors[p[1][0]-'0'] = color.NRGBA{R: rgb[0], G: rgb[1], B: rgb[2], A: 255}
 		m.refreshTheme()
 	case uv.UnknownEvent:
 		return true, nil
@@ -147,11 +129,14 @@ func (m *Model) terminalMessage(msg tea.Msg) (bool, tea.Cmd) {
 
 func (m *Model) refreshTheme() {
 	m.theme.Revision++
-	bg := m.palette.background
+	p := &m.palette
+	bg := p.background
 	m.theme.BackgroundKnown = bg != nil
-	m.theme.Fills = bg != nil && m.theme.TrueColor && m.options.Fills != FillOff
-	m.palette.soft, m.palette.key, m.palette.control = nil, nil, nil
-	m.palette.controlInk, m.palette.softInk, m.palette.activeTab, m.palette.parkedTab = "", "", "", ""
+	m.theme.Fills = bg != nil && m.theme.TrueColor && m.options.Fills != FillOff && !p.noColor
+	p.resolveRoles(m.theme.TrueColor && !p.noColor)
+	p.soft, p.key, p.selected = nil, nil, nil
+	p.added, p.removed = nil, nil
+	p.softInk, p.activeTab, p.parkedTab = "", "", ""
 	if bg == nil {
 		return
 	}
@@ -160,12 +145,9 @@ func (m *Model) refreshTheme() {
 	if !m.theme.Fills {
 		return
 	}
-	if ink := blendPalette(bg, m.palette.foreground, .78); ink != nil && contrastRatio(ink, bg) >= 4.5 {
-		selected := blendPalette(bg, m.palette.colors[4], .15)
-		if selected == nil || contrastRatio(ink, selected) >= 4.5 {
-			m.palette.control, m.palette.controlInk = ink, ansi.NewStyle().ForegroundColor(ink).String()
-		}
-	}
+	p.selected = p.roleFill(roleAccent, .15)
+	p.added = p.roleFill(roleSuccess, .20)
+	p.removed = p.roleFill(roleError, .20)
 	step := 0.045
 	if m.theme.Light {
 		step = -0.03
@@ -173,17 +155,40 @@ func (m *Model) refreshTheme() {
 	soft := fromLab(l+step, a, b)
 	next, _, _ := oklab(soft)
 	if math.Abs(next-l) >= 0.015 {
-		m.palette.soft, m.palette.key = soft, fromLab(l+1.8*step, a, b)
-		m.palette.softInk = ansi.NewStyle().BackgroundColor(soft).String()
+		p.soft, p.key = soft, fromLab(l+1.8*step, a, b)
+		p.softInk = ansi.NewStyle().BackgroundColor(soft).String()
 	}
-	stateFill := func(index int, amount float64) string {
-		blend := blendPalette(bg, m.palette.colors[index], amount)
-		if blend == nil || m.palette.foreground != nil && contrastRatio(blend, m.palette.foreground) < 4.5 {
+	foreground := p.swatch(roleText)
+	stateFill := func(role colorRole, amount float64) string {
+		blend := p.roleFill(role, amount)
+		if blend == nil || foreground != nil && contrastRatio(blend, foreground) < 4.5 {
 			return ""
 		}
 		return ansi.NewStyle().BackgroundColor(blend).String()
 	}
-	m.palette.activeTab, m.palette.parkedTab = stateFill(4, .26), stateFill(3, .20)
+	p.activeTab, p.parkedTab = stateFill(roleAccent, .26), stateFill(roleWarning, .20)
+
+	controls := p.roles[roleControl]
+	if controls.custom && (p.selected == nil || contrastRatio(controls.rgb, p.selected) >= 4.5) &&
+		(p.key == nil || contrastRatio(controls.rgb, p.key) >= 4.5) {
+		return
+	}
+	p.roles[roleControl] = p.terminalRole(roleControl)
+	if ink := blendPalette(bg, foreground, .78); ink != nil && contrastRatio(ink, bg) >= 4.5 &&
+		(p.selected == nil || contrastRatio(ink, p.selected) >= 4.5) {
+		p.roles[roleControl] = resolvedRole{rgb: ink, ink: roleInk{ansi.NewStyle().ForegroundColor(ink).String(), resetForeground}}
+	}
+}
+
+func (p *palette) roleFill(role colorRole, amount float64) color.Color {
+	swatch := p.roles[role]
+	fill := blendPalette(p.background, swatch.rgb, amount)
+	// Keep the default fills byte-for-byte, but don't blend a custom
+	// foreground toward itself if it would lose contrast on the result.
+	if swatch.custom && fill != nil && contrastRatio(fill, swatch.rgb) < 4.5 {
+		return nil
+	}
+	return fill
 }
 
 func linearColor(x uint32) float64 {

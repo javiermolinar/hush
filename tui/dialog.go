@@ -41,6 +41,7 @@ type dialog struct {
 	modelSearch                 *modelSearchState
 	threadPicker                *threadPicker
 	config                      *configPanel
+	themePicker                 *themePicker
 	git                         *gitReview
 	workTrust                   *workspaceTrustDialog
 	loadedContext               *contextDialog
@@ -259,6 +260,9 @@ func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) te
 	if d.loadedContext != nil && d.loadedContext.cancel != nil {
 		d.loadedContext.cancel()
 	}
+	if d.themePicker != nil && !accepted && !d.themePicker.saving {
+		m.applyTheme(d.themePicker.before)
+	}
 	if !m.live(d.route) || d.done == nil {
 		return nil
 	}
@@ -383,7 +387,14 @@ func (m *Model) dialogVisible(d *dialog) bool {
 	return m.currentFrame() && m.frame.dialogToken == d.token && m.frame.dialogHeight > 0
 }
 
+func (m *Model) dialogCanInput(d *dialog) bool {
+	return m.pane().usable && (!m.currentFrame() || m.frame.dialogToken != d.token || m.frame.dialogHeight > 0)
+}
+
 func (m *Model) acceptChoice(d *dialog) tea.Cmd {
+	if d.themePicker != nil {
+		return m.acceptTheme(d)
+	}
 	if d.confirm && !m.confirmVisible(d) {
 		return nil
 	}
@@ -452,6 +463,11 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	chord := ""
 	if key {
 		chord = normalizeChord(k.String())
+	}
+	if d.themePicker != nil {
+		return m.themePickerKey(d, chord)
+	}
+	if key {
 		if d.config != nil {
 			return m.configInput(d, msg, chord)
 		}
@@ -467,7 +483,7 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	} else if d.config != nil {
 		return m.configInput(d, msg, chord)
 	}
-	if m.width < 40 || m.height < 12 || m.currentFrame() && m.frame.dialogToken == d.token && m.frame.dialogHeight == 0 {
+	if !m.dialogCanInput(d) {
 		return nil // Escape still dismisses an undrawn dialog
 	}
 	if d.custom != nil {
@@ -632,14 +648,18 @@ func (m *Model) changeDialogQuery(d *dialog, query string) tea.Cmd {
 }
 
 func (m *Model) dialogWidth(d *dialog) int {
+	pane := m.pane()
 	if d.placement == x.Sheet || d.promptDock {
-		return max(1, m.width-4)
+		return pane.width
 	}
 	if d.git != nil {
 		if d.git.patch {
-			return m.width
+			return max(1, m.width)
 		}
-		return min(92, m.width-4)
+		return min(92, pane.width)
+	}
+	if pane.narrow {
+		return pane.width
 	}
 	if d.palette {
 		return min(60, max(12, m.width-8))
@@ -674,7 +694,7 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 		rows, targets = append(rows, row), append(targets, target)
 	}
 	if d.custom != nil {
-		add(paint(x.Accent, oneLine(title)), -1)
+		add(m.paint(x.Accent, oneLine(title)), -1)
 		body := scopeView(d.custom.View().Content, min(recordBytes, w*n*8))
 		for s := range strings.SplitSeq(body, "\n") {
 			if len(rows) >= n {
@@ -694,17 +714,17 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 		// Preserve the question and choices before optional chrome. A one-row
 		// confirmation can show the question, but cannot be accepted.
 		if d.message == "" {
-			add(paint(x.Accent, oneLine(title)), -1)
+			add(m.paint(x.Accent, oneLine(title)), -1)
 			footer = n >= 4
 		} else {
 			if n >= 5 {
-				add(paint(x.Accent, oneLine(title)), -1)
+				add(m.paint(x.Accent, oneLine(title)), -1)
 			}
 			add(m.control(ansi.Truncate(oneLine(d.message), w, "…")), -1)
 			footer = n >= 4
 		}
 	} else if n >= 4 || d.input != nil && n >= 3 {
-		add(paint(x.Accent, oneLine(title)), -1)
+		add(m.paint(x.Accent, oneLine(title)), -1)
 	}
 	if footer {
 		n--
@@ -761,10 +781,10 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 				tone = x.Muted
 			}
 			label, detail := oneLine(item.Label), oneLine(item.Description)
-			text := paint(tone, prefix+label)
+			text := m.paint(tone, ansi.Truncate(prefix+label, w, "…"))
 			if detail != "" {
 				tail := ansiCut(detail, max(0, w/2))
-				text = paint(tone, ansiCut(prefix+label, max(0, w-stringWidth(tail)-2))) + "  " + m.control(tail)
+				text = m.paint(tone, ansiCut(prefix+label, max(0, w-stringWidth(tail)-2))) + "  " + m.control(tail)
 			}
 			add(text, i)
 		}
@@ -793,6 +813,10 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 	return rows, targets
 }
 
+func (m *Model) overlayFramed(d *dialog, available int) bool {
+	return !d.promptDock && available >= minOverlayFrameRows && m.dialogWidth(d) >= 24
+}
+
 func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	if available <= 0 {
 		return nil, nil
@@ -810,8 +834,8 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	if d.plan != nil {
 		return m.planRows(d, w, min(18, available))
 	}
-	if available < minOverlayFrameRows {
-		// At short heights, prefer usable body rows to a border.
+	if !m.overlayFramed(d, available) {
+		// Prefer usable body rows to a border in short or narrow panes.
 		if d.git != nil {
 			return m.gitReviewRows(d, w, available)
 		}
@@ -823,6 +847,9 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 		}
 		if d.palette {
 			return m.paletteRows(d, w, available)
+		}
+		if d.themePicker != nil {
+			return m.themeRows(d, w, min(12, available))
 		}
 		return m.dialogRows(d, w, available)
 	}
@@ -838,6 +865,8 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 		body, choices = m.workspaceTrustRows(d.workTrust, w-4, min(14, available-2))
 	} else if d.palette {
 		body, choices = m.paletteRows(d, w-4, min(paletteMaxHeight, available)-2)
+	} else if d.themePicker != nil {
+		body, choices = m.themeRows(d, w-4, min(12, available-2))
 	} else if d.output != nil {
 		body, choices = m.outputRows(d, w-4, available-2)
 	} else {
@@ -845,9 +874,9 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 	}
 	rows := make([]string, 0, len(body)+2)
 	targets := make([]int, 0, len(body)+2)
-	rows = append(rows, paint(x.Muted, "╭"+strings.Repeat("─", w-2)+"╮"))
+	rows = append(rows, m.paint(x.Muted, "╭"+strings.Repeat("─", w-2)+"╮"))
 	targets = append(targets, -1)
-	edge := paint(x.Muted, "│")
+	edge := m.paint(x.Muted, "│")
 	for i, row := range body {
 		if d.output == nil { // outputRows already fit their body width
 			row = fit(row, w-4)
@@ -855,7 +884,7 @@ func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
 		rows = append(rows, edge+" "+row+" "+edge)
 		targets = append(targets, choices[i])
 	}
-	rows = append(rows, paint(x.Muted, "╰"+strings.Repeat("─", w-2)+"╯"))
+	rows = append(rows, m.paint(x.Muted, "╰"+strings.Repeat("─", w-2)+"╯"))
 	return rows, append(targets, -1)
 }
 

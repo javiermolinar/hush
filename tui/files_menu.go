@@ -409,9 +409,9 @@ func (m *Model) rootChoicePath(choice string) string {
 	return "@" // a host need not supply an absolute workspace path
 }
 
-func (m *Model) fileRows(w int) ([]displayRow, int) {
+func (m *Model) fileRows(w, budget int) ([]displayRow, int) {
 	_, choices, ok := m.fileSuggestions()
-	if !ok {
+	if !ok || budget <= 0 {
 		return nil, 0
 	}
 	heading := "Workspace files"
@@ -431,9 +431,15 @@ func (m *Model) fileRows(w int) ([]displayRow, int) {
 	case m.files.partial:
 		heading += " · partial results"
 	}
-	out := []displayRow{{text: paint(x.Muted, heading)}}
-	first := max(0, m.files.selected-maxFileSuggestions+1)
-	for i := first; i < min(first+maxFileSuggestions, len(choices)); i++ {
+	var out []displayRow
+	if budget > 1 {
+		out = append(out, displayRow{text: m.paint(x.Muted, heading)})
+		budget--
+	}
+	headerRows := len(out)
+	limit := min(maxFileSuggestions, budget)
+	first := max(0, m.files.selected-limit+1)
+	for i := first; i < min(first+limit, len(choices)); i++ {
 		item := choices[i]
 		label := item.Path
 		if item.Directory {
@@ -456,9 +462,9 @@ func (m *Model) fileRows(w int) ([]displayRow, int) {
 		if i == m.files.selected {
 			pref, tone = "› ", x.Accent
 		}
-		out = append(out, displayRow{text: paint(tone, pref+label), hits: []spanHit{{0, min(w, 2+stringWidth(label)), x.ActionRef{ID: filePickID, Target: item.Path}, hint}}})
+		out = append(out, displayRow{text: m.paint(tone, pref+label), hits: []spanHit{{0, min(w, 2+stringWidth(label)), x.ActionRef{ID: filePickID, Target: item.Path}, hint}}})
 	}
-	if len(out) == 1 {
+	if len(out) == headerRows {
 		label := "No matches"
 		switch {
 		case m.files.waiting && m.files.query != "":
@@ -468,7 +474,7 @@ func (m *Model) fileRows(w int) ([]displayRow, int) {
 		case m.files.partial:
 			label = "No matches in scanned paths"
 		}
-		out = append(out, displayRow{text: paint(x.Muted, "  "+label)})
+		out = append(out, displayRow{text: m.paint(x.Muted, "  "+label)})
 	}
 	return out, len(choices)
 }

@@ -318,7 +318,7 @@ func (m *Model) burstContent(ctx x.RenderContext, t *threadState, b *toolBurst) 
 	}
 	stamp := ""
 	if b.start > 0 {
-		stamp = time.UnixMilli(int64(b.start)).UTC().Format("15:04")
+		stamp = time.UnixMilli(int64(b.start)).In(m.localTime).Format("15:04")
 	}
 	room := ctx.Width
 	if stamp != "" && stringWidth(stamp)+14 <= room {

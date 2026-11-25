@@ -112,7 +112,7 @@ func fileTarget(path string, line int) (string, string) {
 	return params, (&url.URL{Scheme: "file", Path: path}).String()
 }
 
-func hyperlink(text, params, uri string) string {
+func (m *Model) hyperlink(text, params, uri string) string {
 	if uri == "" || text == "" {
 		return text
 	}
@@ -120,7 +120,7 @@ func hyperlink(text, params, uri string) string {
 	if strings.HasPrefix(uri, "file:") {
 		ink = "\x1b[4:4m" // dotted underline distinguishes paths from web links
 	}
-	return ink + oscLink + params + ";" + uri + oscEnd + text + oscLinkEnd + "\x1b[24m"
+	return ink + oscLink + params + ";" + uri + oscEnd + m.palette.roles[roleLink].ink.paint(text) + oscLinkEnd + "\x1b[24m"
 }
 
 func (m *Model) linkify(text, workspace string) string {
@@ -161,7 +161,7 @@ func (m *Model) linkify(text, workspace string) string {
 			continue
 		}
 		b.WriteString(text[last:i])
-		b.WriteString(hyperlink(match, par, uri))
+		b.WriteString(m.hyperlink(match, par, uri))
 		last = i + len(match)
 	}
 	if last == 0 {

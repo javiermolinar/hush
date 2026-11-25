@@ -26,8 +26,9 @@ const wordColumns = 2 * len("X...X X...X .XXXX X...X")
 var waveGlyphs = [...]string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
 
 type introPaint struct {
-	rgb  [3]uint8
-	mode byte // 0 default, 1 RGB, 2 blue, 3 faint
+	rgb    [3]uint8
+	ink    roleInk
+	hasRGB bool
 }
 
 func rgbPaint(c color.Color) introPaint {
@@ -35,11 +36,11 @@ func rgbPaint(c color.Color) introPaint {
 		return introPaint{}
 	}
 	r, g, b, _ := c.RGBA()
-	return introPaint{rgb: [3]uint8{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8)}, mode: 1}
+	return introPaint{rgb: [3]uint8{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8)}, hasRGB: true}
 }
 
 func mixIntro(a, b introPaint, t float64) introPaint {
-	if a.mode != 1 || b.mode != 1 {
+	if !a.hasRGB || !b.hasRGB {
 		if t < 0.5 {
 			return a
 		}
@@ -52,48 +53,63 @@ func mixIntro(a, b introPaint, t float64) introPaint {
 }
 
 func (p introPaint) set(b *strings.Builder) {
-	switch p.mode {
-	case 1:
-		var arr [20]byte
-		s := append(arr[:0], "\x1b[38;2;"...)
-		for k, n := range p.rgb {
-			if k != 0 {
-				s = append(s, ';')
-			}
-			s = strconv.AppendUint(s, uint64(n), 10)
+	if !p.hasRGB {
+		b.WriteString(p.ink.start)
+		return
+	}
+	var arr [20]byte
+	s := append(arr[:0], "\x1b[38;2;"...)
+	for k, n := range p.rgb {
+		if k != 0 {
+			s = append(s, ';')
 		}
-		_, _ = b.Write(append(s, 'm'))
-	case 2:
-		b.WriteString("\x1b[34m")
-	case 3:
-		b.WriteString("\x1b[2m")
+		s = strconv.AppendUint(s, uint64(n), 10)
+	}
+	_, _ = b.Write(append(s, 'm'))
+}
+
+func (p introPaint) foreground() bool { return p.hasRGB || p.ink.end == resetForeground }
+
+func (p introPaint) end(b *strings.Builder, next introPaint) {
+	if p.foreground() {
+		if !next.foreground() {
+			b.WriteString(resetForeground)
+		}
+	} else {
+		b.WriteString(p.ink.end)
 	}
 }
 
 type introInks struct {
-	word [wordColumns / 2]introPaint
-	wave [waveColumns]introPaint
-	bg   introPaint
+	word      [wordColumns / 2]introPaint
+	wave      [waveColumns]introPaint
+	bg, faint introPaint
 }
 
-func makeIntroInks(p palette, mono, blend, trueColor bool) introInks {
+func makeIntroInks(p *palette, mono, blend, trueColor bool) introInks {
 	var v introInks
 	if mono {
 		return v
 	}
-	accent, secondary := introPaint{mode: 2}, introPaint{}
-	muted, border := introPaint{mode: 3}, introPaint{mode: 3}
+	accent, secondary := introPaint{ink: p.roles[roleAccent].ink}, introPaint{ink: p.roles[roleText].ink}
+	v.faint = introPaint{ink: p.roles[roleMuted].ink}
+	muted, border := v.faint, v.faint
 	if trueColor {
-		if c := p.colors[4]; c != nil {
+		if c := p.swatch(roleAccent); c != nil {
 			accent = rgbPaint(c)
 		}
-		secondary = rgbPaint(p.foreground)
+		secondary = rgbPaint(p.swatch(roleText))
 		bg := rgbPaint(p.background)
-		if blend && bg.mode == 1 && secondary.mode == 1 {
-			muted = mixIntro(bg, secondary, .63)
-			border = mixIntro(bg, secondary, .38)
+		reported := rgbPaint(p.swatch(roleMuted))
+		if blend && bg.hasRGB && secondary.hasRGB {
+			target := secondary
+			if p.roles[roleMuted].custom {
+				target = reported
+			}
+			muted = mixIntro(bg, target, .63)
+			border = mixIntro(bg, target, .38)
 			v.bg = bg
-		} else if reported := rgbPaint(p.colors[8]); reported.mode == 1 {
+		} else if reported.hasRGB {
 			// Translucent terminals use the reported palette, not the solid
 			// background color they report but don't actually paint.
 			border = reported
@@ -130,13 +146,7 @@ func (v introInks) banner(a *introMotion, w int) []displayRow {
 		var current introPaint
 		write := func(s string, next introPaint) {
 			if next != current {
-				if current.mode != 0 {
-					if current.mode == 3 {
-						b.WriteString("\x1b[22m")
-					} else if next.mode != 1 && next.mode != 2 {
-						b.WriteString("\x1b[39m")
-					}
-				}
+				current.end(&b, next)
 				next.set(&b)
 				current = next
 			}
@@ -150,10 +160,10 @@ func (v introInks) banner(a *introMotion, w int) []displayRow {
 			ink := v.word[x]
 			if alpha < 1 {
 				switch {
-				case v.bg.mode == 1 && ink.mode == 1:
+				case v.bg.hasRGB && ink.hasRGB:
 					ink = mixIntro(v.bg, ink, alpha)
 				case alpha < .70:
-					ink = introPaint{mode: 3}
+					ink = v.faint
 				}
 			}
 			write("██", ink)
@@ -206,7 +216,7 @@ func (m *Model) introRows(i *introState, w int) []displayRow {
 	v, a := i.memo, &i.motion
 	key := introKey{width: w, theme: m.theme.Revision, profile: i.profile}
 	if v.inkKey != key || v.banner == nil {
-		v.inks = makeIntroInks(m.palette, i.mono(), m.options.Fills != FillOff, i.profile == colorprofile.TrueColor)
+		v.inks = makeIntroInks(&m.palette, i.mono(), m.options.Fills != FillOff, i.profile == colorprofile.TrueColor)
 		v.inkKey = key
 	}
 	bannerKey := key
@@ -259,40 +269,35 @@ func (m *Model) introReportRows(i *introState, w int, out []displayRow) []displa
 		}
 		s = ansi.Truncate(s, width, "…")
 		progress := i.motion.fadeProgress(k)
-		if !isRunStatus && !mono && progress < 1 && i.memo.inks.bg.mode == 1 {
-			var c color.Color
-			switch label.tone {
-			case x.Accent:
-				c = m.palette.colors[4]
-			case x.Danger:
-				c = m.palette.colors[1]
-			case x.Warning:
-				c = m.palette.colors[3]
-			default:
-				c = m.palette.foreground
+		if !isRunStatus && !mono && progress < 1 && i.memo.inks.bg.hasRGB {
+			role := roleForTone(label.tone)
+			// The terminal palette fades neutral and secondary labels
+			// toward its normal foreground, not toward ANSI bright black.
+			if role != roleAccent && role != roleError && role != roleWarning && !m.palette.roles[role].custom {
+				role = roleText
 			}
-			if c != nil {
+			if c := m.palette.swatch(role); c != nil {
 				var b strings.Builder
 				mixIntro(i.memo.inks.bg, rgbPaint(c), .45+.55*progress).set(&b)
 				b.WriteString(s)
-				b.WriteString("\x1b[39m")
+				b.WriteString(resetForeground)
 				return b.String()
 			}
 		}
 		if isRunStatus {
 			if !mono {
-				glyph = paint(label.tone, glyph)
+				glyph = m.paint(label.tone, glyph)
 			}
 			if progress < .65 {
-				s = paint(x.Muted, s)
+				s = m.paint(x.Muted, s)
 			}
 			return glyph + s
 		}
 		if !mono || label.tone == x.Muted {
-			s = paint(label.tone, s)
+			s = m.paint(label.tone, s)
 		}
 		if progress < .65 && label.tone != x.Muted {
-			s = paint(x.Muted, s)
+			s = m.paint(x.Muted, s)
 		}
 		return s
 	}
@@ -328,10 +333,10 @@ func (m *Model) introReportRows(i *introState, w int, out []displayRow) []displa
 		case introContext:
 			title = "context"
 		}
-		const labelWidth = 12
-		prefix := fit(title, labelWidth)
+		labelWidth := min(12, w/2)
+		prefix := fit(ansi.Truncate(title, labelWidth, "…"), labelWidth)
 		if !mono && title != "" {
-			prefix = paint(x.Muted, prefix)
+			prefix = m.paint(x.Muted, prefix)
 		}
 		body := render(k, w-labelWidth)
 		row := displayRow{text: fit(prefix+body, w)}
@@ -373,18 +378,19 @@ func (m *Model) measureIntroFrame() {
 func (m *Model) patchIntro() (tea.View, bool) {
 	f := m.frame
 	span := &f.intro
-	if !m.currentFrame() || span.count == 0 {
+	if !m.currentFrame() || f.theme != m.theme.Revision || span.count == 0 {
 		return tea.View{}, false
 	}
-	rows := m.introRows(m.intro, m.width-4)
+	pane := m.pane()
+	rows := m.introRows(m.intro, pane.width)
 	if span.first+span.count > len(rows) {
 		return tea.View{}, false
 	}
 	for k, r := range rows[span.first : span.first+span.count] {
 		y := span.at + k
-		f.rows[y] = margin + r.text
+		f.rows[y] = margin[:pane.edge] + r.text
 		if f.hasAbove || f.hasBelow {
-			f.rows[y] += " " + m.scrollCell(f, y)
+			f.rows[y] += margin[:pane.edge-1] + m.scrollCell(f, y)
 		}
 	}
 	span.view.SetContent(strings.Join(f.rows, "\n"))

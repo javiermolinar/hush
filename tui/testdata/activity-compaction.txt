@@ -5,7 +5,7 @@
 
 │ Where do the 13.8k tokens come from?
 
-  ▾ ran 14 · 1 failed · 1m 12s                                                               13:24
+  ▾ ran 14 · 1 failed · 1m 12s                                                               18:54
     ✗ rg -n tokens docs/                                                                  exit 2
        fixture failed
 

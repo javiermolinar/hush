@@ -309,7 +309,7 @@ func TestIntroOfflineRecoversAndFreezesOnSubmit(t *testing.T) {
 	m.backend = introTestBackend{}
 	m.Update(tea.ColorProfileMsg{Profile: colorprofile.ANSI256})
 	m.Update(introReportMsg{update: IntroUpdate{Err: errors.New("offline")}})
-	if body := assertFrame(t, m); !strings.Contains(body, paint(x.Warning, "○ runtime offline · retrying")) || !strings.Contains(ansi.Strip(body), "runtime     offline") {
+	if body := assertFrame(t, m); !strings.Contains(body, m.paint(x.Warning, "○ runtime offline · retrying")) || !strings.Contains(ansi.Strip(body), "runtime     offline") {
 		t.Fatalf("missing runtime warning:\n%s", body)
 	}
 	m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})

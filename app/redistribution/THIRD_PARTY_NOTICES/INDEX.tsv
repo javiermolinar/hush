@@ -140,6 +140,8 @@ github.com/xo/terminfo	v1.0.0	MIT	github.com/xo/terminfo@v1.0.0/LICENSE (h1:2ZpY
 github.com/yuin/goldmark	v1.7.17	MIT	github.com/yuin/goldmark@v1.7.17/LICENSE (h1:p36OVWwRb246iHxA/U4p8OPEpOTESm4n+g+8t0EE5uA=)	texts/c1d6f653c38c80294dc7994647ba0dcc508ce64a86996303c804efa2f7982bff.txt
 golang.org/x/image	v0.48.0	BSD-3-Clause	golang.org/x/image@v0.48.0/LICENSE (h1:1AvuPcuoOTJpA7s4VZ5umrb90T3So0rkB/bSGmxkxik=)	texts/911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad.txt
 golang.org/x/image	v0.48.0	Go patent grant	golang.org/x/image@v0.48.0/PATENTS	texts/96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc.txt
+golang.org/x/net	v0.61.0	BSD-3-Clause	golang.org/x/net@v0.61.0/LICENSE (h1:RR+6j/BTBCrggOLugxa+66R8FvoN6MHlzDlZIbN9YFw=)	texts/911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad.txt
+golang.org/x/net	v0.61.0	Go patent grant	golang.org/x/net@v0.61.0/PATENTS	texts/96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc.txt
 golang.org/x/sync	v0.25.0	BSD-3-Clause	golang.org/x/sync@v0.25.0/LICENSE (h1:dJnifr0nMV8/SBnBvdo4eSGGnrc3O4FFx6IqvtLcmRs=)	texts/911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad.txt
 golang.org/x/sync	v0.25.0	Go patent grant	golang.org/x/sync@v0.25.0/PATENTS	texts/96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc.txt
 golang.org/x/sys	v0.50.0	BSD-3-Clause	golang.org/x/sys@v0.50.0/LICENSE (h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=)	texts/911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad.txt
