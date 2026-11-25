@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"image/color"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -213,6 +215,131 @@ func TestPlainTypingMatchesTextarea(t *testing.T) {
 		{Code: '界', Text: "界"}, {Code: 'x', Text: "x"},
 	} {
 		check(k)
+	}
+}
+
+func TestPromptTailTypingReusesEarlierWraps(t *testing.T) {
+	const width, height = 16, 4
+	fast, reference := newPrompt(), newPrompt()
+	for _, p := range []*promptEditor{&fast, &reference} {
+		p.area.SetVirtualCursor(false)
+		p.area.SetWidth(width)
+		p.area.SetHeight(height)
+		p.area.Focus()
+		p.update(tea.PasteMsg{Content: strings.Repeat("older wrapped prose\n", 40) + "visible line\nlast word"}, true)
+	}
+	check := func(text string) {
+		t.Helper()
+		k := tea.KeyPressMsg{Code: []rune(text)[0], Text: text}
+		fast.update(k, true)
+		reference.area, _ = reference.area.Update(k)
+		reference.text = reference.area.Value()
+		rows, caret := fast.layout(height)
+		want, wantCaret := reference.rows(width, height), reference.area.Cursor()
+		if fast.value() != reference.value() || !slices.Equal(rows, want) || caret == nil || wantCaret == nil || caret.Position != wantCaret.Position {
+			t.Fatalf("typing %q: got %q at %v, want %q at %v", text, rows, caret, want, wantCaret)
+		}
+	}
+	check(" ")
+	line := &fast.lines[len(fast.lines)-2]
+	if len(line.rows) == 0 {
+		t.Fatal("visible earlier line was not cached")
+	}
+	cached := &line.rows[0]
+	check("続きます") // one text event, several runes, crossing a word wrap
+	if len(line.rows) == 0 || cached != &line.rows[0] {
+		t.Fatal("appending invalidated the earlier line's wrap")
+	}
+}
+
+func TestPromptTailFramesMatchTextarea(t *testing.T) {
+	rng := rand.New(rand.NewPCG(38, 2025))
+	for _, width := range []int{4, 9, 28} {
+		for _, height := range []int{1, 4, 8} {
+			for _, initial := range []string{"", "first line\n", "\n界 代 é 👩‍💻 short\nlast line"} {
+				fast, reference := newPrompt(), newPrompt()
+				for _, p := range []*promptEditor{&fast, &reference} {
+					p.area.SetVirtualCursor(false)
+					p.area.SetWidth(width)
+					p.area.SetHeight(height)
+					p.area.Focus()
+					p.set(initial)
+				}
+				for i := range 40 {
+					choices := [...]string{"a", "bbb", " ", "-", " "}
+					text := choices[rng.IntN(len(choices))]
+					if i == 33 {
+						text = "語"
+					}
+					code, _ := utf8.DecodeRuneInString(text)
+					k := tea.KeyPressMsg{Code: code, Text: text}
+					fast.update(k, true)
+					reference.area, _ = reference.area.Update(k)
+					reference.text = reference.area.Value()
+					got, caret := fast.layout(height)
+					want, wantCaret := reference.rows(width, height), reference.area.Cursor()
+					if fast.value() != reference.value() || !slices.Equal(got, want) || caret == nil || wantCaret == nil || caret.Position != wantCaret.Position {
+						t.Fatalf("%dx%d, text %q: rows %q vs %q, caret %v vs %v", width, height, fast.text, got, want, caret, wantCaret)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPromptWideWrapAndSelectionMatchTextarea(t *testing.T) {
+	const width, height = 8, 3
+	fast, reference := newPrompt(), newPrompt()
+	for _, p := range []*promptEditor{&fast, &reference} {
+		p.area.SetVirtualCursor(false)
+		p.area.SetWidth(width)
+		p.area.SetHeight(height)
+		p.area.Focus()
+		p.set("an older draft line\nshort\n" + strings.Repeat("界", 13))
+	}
+
+	step := func(k tea.KeyPressMsg) {
+		t.Helper()
+		fast.update(k, true)
+		reference.area, _ = reference.area.Update(k)
+		reference.text = reference.area.Value()
+		got, caret := fast.layout(height)
+		want, wantCaret := reference.rows(width, height), reference.area.Cursor()
+		if fast.value() != reference.value() || !slices.Equal(got, want) || caret == nil || wantCaret == nil || caret.Position != wantCaret.Position {
+			t.Fatalf("key %q: value %q vs %q; rows %q vs %q; caret %v vs %v", k.String(), fast.value(), reference.value(), got, want, caret, wantCaret)
+		}
+		lines := strings.Split(reference.value(), "\n")
+		row, col := reference.area.Line(), reference.area.Column()
+		wantByte := len(strings.Join(lines[:row], "\n")) + len(string([]rune(lines[row])[:col]))
+		if row > 0 {
+			wantByte++ // separator immediately before the cursor's line
+		}
+		if offset := fast.cursorByte(); offset != wantByte {
+			t.Fatalf("key %q: cursor byte %d, want %d", k.String(), offset, wantByte)
+		}
+	}
+
+	// Cross a wide-character wrap while appending at the viewport's bottom.
+	for range 4 {
+		step(tea.KeyPressMsg{Code: '界', Text: "界"})
+	}
+	if !fast.tailDirty {
+		t.Fatal("wide end-of-draft typing did not use the cached layout")
+	}
+	end := fast.cursorByte()
+	step(tea.KeyPressMsg{Code: tea.KeyUp})
+	if fast.area.Line() != 2 || fast.cursorByte() >= end {
+		t.Fatal("up did not move to an earlier wrapped row of the same logical line")
+	}
+	for range 3 {
+		step(tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModShift})
+	}
+	if !fast.area.HasSelection() || !reference.area.HasSelection() {
+		t.Fatal("shift+left did not select across the wide wrap boundary")
+	}
+	step(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	if fast.area.HasSelection() {
+		t.Fatal("typing did not replace the selection")
 	}
 }
 
@@ -548,19 +675,50 @@ func TestStreamingMatchesFullRender(t *testing.T) {
 	m, _ := demo(t, Options{Fills: FillOn, ReducedMotion: true})
 	m.Update(tea.BackgroundColorMsg{Color: color.White})
 	m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
+	const lead = "Use [the guide][ref], [ref][] and [ref].\n\n```go\nitems[i] = v\n```\n\nNext.\n"
+	const definition = "\n> [ref]:\n>   https://example.org/ref\n"
+	const fence = "```go\ncache[key] = v\n"
+	key := renderKey{owner: m.active}
+	check := func(prefix string) {
+		t.Helper()
+		live := m.renderDocument(key, x.Markdown, prefix, "", 56, "/workspace", true)
+		whole := m.renderDocument(key, x.Markdown, prefix, "", 56, "/workspace", false)
+		if strings.Join(live, "\n") != strings.Join(whole, "\n") {
+			t.Fatalf("at %d %q\nlive %q\nfull %q", len(prefix), prefix, live, whole)
+		}
+	}
 	for _, s := range []string{
 		"Use `hush stop` and `app/main.go:12` before checking the next rule.\n\nThen wait.",
 		"# Heading\n\nAn ordinary paragraph with exact content.\n\nNext paragraph.\n\nAnd another\n\n```go\npackage main\nfunc demo() {\n\tprintln(42)\n}\n```\n\nAfter the code.",
 		"First paragraph.\n\n> Some quoted lines\n> More\n\n- list\n- item\n\n| Header | Here |\n| --- | --- |\n| data | other |\n",
 		"First [ref] paragraph.\n\nNext.\n\n[ref]: https://example.org\n",
+		"Use [the guide](https://example.org) and `items[i]`.\n\n- [ ] Check `cache[key]`\n- [x] Run tests\n\n[More](https://example.org/more).\n\n" + fence + "```\n\nAfter the code.",
+		"First [ref] paragraph.\n\nNext.\n\n[ref]: <https://example.org> trailing text\n\nAfter the invalid definition.",
+		lead + definition + fence + "```\n\nAfter the code.",
 	} {
 		for i := 0; i <= len(s); i++ {
-			key := renderKey{owner: m.active}
-			live := m.renderDocument(key, x.Markdown, s[:i], "", 56, "/workspace", true)
-			whole := m.renderDocument(key, x.Markdown, s[:i], "", 56, "/workspace", false)
-			if strings.Join(live, "\n") != strings.Join(whole, "\n") {
-				t.Fatalf("at %d %q\nlive %q\nfull %q", i, s[:i], live, whole)
-			}
+			check(s[:i])
+		}
+	}
+	// Jump across the definition in one patch: it can first be seen in a
+	// chunk being made stable or in the text before a newly opened fence.
+	for _, tail := range []string{"\nAfter the definition.\n", fence} {
+		check("")
+		check(lead)
+		check(lead + definition + tail)
+	}
+}
+
+func TestLinkedStreamMatchesFullRenderAfterTrimming(t *testing.T) {
+	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	key := renderKey{owner: m.active}
+	source := linkedAnswer(64 << 10)
+	for _, n := range []int{2048, 8192, 16384, 32000, 48000, len(source)} {
+		live := m.renderDocument(key, x.Markdown, source[:n], "", 136, "/workspace", true)
+		whole := m.renderDocument(key, x.Markdown, source[:n], "", 136, "/workspace", false)
+		want := whole[max(0, len(whole)-recordRows):]
+		if !slices.Equal(live, want) {
+			t.Fatalf("at %d bytes: %d live rows differ from the last %d full rows", n, len(live), len(want))
 		}
 	}
 }

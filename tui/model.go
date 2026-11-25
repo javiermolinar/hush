@@ -490,8 +490,9 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 		old = append(old, m.sheet)
 	}
 	m.overlays, m.sheet = nil, nil
+	m.reprojectBackgroundTab(previous)
 	m.emit(id, extension.Event{Kind: extension.ThreadSwitched, PreviousThreadID: previous})
-	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncTabFeeds(), m.syncDirectory(), m.syncGitDiff()}
+	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff()}
 	budget := maxEffects
 	for _, d := range old {
 		cmds = append(cmds, m.replyDialog(d, nil, false, &budget))
@@ -1006,7 +1007,7 @@ func (m *Model) closeThread(id sdk.ID) tea.Cmd {
 	m.tabsWithout(id)
 	if id != m.active {
 		delete(m.threads, id)
-		return tea.Batch(m.syncTabFeeds(), m.syncDirectory())
+		return m.syncDirectory()
 	}
 	var next sdk.ID
 	if len(m.tabs) > 0 {

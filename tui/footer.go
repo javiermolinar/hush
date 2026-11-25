@@ -514,12 +514,16 @@ func (m *Model) decorateView(v *tea.View, t *threadState) {
 }
 
 func (m *Model) desktopStatus(id sdk.ID, before, after x.ThreadStatus) tea.Cmd {
+	t := m.threads[id]
+	if t.directoryBase.beforeFallback != "" {
+		before, t.directoryBase.beforeFallback = t.directoryBase.beforeFallback, ""
+	}
 	if before == "" || before == after || m.focused && id == m.active {
 		return nil
 	}
 	switch after {
 	case x.Parked, x.Done, x.Stopped, x.Failed:
-		return tea.Raw("\x1b]9;" + oneLine(threadTitle(m.threads[id].info)+" · "+string(after)) + "\x07")
+		return tea.Raw("\x1b]9;" + oneLine(threadTitle(t.info)+" · "+string(after)) + "\x07")
 	}
 	return nil
 }
@@ -540,8 +544,8 @@ func (m *Model) tabsWithout(id sdk.ID) {
 	}
 }
 
-// Other open tabs need a small independent native subscription, not a second
-// transcript or a server-wide poll. The active thread has its own full feed.
+// On legacy hosts, other open tabs use a small native subscription. The
+// active thread always has its own full feed.
 type tabFeed struct {
 	lease  feedLease
 	source <-chan sdk.StateUpdate
@@ -562,10 +566,13 @@ func nextTab(f feedLease, src <-chan sdk.StateUpdate) tea.Cmd {
 
 func (m *Model) syncTabFeeds() tea.Cmd {
 	for id, f := range m.tabFeeds {
-		if id == m.active || !slices.Contains(m.tabs, id) {
+		if m.directoryEnabled || id == m.active || !slices.Contains(m.tabs, id) {
 			f.cancel()
 			delete(m.tabFeeds, id)
 		}
+	}
+	if m.directoryEnabled {
+		return nil
 	}
 	var cmds []tea.Cmd
 	for _, id := range m.tabs {
@@ -589,7 +596,7 @@ func (m *Model) syncTabFeeds() tea.Cmd {
 func (m *Model) receiveTab(v tabFeed) tea.Cmd {
 	id := v.lease.owner
 	f := m.tabFeeds[id]
-	if id == m.active || f.token != v.lease.token {
+	if m.directoryEnabled || id == m.active || f.token == 0 || f.token != v.lease.token {
 		return nil
 	}
 	if !v.ok {
@@ -621,7 +628,8 @@ func (m *Model) threadInfo(t *threadState, snap sdk.Snapshot) x.Thread {
 	if s.Thread.Parent != nil {
 		out.ParentID = s.Thread.Parent.ThreadID
 	}
-	out.Title, out.Mode, out.Archived = t.info.Title, t.info.Mode, t.info.Archived
+	prior := m.withoutDirectory(t)
+	out.Title, out.Mode, out.Archived = prior.Title, prior.Mode, prior.Archived
 	t.activeRun = s.Run != nil || s.Streaming != nil || len(s.Compactions) != 0
 	if t.activeRun {
 		out.Status = x.Running
@@ -635,18 +643,20 @@ func (m *Model) threadInfo(t *threadState, snap sdk.Snapshot) x.Thread {
 		out.Status = x.Failed
 	} else if s.Failure != nil && s.Failure.Reason == "aborted" {
 		out.Status = x.Stopped
-	} else if t.info.Status == x.Running || t.info.Status == x.Parked || t.info.Status == x.Done {
+	} else if prior.Status == x.Running || prior.Status == x.Parked || prior.Status == x.Done {
 		out.Status = x.Done
 	}
+	hostStatus := false
 	if read := m.options.ProjectThread; read != nil {
 		meta := read(snap)
 		out.Title, out.Branch, out.Mode = limitText(meta.Title, 256), limitText(meta.Branch, 256), limitText(meta.Mode, 64)
 		out.ContextUse, out.ContextThreshold = meta.ContextUse, meta.ContextThreshold
 		if meta.Status != "" {
-			out.Status = meta.Status
+			out.Status, hostStatus = meta.Status, true
 		}
 	}
-	m.mergeDirectory(&out, t)
+	t.saveDirectoryBase(out, hostStatus)
+	m.mergeDirectory(&out, t, t.activeRun)
 	t.observed = true
 	return out
 }

@@ -13,7 +13,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	"github.com/javiermolinar/hush/tui/extension"
 )
@@ -46,29 +45,28 @@ type promptEditor struct {
 	historyIndex int
 	scratch      string
 	memo         *promptLayout
+
+	lines      []promptLine
+	tailColumn int // rune index at EOF, matching textarea.Column
+	appended   *strings.Builder
+	tailDirty  bool // textarea's viewport hasn't seen the append(s)
 }
 
-type promptLayoutKey struct {
-	width, height, limit int
-	focused              bool
-}
-
-type promptLayout struct {
-	key    promptLayoutKey
-	rows   []string
-	cursor *tea.Cursor
-}
-
-func newPrompt() promptEditor {
+func newPromptArea() textarea.Model {
 	t := textarea.New()
 	t.Prompt = ""
 	t.ShowLineNumbers = false
 	t.CharLimit = maxPromptBytes
-	t.MaxHeight = 0 // cap content by bytes, not the editor's viewport height
+	t.MaxHeight = 0
 	t.SetStyles(textarea.Styles{})
+	return t
+}
+
+func newPrompt() promptEditor {
+	t := newPromptArea()
 	t.SetWidth(68)
 	t.SetHeight(6)
-	return promptEditor{area: t, historyIndex: -1, memo: &promptLayout{}}
+	return promptEditor{area: t, historyIndex: -1, memo: &promptLayout{}, lines: []promptLine{{}}}
 }
 
 func cleanPrompt(value string) string {
@@ -91,31 +89,57 @@ func cleanPrompt(value string) string {
 
 func (p *promptEditor) value() string { return p.text }
 func (p *promptEditor) set(text string) {
-	p.text = cleanPrompt(text)
-	p.area.SetValue(p.text)
+	p.area.SetValue(cleanPrompt(text))
+	p.indexText(p.area.Value())
 	p.syncViewport()
 	p.revision++
 }
-func (p *promptEditor) cursorByte() int {
-	row, col := p.area.Line(), p.area.LineInfo()
-	base := 0
-	for line := range strings.SplitSeq(p.text, "\n") {
-		if row == 0 {
-			// In the pinned Bubbles version, ColumnOffset and StartColumn
-			// index runes; CharOffset is the terminal cell width.
-			n := col.StartColumn + col.ColumnOffset
-			i := 0
-			for i < len(line) && n > 0 {
-				_, size := utf8.DecodeRuneInString(line[i:])
-				i += size
-				n--
-			}
-			return base + i
-		}
-		base += len(line) + 1
-		row--
+
+// Whole-draft operations (paste, history, and Bubbles editing commands) can
+// rebuild the index. An ordinary append only changes the last entry.
+func (p *promptEditor) indexText(text string) {
+	if p.text == text {
+		return
 	}
-	return len(p.text)
+	p.text, p.appended = text, nil
+	clear(p.lines)
+	p.lines = append(p.lines[:0], promptLine{})
+	start := 0
+	for line := range strings.SplitSeq(text, "\n") {
+		start += len(line) + 1
+		if start <= len(text) {
+			p.lines = append(p.lines, promptLine{start: start})
+		} else {
+			p.tailColumn = utf8.RuneCountInString(line)
+		}
+	}
+}
+
+func (p *promptEditor) lineText(row int) string {
+	end := len(p.text)
+	if row+1 < len(p.lines) {
+		end = p.lines[row+1].start - 1
+	}
+	return p.text[p.lines[row].start:end]
+}
+
+func (p *promptEditor) atEnd() bool {
+	return p.area.Line() == len(p.lines)-1 && p.area.Column() == p.tailColumn
+}
+
+func (p *promptEditor) cursorByte() int {
+	if p.atEnd() || p.area.Line() >= len(p.lines) {
+		return len(p.text)
+	}
+	row, col := p.area.Line(), p.area.Column()
+	line, start := p.lineText(row), p.lines[row].start
+	for i := range line {
+		if col == 0 {
+			return start + i
+		}
+		col--
+	}
+	return start + len(line)
 }
 
 func (p *promptEditor) replace(start, end int, value string) {
@@ -145,8 +169,9 @@ func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
 		if !multiline {
 			text = strings.ReplaceAll(text, "\n", " ")
 		}
+		p.restoreViewport()
 		p.area, _ = p.area.Update(tea.PasteMsg{Content: limitText(text, maxPromptBytes-len(p.text))})
-		p.text = p.area.Value()
+		p.indexText(p.area.Value())
 		p.revision++
 		return nil
 	}
@@ -154,16 +179,12 @@ func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
 		if k.String() == "ctrl+v" { // terminal bracketed paste is handled above
 			return nil
 		}
-		if p.area.Focused() && k.Mod&^tea.ModShift == 0 && k.Code >= ' ' && k.Code <= '~' &&
-			len(k.Text) == 1 && p.plainWidth(k.Text) > 0 {
-			// A plain insertion that still fits needs no viewport scroll.
-			// Update would lay out the entire textarea before View runs.
-			p.area.InsertString(k.Text)
-			p.text = p.area.Value()
+		if p.appendKey(k) {
 			p.revision++
 			return nil
 		}
 	}
+	p.restoreViewport()
 	var cmd tea.Cmd
 	p.area, cmd = p.area.Update(msg)
 	if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -175,7 +196,7 @@ func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
 		if clean != text {
 			p.set(clean)
 		} else {
-			p.text = text
+			p.indexText(text)
 			p.revision++
 		}
 	}
@@ -186,79 +207,57 @@ func (p *promptEditor) newline() {
 	if len(p.text) >= maxPromptBytes {
 		return
 	}
+	p.restoreViewport()
 	p.memo.rows = nil
 	p.area, _ = p.area.Update(tea.PasteMsg{Content: "\n"})
-	p.text = p.area.Value()
+	p.indexText(p.area.Value())
 	p.revision++
 }
 
+// The real-cursor prompt can append without Bubbles laying out the draft.
+// Editing elsewhere, selections, and virtual-cursor dialogs keep using Update.
+func (p *promptEditor) appendKey(k tea.KeyPressMsg) bool {
+	if !p.area.Focused() || p.area.VirtualCursor() || p.area.HasSelection() || p.area.Placeholder != "" ||
+		!p.atEnd() || k.Mod&^tea.ModShift != 0 || k.Text == "" || len(k.Text) > maxPromptBytes-len(p.text) || !utf8.ValidString(k.Text) {
+		return false
+	}
+	for _, r := range k.Text {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			return false
+		}
+	}
+	// The byte check implies the default character limit. Avoid counting
+	// the whole draft against it on each append; keep it for other edits.
+	limit := p.area.CharLimit
+	p.area.CharLimit = 0
+	p.area.InsertString(k.Text)
+	p.area.CharLimit = limit
+	if p.appended == nil {
+		p.appended = &strings.Builder{}
+		p.appended.Grow(len(p.text) + len(k.Text))
+		p.appended.WriteString(p.text)
+	}
+	p.appended.WriteString(k.Text)
+	p.text = p.appended.String()
+	p.tailColumn = p.area.Column()
+	last := &p.lines[len(p.lines)-1]
+	last.depth, last.count = 0, 0
+	p.tailDirty = true
+	return true
+}
+
+func (p *promptEditor) restoreViewport() {
+	if p.tailDirty {
+		p.syncViewport()
+	}
+}
+
 // SetValue and SetHeight reposition using Bubble Tea's previous viewport
-// content. Refresh it on the loop, after programmatic changes.
+// content. Refresh it on the loop, after programmatic changes and when
+// handing a run of fast appends back to the textarea's editing commands.
 func (p *promptEditor) syncViewport() {
-	p.memo.rows = nil
+	p.memo.rows, p.tailDirty = nil, false
 	p.area, _ = p.area.Update(nil)
-}
-
-// The main prompt uses a real terminal cursor. Unrelated events need not
-// ask Bubbles to rewrap and repaint its viewport, including unused rows.
-func (p *promptEditor) layout(limit int) ([]string, *tea.Cursor) {
-	key := promptLayoutKey{p.area.Width(), p.area.Height(), limit, p.area.Focused()}
-	if p.memo.rows == nil || p.memo.key != key {
-		var rows []string
-		var caret *tea.Cursor
-		if width := p.plainWidth(""); width > 0 {
-			rows = make([]string, max(1, min(limit, (len(p.text)+width-1)/width)))
-			for i := range rows {
-				part := p.text[i*width : min(len(p.text), (i+1)*width)]
-				rows[i] = part + strings.Repeat(" ", width-len(part))
-			}
-			if key.focused {
-				col := p.area.Column()
-				caret = tea.NewCursor(col%width, col/width)
-				style := p.area.Styles().Cursor
-				caret.Color, caret.Shape, caret.Blink = style.Color, style.Shape, style.Blink
-			}
-		} else {
-			rows, caret = p.rows(key.width, limit), p.area.Cursor()
-		}
-		*p.memo = promptLayout{key, rows, caret}
-	}
-	return p.memo.rows, p.memo.cursor
-}
-
-// Printable ASCII in an unstyled single logical line needs no word layout if
-// it fits on one row or has no break opportunities. Leave room for the caret
-// and defer selection, scrolling, word wraps and Unicode to the textarea.
-func (p *promptEditor) plainWidth(extra string) int {
-	width, size := p.area.Width(), len(p.text)+len(extra)
-	if size > maxPromptBytes || width <= 0 || size/width >= p.area.Height() || p.area.ScrollYOffset() != 0 ||
-		p.area.VirtualCursor() || p.area.HasSelection() || p.area.Placeholder != "" {
-		return 0
-	}
-	for _, s := range [...]string{p.text, extra} {
-		for i := range len(s) {
-			c := s[i]
-			if c < ' ' || c > '~' || size >= width && (c == ' ' || c == '-') {
-				return 0
-			}
-		}
-	}
-	return width
-}
-
-func (p *promptEditor) rows(width, maxRows int) []string {
-	// The actual textarea viewport is never taller than the editor budget.
-	width = max(1, width)
-	n := 0
-	for s := range strings.SplitSeq(p.text, "\n") {
-		n += 1 + strings.Count(ansi.Wrap(s, width, ""), "\n")
-		if n >= maxRows {
-			break
-		}
-	}
-	n = max(1, min(maxRows, n))
-	rows := strings.SplitN(p.area.View(), "\n", n+1)
-	return rows[:min(n, len(rows))]
 }
 
 func (m *Model) resizeEditors() tea.Cmd {

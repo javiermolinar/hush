@@ -29,17 +29,25 @@ type directoryFeedMsg struct {
 	ok     bool
 }
 
+// Reconcile both kinds of tab lease together, including when capabilities change.
 func (m *Model) syncDirectory() tea.Cmd {
+	watcher, ok := m.backend.(directoryWatchBackend)
+	m.directoryEnabled = m.directoryEnabled && ok
+	fallback := m.syncTabFeeds()
 	if m.directoryEnabled && slices.Equal(m.directoryIDs, m.tabs) {
 		return nil
 	}
 	if m.directoryFeed.cancel != nil {
 		m.directoryFeed.cancel()
 	}
+	for _, id := range m.directoryIDs {
+		if !m.directoryEnabled || !slices.Contains(m.tabs, id) {
+			m.clearDirectory(id)
+		}
+	}
 	m.directoryFeed, m.directoryIDs = feedLease{}, nil
-	watcher, ok := m.backend.(directoryWatchBackend)
-	if !ok || !m.directoryEnabled || len(m.tabs) == 0 {
-		return nil
+	if !m.directoryEnabled || len(m.tabs) == 0 {
+		return fallback
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	lease := feedLease{token: m.token(), ctx: ctx, cancel: cancel}
@@ -71,18 +79,6 @@ func (m *Model) receiveDirectory(msg directoryFeedMsg) tea.Cmd {
 	if !msg.ok || sdk.IsCode(msg.update.Err, "unsupported_capability") {
 		m.directoryEnabled = false
 		m.menuFeaturesFromBackend &^= x.Worktrees | x.Archive
-		for _, id := range m.directoryIDs {
-			if t := m.threads[id]; t != nil && t.directory != nil {
-				t.directory = nil
-				if m.options.ProjectThread == nil {
-					t.info.Branch = ""
-				}
-				if m.options.Services.Archive == nil {
-					t.info.Archived = false
-				}
-				m.applyPresentation(t, t.presentation)
-			}
-		}
 		return m.syncDirectory()
 	}
 	next := awaitDirectory(m.directoryFeed, msg.source)
@@ -96,40 +92,106 @@ func (m *Model) receiveDirectory(msg directoryFeedMsg) tea.Cmd {
 			continue
 		}
 		prior := t.info
-		t.directory = &row // detached SDK report, only read by the UI loop
-		m.mergeDirectory(&t.info, t)
-		if prior != t.info {
-			t.revision++
-			m.emit(row.ID, x.Event{Kind: x.StatusChanged})
-			cmds = append(cmds, m.desktopStatus(row.ID, prior.Status, t.info.Status))
+		if t.directory == nil {
+			t.saveDirectoryBase(prior, t.directoryBase.hostStatus)
 		}
+		t.directory = &row // detached SDK report, only read by the UI loop
+		t.info = m.withoutDirectory(t)
+		m.mergeDirectory(&t.info, t, t.activeRun && m.connection == x.Connected)
+		m.tabMetadataChanged(t, prior)
+		cmds = append(cmds, m.desktopStatus(row.ID, prior.Status, t.info.Status))
 	}
 	return tea.Batch(cmds...)
 }
 
-func (m *Model) mergeDirectory(out *x.Thread, t *threadState) {
+// Keep the native/host projection separate from the directory overlay. In
+// particular, a directory-only title or checkout must not survive a downgrade.
+type tabMetadata struct {
+	title, branch, workspace string
+	status, beforeFallback   x.ThreadStatus
+	archived, hostStatus     bool
+}
+
+func (t *threadState) saveDirectoryBase(info x.Thread, hostStatus bool) {
+	base := &t.directoryBase
+	base.title, base.branch, base.workspace = info.Title, info.Branch, info.Workspace
+	base.status, base.archived, base.hostStatus = info.Status, info.Archived, hostStatus
+}
+
+func (m *Model) withoutDirectory(t *threadState) x.Thread {
+	out := t.info
+	if t.directory == nil {
+		return out
+	}
+	base := t.directoryBase
+	out.Status, out.Branch, out.Workspace = base.status, base.branch, base.workspace
+	if m.options.Services.Rename == nil {
+		out.Title = base.title
+	}
+	if m.options.Services.Archive == nil {
+		out.Archived = base.archived
+	}
+	return out
+}
+
+func (m *Model) tabMetadataChanged(t *threadState, prior x.Thread) {
+	if t.info != prior {
+		t.revision++
+		m.emit(t.info.ID, x.Event{Kind: x.StatusChanged})
+	}
+}
+
+func (m *Model) clearDirectory(id sdk.ID) {
+	if t := m.threads[id]; t != nil && t.directory != nil {
+		prior, revision := t.info, t.revision
+		t.info, t.directory = m.withoutDirectory(t), nil
+		m.applyPresentation(t, t.presentation)
+		if prior.Status != t.info.Status {
+			// Compare the first fresh observation with what the user last saw,
+			// not with the cached native status restored during the handoff.
+			t.directoryBase.beforeFallback = prior.Status
+		}
+		if t.revision == revision {
+			m.tabMetadataChanged(t, prior)
+		}
+	}
+}
+
+func (m *Model) reprojectBackgroundTab(id sdk.ID) {
+	if t := m.threads[id]; t != nil && t.directory != nil && slices.Contains(m.tabs, id) {
+		prior := t.info
+		t.info = m.withoutDirectory(t)
+		m.mergeDirectory(&t.info, t, false)
+		// The cached status may be older than the native run. Repaint the
+		// tab but notify only on feed updates, not on navigation.
+		m.tabMetadataChanged(t, prior)
+	}
+}
+
+func (m *Model) mergeDirectory(out *x.Thread, t *threadState, nativeRun bool) {
 	row := t.directory
 	if row == nil {
 		return
 	}
-	if m.options.ProjectThread == nil {
-		out.Branch = ""
-		if row.Checkout != nil {
+	base := t.directoryBase
+	background := out.ID != m.active
+	if row.Checkout != nil {
+		if m.options.ProjectThread == nil || base.branch == "" {
 			out.Branch = row.Checkout.Branch
-			if out.Workspace == "" {
-				out.Workspace = row.Checkout.CWD
-			}
 		}
-		if status := x.ThreadStatus(row.Status); status != "" {
-			// A native run may arrive before the directory catches up. Don't
-			// hide it behind an older idle or done report.
-			if !t.activeRun || status == x.Running || status == x.Parked {
-				out.Status = status
-			}
+		if out.Workspace == "" || background && row.Checkout.CWD != "" {
+			out.Workspace = row.Checkout.CWD
 		}
-		if m.options.Services.Rename == nil {
-			out.Title = row.Title
+	}
+	if status := x.ThreadStatus(row.Status); status != "" && !base.hostStatus {
+		// Only the active feed can know about a run the directory has not
+		// observed yet. A saved native run must not pin a background tab.
+		if background || !nativeRun || status == x.Running || status == x.Parked {
+			out.Status = status
 		}
+	}
+	if m.options.Services.Rename == nil && (m.options.ProjectThread == nil || base.title == "") {
+		out.Title = row.Title
 	}
 	if m.options.Services.Archive == nil {
 		out.Archived = row.Archived

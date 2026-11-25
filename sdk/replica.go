@@ -3,6 +3,8 @@ package sdk
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 	"unicode/utf16"
 )
@@ -87,42 +89,248 @@ func (r *Replica) apply(v any) (bool, error) {
 	base, okBase := asUint(m["baseRev"])
 	next, okNext := asUint(m["nextRev"])
 	ops, okOps := m["ops"].([]any)
-	if typ != "patch" || !okBase || !okNext || base != r.snapshot.Rev || next <= base || !okOps || schemaCheck("patch", m) != nil {
+	if typ != "patch" || !okBase || !okNext || base != r.snapshot.Rev || next <= base || !okOps || len(m) != 6 {
+		return r.invalid()
+	}
+	// These envelope checks and the exact single append tuple cover the
+	// patch schema on the token path, without trying every oneOf branch.
+	index, token := streamAppendIndex(ops)
+	if !token && schemaCheck("patch", m) != nil {
 		return r.invalid()
 	}
 	tree, err := applyOps(r.tree, ops)
 	if err != nil {
 		return r.invalid()
 	}
-	state, err := decodeState(tree, r.snapshot.State.Thread.ID)
+	state := r.snapshot.State
+	if token && state.Streaming != nil {
+		if stream := decodeStreamAppend(tree, index, state.Streaming); stream != nil {
+			state.Streaming = stream
+			r.tree, r.snapshot.State, r.snapshot.Rev = tree, state, next
+			return true, nil
+		}
+	}
+	state, err = decodePatchedState(r.tree, tree, ops, state)
 	if err != nil {
-		return r.invalid()
+		state, err = decodeState(tree, r.snapshot.State.Thread.ID)
+		if err != nil {
+			return r.invalid()
+		}
 	}
 	r.tree, r.snapshot.State, r.snapshot.Rev = tree, state, next
 	return true, nil
 }
 
-func copyTree(v any) any {
-	switch v := v.(type) {
-	case map[string]any:
-		res := make(map[string]any, len(v))
-		for k, x := range v {
-			res[k] = copyTree(x)
-		}
-		return res
-	case []any:
-		res := make([]any, len(v))
-		for i, x := range v {
-			res[i] = copyTree(x)
-		}
-		return res
-	default:
-		return v
+// decodePatchedState runs only after applyOps succeeds. Untouched fields retain
+// both their wire values and their already-validated typed values. Anything
+// outside this decomposition is left to the full decoder.
+func decodePatchedState(before, tree map[string]any, ops []any, prev State) (State, error) {
+	if !keys(tree, "thread", "agent", "usage", "window", "tools", "queue", "compactions") {
+		return State{}, ErrProtocol
 	}
+	touched := make(map[string]struct{})
+	for _, raw := range ops {
+		op := raw.([]any)
+		code := op[0].(string)
+		if code == "r" {
+			return State{}, ErrProtocol
+		}
+		path := op[1].([]any)
+		key := path[0].(string) // a successful edit of the root map requires a string
+		if key == "window" && !windowMembershipOp(code, path) {
+			return State{}, ErrProtocol
+		}
+		touched[key] = struct{}{}
+	}
+
+	next := prev
+	for key := range touched {
+		var err error
+		switch key {
+		case "thread":
+			err = decodeProperty(tree, key, &next.Thread)
+		case "agent":
+			err = decodeProperty(tree, key, &next.Agent)
+		case "usage":
+			err = decodeProperty(tree, key, &next.Usage)
+		case "window":
+			next.Window, err = decodeWindow(before["window"], tree[key], prev.Window)
+		case "tools":
+			err = decodeProperty(tree, key, &next.Tools)
+		case "queue":
+			err = decodeProperty(tree, key, &next.Queue)
+		case "compactions":
+			err = decodeProperty(tree, key, &next.Compactions)
+		case "compactionFailure":
+			err = decodeProperty(tree, key, &next.CompactionFailure)
+		case "run":
+			err = decodeProperty(tree, key, &next.Run)
+		case "failure":
+			err = decodeProperty(tree, key, &next.Failure)
+		case "streaming":
+			err = decodeProperty(tree, key, &next.Streaming)
+		default:
+			return State{}, ErrProtocol
+		}
+		if err != nil {
+			return State{}, err
+		}
+	}
+	if next.Thread.ID != prev.Thread.ID {
+		return State{}, ErrProtocol
+	}
+	return next, nil
+}
+
+func streamAppendIndex(ops []any) (uint64, bool) {
+	if len(ops) != 1 {
+		return 0, false
+	}
+	op, ok := ops[0].([]any)
+	if !ok || len(op) != 3 || op[0] != "a" {
+		return 0, false
+	}
+	path, ok := op[1].([]any)
+	if !ok || len(path) != 4 || path[0] != "streaming" || path[1] != "blocks" || path[3] != "text" {
+		return 0, false
+	}
+	if _, ok := op[2].(string); !ok {
+		return 0, false
+	}
+	return asUint(path[2])
+}
+
+// A token append changes only one string in a previously validated stream.
+// Validate that block, then reuse the wire string and the other typed blocks
+// instead of round-tripping all of the accumulated text through JSON.
+func decodeStreamAppend(tree map[string]any, i uint64, prev *Streaming) *Streaming {
+	if i >= uint64(len(prev.Blocks)) {
+		return nil
+	}
+	var schema string
+	switch prev.Blocks[i].Type {
+	case "text":
+		schema = "text"
+	case "thinking":
+		schema = "thinkingBlock"
+	default:
+		return nil
+	}
+	// applyOps has already checked every container on this path.
+	block := tree["streaming"].(map[string]any)["blocks"].([]any)[i].(map[string]any)
+	if schemaCheck(schema, block) != nil {
+		return nil
+	}
+	text, ok := block["text"].(string)
+	if !ok {
+		return nil
+	}
+	next := *prev
+	next.Blocks = slices.Clone(prev.Blocks)
+	next.Blocks[i].Text = text
+	return &next
+}
+
+func decodeProperty[T any](obj map[string]any, key string, dst *T) error {
+	v, exists := obj[key]
+	var value T
+	if exists {
+		if err := schemaCheck(stateProperty+key, v); err != nil {
+			return err
+		}
+		var err error
+		value, err = decode[T](v)
+		if err != nil {
+			return err
+		}
+	}
+	// Absent optional properties have the zero value, as in a fresh decode.
+	*dst = value
+	return nil
+}
+
+func windowMembershipOp(code string, path []any) bool {
+	if len(path) < 2 {
+		return false
+	}
+	switch path[1] {
+	case "entries":
+		return len(path) == 2 && code == "p" || len(path) <= 3 && oneOf(code, "s", "d")
+	case "beforeEntryId", "lastEntryId":
+		return len(path) == 2 && oneOf(code, "s", "d")
+	}
+	return false
+}
+
+func decodeWindow(before, after any, prev TranscriptWindow) (TranscriptWindow, error) {
+	var w TranscriptWindow
+	obj, ok := after.(map[string]any)
+	if !ok || len(obj) != 3 || !keys(obj, "beforeEntryId", "lastEntryId", "entries") {
+		return w, ErrProtocol
+	}
+	entries, ok := obj["entries"].([]any)
+	if !ok || len(entries) > 100 { // state.window.entries maxItems
+		return w, ErrProtocol
+	}
+	old, ok := before.(map[string]any)
+	if !ok {
+		return w, ErrProtocol
+	}
+	oldEntries, ok := old["entries"].([]any)
+	if !ok || len(oldEntries) != len(prev.Entries) {
+		return w, ErrProtocol
+	}
+	if err := decodeWindowID(obj, "beforeEntryId", &w.BeforeEntryID); err != nil {
+		return w, err
+	}
+	if err := decodeWindowID(obj, "lastEntryId", &w.LastEntryID); err != nil {
+		return w, err
+	}
+
+	// The preceding window is the bounded cache. Only reuse a typed entry
+	// when its entire wire value matches; an ID alone proves nothing about
+	// replacements. DeepEqual short-circuits on shared, copy-on-write maps.
+	cached := make(map[ID]int, len(oldEntries))
+	for i, entry := range prev.Entries {
+		cached[entry.ID] = i
+	}
+	w.Entries = make([]Entry, len(entries))
+	for i, raw := range entries {
+		m, _ := raw.(map[string]any)
+		id, _ := m["id"].(string)
+		if j, ok := cached[ID(id)]; ok && reflect.DeepEqual(oldEntries[j], raw) {
+			w.Entries[i] = prev.Entries[j]
+			continue
+		}
+		if err := schemaCheck("entry", raw); err != nil {
+			return w, err
+		}
+		entry, err := decode[Entry](raw)
+		if err != nil {
+			return w, err
+		}
+		w.Entries[i] = entry
+	}
+	if !validWindow(w) {
+		return w, ErrProtocol
+	}
+	return w, nil
+}
+
+func decodeWindowID(obj map[string]any, key string, dst **ID) error {
+	v := obj[key]
+	if err := schemaCheck(stateProperty+"window/properties/"+key, v); err != nil {
+		return err
+	}
+	id, err := decode[*ID](v)
+	*dst = id
+	return err
 }
 
 func applyOps(before map[string]any, ops []any) (map[string]any, error) {
-	root := copyTree(before)
+	// edit copies only the containers it writes, including when they came
+	// from an earlier op's argument. Published trees are never edited in place.
+	var root any = before
 	for index, raw := range ops {
 		op, ok := raw.([]any)
 		if !ok || len(op) < 2 {
@@ -166,8 +374,16 @@ func edit(parent any, path []any, code string, args []any) (any, error) {
 			return nil, ErrProtocol
 		}
 		target, exists = obj[key]
-		set = func(v any) any { obj[key] = v; return obj }
-		remove = func() any { delete(obj, key); return obj }
+		set = func(v any) any {
+			out := maps.Clone(obj)
+			out[key] = v
+			return out
+		}
+		remove = func() any {
+			out := maps.Clone(obj)
+			delete(out, key)
+			return out
+		}
 	} else {
 		at, ok := asUint(path[0])
 		arr, isArray := parent.([]any)
@@ -181,13 +397,14 @@ func edit(parent any, path []any, code string, args []any) (any, error) {
 		}
 		set = func(v any) any {
 			if exists {
-				arr[n] = v
-				return arr
+				out := slices.Clone(arr)
+				out[n] = v
+				return out
 			}
-			return append(arr, v)
+			return append(arr[:n:n], v)
 		}
 		if exists {
-			remove = func() any { return slices.Delete(arr, n, n+1) }
+			remove = func() any { return slices.Delete(slices.Clone(arr), n, n+1) }
 		}
 	}
 
@@ -223,7 +440,7 @@ func edit(parent any, path []any, code string, args []any) (any, error) {
 		case string:
 			return set(s + suffix), nil
 		case splitUTF16:
-			return set(append(s, utf16.Encode([]rune(suffix))...)), nil
+			return set(append(s[:len(s):len(s)], utf16.Encode([]rune(suffix))...)), nil
 		}
 	case "t":
 		if len(args) != 1 {
@@ -258,9 +475,13 @@ func edit(parent any, path []any, code string, args []any) (any, error) {
 		if !indexOK || !nOK || !insertOK {
 			break
 		}
-		from := min(index, uint64(len(arr)))
-		to := from + min(n, uint64(len(arr))-from)
-		return set(slices.Replace(arr, int(from), int(to), insert...)), nil
+		from := int(min(index, uint64(len(arr))))
+		to := from + int(min(n, uint64(len(arr)-from)))
+		out := make([]any, from+len(insert)+len(arr)-to)
+		copy(out, arr[:from])
+		copy(out[from:], insert)
+		copy(out[from+len(insert):], arr[to:])
+		return set(out), nil
 	case "m":
 		arr, ok := target.([]any)
 		if !ok || len(args) != 1 {

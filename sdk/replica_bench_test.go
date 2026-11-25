@@ -103,9 +103,8 @@ func BenchmarkReplicaApply(b *testing.B) {
 	}
 }
 
-// TestReplicaApplyBudget runs the benchmark's cases in ordinary test runs so
-// hosted CI reports them. The target is sdk-replica's; until it lands, a miss
-// is reported rather than failed.
+// TestReplicaApplyBudget runs the benchmark's cases in ordinary test runs and
+// enforces the target outside of hosted CI's report-only mode.
 func TestReplicaApplyBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
@@ -136,7 +135,7 @@ func TestReplicaApplyBudget(t *testing.T) {
 			allocs := (after.Mallocs - before.Mallocs) / samples
 			t.Logf("p50 %s, p99 %s, %d B/op, %d allocs/op", ds[len(ds)/2-1], p99, bytes, allocs)
 			if p99 > replicaTarget || bytes > replicaTargetBytes {
-				reportPerfMiss(t, "sdk-replica", fmt.Sprintf("p99 %s, %d B/op; target %s, %d B/op", p99, bytes, replicaTarget, replicaTargetBytes))
+				reportPerfMiss(t, "", fmt.Sprintf("p99 %s, %d B/op; target %s, %d B/op", p99, bytes, replicaTarget, replicaTargetBytes))
 			}
 		})
 	}

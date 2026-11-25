@@ -3,7 +3,6 @@ package tui
 import (
 	"bytes"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 	ast "github.com/yuin/goldmark/ast"
 	gfm "github.com/yuin/goldmark/extension"
 	table "github.com/yuin/goldmark/extension/ast"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
 )
 
@@ -30,6 +30,7 @@ type markdownStream struct {
 	text            string
 	stable, scanned int
 	blank, unsafe   bool
+	refsSeen        bool
 	fence           string
 	fenceAt         int
 	completed       []string
@@ -79,9 +80,27 @@ func (m *Model) renderDocument(key renderKey, format x.Format, source, lang stri
 	}
 }
 
-func (d *document) render(source string, w int) []string {
+func (d *document) parse(source string, opts ...parser.ParseOption) ast.Node {
 	d.src = []byte(safeText(source))
-	return d.children(markdown.Parser().Parse(text.NewReader(d.src)), w)
+	return markdown.Parser().Parse(text.NewReader(d.src), opts...)
+}
+
+func (d *document) render(source string, w int) []string {
+	return d.children(d.parse(source), w)
+}
+
+// A fresh context lets each parse see only the definitions in its current
+// source; a definition accepted at EOF may stop being valid on the next patch.
+func (d *document) streamChunk(st *markdownStream, source string) ([]string, bool) {
+	if st.refsSeen {
+		return d.render(source, st.width), false
+	}
+	ctx := parser.NewContext()
+	root := d.parse(source, parser.WithContext(ctx))
+	if len(ctx.References()) != 0 {
+		return nil, true
+	}
+	return d.children(root, st.width), false
 }
 
 func (d *document) children(parent ast.Node, w int) []string {
@@ -447,8 +466,6 @@ func (m *Model) diffRows(s string, w int) []string {
 	return rows
 }
 
-var refDefinition = regexp.MustCompile(`^ {0,3}\[[^\]]+\]:`)
-
 func fenceAfter(open, line string) string {
 	s := strings.TrimLeft(line, " ")
 	if len(line)-len(s) > 3 {
@@ -476,8 +493,9 @@ func (m *Model) streamMarkdown(k renderKey, s string, w int, workspace string) [
 		t.liveDocs = make(map[int]*markdownStream)
 	}
 	st := t.liveDocs[k.block]
-	if st == nil || st.width != w || st.theme != k.theme || st.workspace != workspace || !strings.HasPrefix(s, st.text) {
-		st = &markdownStream{width: w, theme: k.theme, workspace: workspace}
+	appendOnly := st != nil && strings.HasPrefix(s, st.text)
+	if !appendOnly || st.width != w || st.theme != k.theme || st.workspace != workspace {
+		st = &markdownStream{width: w, theme: k.theme, workspace: workspace, refsSeen: appendOnly && st.refsSeen}
 		t.liveDocs[k.block] = st
 	}
 	oldStable := st.stable
@@ -490,11 +508,13 @@ func (m *Model) streamMarkdown(k renderKey, s string, w int, workspace string) [
 		line := s[at : at+i]
 		st.scanned += i + 1
 		// Cut only at an independently starting paragraph/heading after a
-		// blank, outside fences/HTML/ref definitions. Lists/quotes can continue.
-		if st.blank && st.fence == "" && !st.unsafe && line != "" && !strings.ContainsRune(" \t-*+<[>=_~", rune(line[0])) && !(line[0] >= '0' && line[0] <= '9') {
+		// blank, outside fences and before any HTML or reference definition.
+		// Lists and quotes can continue.
+		if st.blank && st.fence == "" && !st.unsafe && !st.refsSeen && line != "" &&
+			!strings.ContainsRune(" \t-*+<>=_~", rune(line[0])) && !(line[0] >= '0' && line[0] <= '9') {
 			st.stable = at
 		}
-		if strings.Contains(line, "[") || strings.HasPrefix(strings.TrimSpace(line), "<") || refDefinition.MatchString(line) {
+		if strings.HasPrefix(strings.TrimSpace(line), "<") {
 			st.unsafe = true
 		}
 		next := fenceAfter(st.fence, line)
@@ -503,23 +523,63 @@ func (m *Model) streamMarkdown(k renderKey, s string, w int, workspace string) [
 		}
 		st.fence, st.blank = next, strings.TrimSpace(line) == ""
 	}
+	st.text = s
 	d := document{m: m, workspace: workspace, key: k, codes: st.codeCount}
+	rows, refs := d.streamRows(st, s, oldStable)
+	if !refs {
+		return rows
+	}
+	// A definition can change any earlier inline parse. Start over and
+	// keep using the full prefix for the rest of this answer.
+	st.refsSeen = true
+	st.stable, st.codeCount, d.codes = 0, 0, 0
+	st.completed, st.open = nil, nil
+	rows, _ = d.streamRows(st, s, 0)
+	return rows
+}
+
+func (d *document) streamRows(st *markdownStream, s string, oldStable int) ([]string, bool) {
 	if st.stable > oldStable {
-		st.completed = joinRows(st.completed, d.render(s[oldStable:st.stable], w))
+		rows, refs := d.streamChunk(st, s[oldStable:st.stable])
+		if refs {
+			return nil, true
+		}
+		st.completed = joinRows(st.completed, rows)
 		st.codeCount = d.codes
 		if len(st.completed) > recordRows {
 			st.completed = append([]string(nil), st.completed[len(st.completed)-recordRows:]...)
 		}
 	}
-	st.text = s
 	var tail []string
+	var refs bool
 	if st.fence != "" && st.fenceAt >= st.stable && s[st.fenceAt] == st.fence[0] && fenceAfter(st.fence, s[st.scanned:]) != "" {
-		tail = d.liveFence(st, s)
+		tail, refs = d.liveFence(st, s)
 	} else {
 		st.open = nil
-		tail = d.render(s[st.stable:], w)
+		tail, refs = d.streamChunk(st, s[st.stable:])
 	}
-	return joinRows(append([]string(nil), st.completed...), tail)
+	if refs {
+		return nil, true
+	}
+	// The live record only uses the last recordRows. Allocate the joined
+	// slice once; copying a full cached prefix and then appending to that
+	// copy would grow it again on every patch.
+	before := st.completed
+	if len(before) == 0 {
+		return tail, false
+	}
+	if len(tail) >= recordRows {
+		return tail[len(tail)-recordRows:], false
+	}
+	separator := 0
+	if len(tail) != 0 {
+		separator = 1
+	}
+	keep := min(len(before), recordRows-len(tail)-separator)
+	rows := make([]string, keep+separator+len(tail))
+	copy(rows, before[len(before)-keep:])
+	copy(rows[keep+separator:], tail)
+	return rows, false
 }
 
 func joinRows(before, after []string) []string {
@@ -529,7 +589,7 @@ func joinRows(before, after []string) []string {
 	return append(before, after...)
 }
 
-func (d *document) liveFence(st *markdownStream, s string) []string {
+func (d *document) liveFence(st *markdownStream, s string) ([]string, bool) {
 	f := st.open
 	if f == nil || f.at != st.fenceAt {
 		nl := strings.IndexByte(s[st.fenceAt:], '\n') + st.fenceAt
@@ -537,7 +597,10 @@ func (d *document) liveFence(st *markdownStream, s string) []string {
 		if fields := strings.Fields(strings.TrimLeft(s[st.fenceAt:nl], st.fence[:1])); len(fields) > 0 {
 			lang = strings.ToLower(fields[0])
 		}
-		before := d.render(s[st.stable:st.fenceAt], st.width)
+		before, refs := d.streamChunk(st, s[st.stable:st.fenceAt])
+		if refs {
+			return nil, true
+		}
 		f = &openFence{at: st.fenceAt, next: nl + 1, index: d.codes, lang: lang, before: before}
 		st.open = f
 	}
@@ -566,7 +629,7 @@ func (d *document) liveFence(st *markdownStream, s string) []string {
 		p, _ := d.codeLine(partial, f.lang, max(1, width-2), f.state)
 		rows = append(rows, p...)
 	}
-	return joinRows(append([]string(nil), f.before...), append(rows, bottom))
+	return joinRows(append([]string(nil), f.before...), append(rows, bottom)), false
 }
 
 type copyLabel struct {

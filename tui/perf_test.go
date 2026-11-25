@@ -39,9 +39,9 @@ var frameTargets = map[string]struct {
 	limit     time.Duration
 	knownMiss string
 }{
-	"typing-1k":         {contractBudget, "prompt-editor"},
-	"typing-4k":         {contractBudget, "prompt-editor"},
-	"typing-16k":        {contractBudget, "prompt-editor"},
+	"typing-1k":         {contractBudget, ""},
+	"typing-4k":         {contractBudget, ""},
+	"typing-16k":        {contractBudget, ""},
 	"replica-streaming": {contractBudget, ""},
 	"image-typing":      {contractBudget, ""},
 }
@@ -471,7 +471,7 @@ func testLinkedStreamingBudget(t *testing.T) {
 		slices.Sort(ds)
 		p99 := ds[len(ds)*99/100-1]
 		t.Logf("View per patch at %d KB (%d patches): p50 %s, p99 %s", sizes[i]>>10, len(ds), ds[len(ds)/2-1], p99)
-		checkFrameTarget(t, p99, limit, "stream-markdown")
+		checkFrameTarget(t, p99, limit, "")
 	}
 }
 

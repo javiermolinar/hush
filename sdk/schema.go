@@ -25,13 +25,21 @@ var threadDirectorySchema []byte
 //go:embed internal/images.schema.json
 var imagesSchema []byte
 
+const stateProperty = "state/properties/"
+
 // An attach that only uses native hello (such as hush status) should not
 // compile validators for Pi events or other negotiated features. Compile each
 // group once on first use and share the immutable validators across clients.
 var imagesWire = lazySchema(imagesSchema, "urn:hush:protocol:images:1", "successEnvelope")
 var threadDirectoryWire = lazySchema(threadDirectorySchema, "urn:hush:protocol:thread-directory:1", "successEnvelope", "successEnvelopeV2", "successWorkspace", "successWorkspaceSearch")
 var intros = lazySchema(introSchema, "urn:hush:protocol:intro:1", "successEnvelope", "successEnvelopeV2")
-var wireSchema = lazySchema(coreSchema, "urn:hush:protocol:core:1", "request", "success", "failureReply", "state", "stateEnd", "patch")
+var wireSchema = lazySchema(coreSchema, "urn:hush:protocol:core:1",
+	"request", "success", "failureReply", "state", "stateEnd", "patch", "entry", "text", "thinkingBlock",
+	stateProperty+"thread", stateProperty+"agent", stateProperty+"usage",
+	stateProperty+"tools", stateProperty+"queue", stateProperty+"compactions",
+	stateProperty+"compactionFailure", stateProperty+"run", stateProperty+"failure", stateProperty+"streaming",
+	stateProperty+"window/properties/beforeEntryId", stateProperty+"window/properties/lastEntryId",
+)
 var orderedSchema = lazySchema(piSchema, "urn:hush:protocol:pi-events:1", "successEnvelope", "open", "command", "ready", "frame", "end", "callResult", "catalogResult")
 
 func lazySchema(data []byte, url string, keys ...string) func() map[string]*jsonschema.Schema {
@@ -79,14 +87,19 @@ func decodeState(tree map[string]any, expected ID) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	w := s.Window
-	if s.Thread.ID != expected || !ordered(w.Entries) ||
-		(len(w.Entries) == 0 && (w.BeforeEntryID != nil || w.LastEntryID != nil)) ||
-		(len(w.Entries) > 0 && (w.LastEntryID == nil || *w.LastEntryID != w.Entries[len(w.Entries)-1].ID ||
-			w.BeforeEntryID != nil && cmpID(*w.BeforeEntryID, w.Entries[0].ID) >= 0)) {
+	if s.Thread.ID != expected || !validWindow(s.Window) {
 		return State{}, ErrProtocol
 	}
 	return s, nil
+}
+
+func validWindow(w TranscriptWindow) bool {
+	n := len(w.Entries)
+	if n == 0 {
+		return w.BeforeEntryID == nil && w.LastEntryID == nil
+	}
+	return ordered(w.Entries) && w.LastEntryID != nil && *w.LastEntryID == w.Entries[n-1].ID &&
+		(w.BeforeEntryID == nil || cmpID(*w.BeforeEntryID, w.Entries[0].ID) < 0)
 }
 
 func ordered(entries []Entry) bool {
