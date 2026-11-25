@@ -50,9 +50,11 @@ by parent path. The breadth-first scan is bounded by elapsed time, entries,
 directories, and depth. `partial` is true if those limits or unreadable
 subdirectories prevented a complete scan. Search is not paginated, and an
 untrusted workspace returns `not_found`. The host may reuse a bounded index of
-names for five seconds. Each match is verified again, and the host still checks
-root identity and current grants on every request. Newly created names may not
-appear until the next scan; explicit directory browsing always scans fresh.
+names for up to ten seconds. Tool results that may have changed files and grant
+notifications invalidate it for subsequent queries. Each match is verified
+again, and the host still checks root identity and current grants on every
+request. Newly created names may not appear until the next scan; explicit
+directory browsing always scans fresh.
 
 ## Prospective threads
 

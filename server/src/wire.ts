@@ -38,6 +38,20 @@ const definitions = schema.$defs;
 const ajv = new AjvModule.Ajv2020({ strict: false, ownProperties: true }).addSchema(schema);
 const def = (name: keyof typeof definitions) => ajv.compile({ $ref: schema.$id + "#/$defs/" + name });
 export const stateShape = def("state");
+export const entryShape = def("entry");
+// Feed projections validate entries when they are created. Keep every
+// requirement of the state schema except the repeated item validation.
+const { window: stateWindow } = definitions.state.properties;
+export const stateEnvelopeShape = ajv.compile({
+  ...definitions.state, $defs: definitions,
+  properties: {
+    ...definitions.state.properties,
+    window: {
+      ...stateWindow,
+      properties: { ...stateWindow.properties, entries: { ...stateWindow.properties.entries, items: true } },
+    },
+  },
+});
 export const patchShape = def("patch");
 export const successShape = def("success");
 const allowedMethods = new Set(definitions.request.oneOf.flatMap((arm) => arm.properties.method.const ?? []));

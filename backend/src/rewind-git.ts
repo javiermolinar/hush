@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync,
-  realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync } from "node:fs";
+import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { setImmediate as yieldLoop } from "node:timers/promises";
 import { WireError } from "../../server/src/wire.js";
-import { workspaceGit, type WorkspaceTrust, type GitWorkspaceIdentity } from "./workspace-trust.js";
+import { workspaceGit, workspaceGitIndex, type WorkspaceTrust, type GitWorkspaceIdentity } from "./workspace-trust.js";
 
 export type GitSnapshot = Readonly<{ repository: string; fingerprint: string; commit: string; ref: string }>;
 // branch is the short local branch name, not refs/heads/… .
@@ -35,33 +36,39 @@ const checkpointPrefix = "refs/hush/checkpoints/";
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const safePath = (path: unknown): path is string => typeof path === "string" &&
   path.isWellFormed() && !/[\0\r\n]/.test(path) && isAbsolute(path) && resolve(path) === path;
-const within = (root: string, path: string) => {
+async function within(root: string, path: string) {
   const suffix = relative(root, path);
   if (suffix !== ".." && !suffix.startsWith(".." + sep) && !isAbsolute(suffix)) return true;
   // Case-folding/normalizing filesystems may spell the same directory two ways.
-  const info = named(root);
+  const info = await namedAsync(root);
   if (!info?.isDirectory()) return false;
   for (let parent = path;; parent = dirname(parent)) {
-    const ancestor = named(parent);
+    const ancestor = await namedAsync(parent);
     if (ancestor?.isDirectory() && ancestor.dev === info.dev && ancestor.ino === info.ino) return true;
     if (dirname(parent) === parent) return false;
   }
-};
-const overlaps = (a: string, b: string) => within(a, b) || within(b, a);
+}
+const overlaps = async (a: string, b: string) => await within(a, b) || await within(b, a);
 const canonical = (path: string) => decoder.decode(realpathSync(path, { encoding: "buffer" }));
+const canonicalAsync = async (path: string) => decoder.decode(await realpath(path, { encoding: "buffer" }));
 
 function named(path: string) {
   try { return lstatSync(path, { bigint: true }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
 
+async function namedAsync(path: string) {
+  try { return await lstat(path, { bigint: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+
 // A prunable registration may name a missing path. Resolve its existing
 // ancestors too, rather than treating the path recorded by Git as canonical.
-function canonicalLocation(path: string): string {
-  if (named(path)) return canonical(path);
+async function canonicalLocation(path: string): Promise<string> {
+  if (await namedAsync(path)) return canonicalAsync(path);
   const parent = dirname(path);
   if (parent === path) failure("base");
-  return join(canonicalLocation(parent), relative(parent, path));
+  return join(await canonicalLocation(parent), relative(parent, path));
 }
 
 function safeDataAncestors(path: string) {
@@ -174,13 +181,27 @@ function sourceRegistration(registrations: Worktree[], stage: RewindStage) {
   return registrations.filter(tree => tree.cwd === stage.cwd || tree.fields.get("branch") === `refs/heads/${stage.branch}`);
 }
 
+async function emptyDirectory(path: string) {
+  const dir = await opendir(path, { bufferSize: 1 });
+  try { return await dir.read() === null; }
+  finally { await dir.close(); }
+}
+
 // Status does not report empty untracked directories. Also reject unexpected
 // filesystem entries and sparse/assume-unchanged index entries on recovery.
-function checkoutEntries(cwd: string, index: string, signal: AbortSignal) {
+async function checkoutEntries(cwd: string, index: string, signal: AbortSignal) {
   const files = new Map<string, string>();
   const directories = new Set<string>();
+  const batchSize = 256;
   if (index && !index.endsWith("\0")) failure("changed");
-  for (const entry of index ? index.slice(0, -1).split("\0") : []) {
+  signal.throwIfAborted();
+  for (let start = 0, count = 0; start < index.length; count++) {
+    if (count && count % batchSize === 0) {
+      await yieldLoop(undefined, { signal });
+    }
+    const end = index.indexOf("\0", start);
+    const entry = index.slice(start, end);
+    start = end + 1;
     const tab = entry.indexOf("\t");
     const match = /^H (100644|100755|120000|160000) ([0-9a-f]+) 0$/.exec(entry.slice(0, tab));
     const path = entry.slice(tab + 1);
@@ -193,14 +214,19 @@ function checkoutEntries(cwd: string, index: string, signal: AbortSignal) {
   while (pending.length) {
     signal.throwIfAborted();
     const dir = pending.pop()!;
-    for (const entry of readdirSync(join(cwd, dir), { withFileTypes: true, encoding: "buffer" })) {
+    // Node supports raw names, but its Dir declarations omit that encoding.
+    const listing = await opendir(join(cwd, dir), { encoding: "buffer" as BufferEncoding, bufferSize: batchSize });
+    let count = 0;
+    for await (const entry of listing) {
+      if (++count % batchSize === 0) await yieldLoop(undefined, { signal });
+      if (!Buffer.isBuffer(entry.name)) failure("changed");
       const name = decoder.decode(entry.name);
       if (!dir && name === ".git") continue; // Verified separately.
       const path = dir ? `${dir}/${name}` : name;
       const mode = files.get(path);
       if (mode === "160000") {
         // No submodule checkout is part of this operation.
-        if (!entry.isDirectory() || readdirSync(join(cwd, path)).length) failure("changed");
+        if (!entry.isDirectory() || !(await emptyDirectory(join(cwd, path)))) failure("changed");
       } else if (mode ? (mode === "120000" ? !entry.isSymbolicLink() : !entry.isFile()) :
           !directories.has(path) || !entry.isDirectory()) failure("changed");
       else if (!mode) pending.push(path);
@@ -363,20 +389,21 @@ export class RewindGit {
 
   async #inspect(identity: GitWorkspaceIdentity, snapshot: GitSnapshot, plan: RewindStage, signal: AbortSignal): Promise<Inspection> {
     const base = this.#baseState();
-    if (overlaps(identity.path, this.#base) || overlaps(identity.gitDir.path, this.#base)) failure("base");
+    if (await overlaps(identity.path, this.#base) || await overlaps(identity.gitDir.path, this.#base)) failure("base");
     const cwd = identity.cwd.path;
     const topOutput = await git(cwd, signal, "rev-parse", "--show-toplevel");
     const top = topOutput.slice(0, -1);
     if (!topOutput.endsWith("\n") || !safePath(top)) failure("base");
-    const sourceRoot = canonical(top);
-    if (!within(sourceRoot, cwd) || within(sourceRoot, this.#base) || overlaps(sourceRoot, plan.cwd)) failure("base");
+    const sourceRoot = await canonicalAsync(top);
+    if (!(await within(sourceRoot, cwd)) || await within(sourceRoot, this.#base) || await overlaps(sourceRoot, plan.cwd)) failure("base");
     await this.#snapshot(identity, snapshot, signal);
     const admin = metadata(identity.path, "worktrees");
     if (admin && !admin.isDirectory()) failure("conflict");
     const registrations = await worktrees(cwd, signal);
     for (const tree of registrations) {
-      for (const root of [tree.cwd, canonicalLocation(tree.cwd)]) {
-        if (within(root, this.#base) || (overlaps(root, plan.cwd) && tree.cwd !== plan.cwd)) failure("base");
+      signal.throwIfAborted();
+      for (const root of [tree.cwd, await canonicalLocation(tree.cwd)]) {
+        if (await within(root, this.#base) || (await overlaps(root, plan.cwd) && tree.cwd !== plan.cwd)) failure("base");
       }
     }
     await checkFilters(cwd, signal);
@@ -424,8 +451,8 @@ export class RewindGit {
     if (await git(plan.cwd, signal, "symbolic-ref", "--no-recurse", "HEAD") !== `${branch}\n`) failure("changed");
     await exactRef(plan.cwd, signal, branch, snapshot.commit, "changed");
     await checkFilters(plan.cwd, signal);
-    const index = await git(plan.cwd, signal, ...checkoutConfig, "ls-files", "-v", "--stage", "-z");
-    checkoutEntries(plan.cwd, index, signal);
+    const index = await workspaceGitIndex(plan.cwd, signal, checkoutConfig);
+    await checkoutEntries(plan.cwd, index, signal);
     const status = await git(plan.cwd, signal, ...checkoutConfig, "status", "--porcelain=v1", "-z", "--untracked-files=all",
       "--ignored", "--ignore-submodules=none", "--no-renames");
     if (status) failure("changed");

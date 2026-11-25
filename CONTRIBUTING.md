@@ -93,6 +93,11 @@ requests written by the idle TUI after the watches are armed; the seed client
 and trust CLI are measured separately. The shorter default run checks tool and
 grant updates without waiting 60 seconds.
 
+After the development build, run `node backend/test/bench-rewind.mjs` to preview and
+restore a fixture with 100,000 tracked files while a second socket client streams.
+The offline benchmark reports event-loop delay through the durable confirm-to-ready
+path and enforces p99 ≤ 50 ms by default. Run it on a quiet local filesystem.
+
 Measure cold and pooled metadata calls on a local Unix socket and at a
 simulated 50 ms round trip:
 

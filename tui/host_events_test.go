@@ -131,12 +131,20 @@ func TestWorkspaceWatchesLive(t *testing.T) {
 		t.Logf("idle TUI wrote 0 requests over 60s; setup requests by method: %v", before)
 	}
 
+	target := sdk.WorkspaceFileTarget{ThreadID: thread.ID}
+	const name = "workspace-marker.txt"
+	if result, err := c.SearchWorkspaceFiles(ctx, target, name, 1); err != nil || len(result.Matches) != 0 {
+		t.Fatalf("seed search index before the tool write: %+v, %v", result, err)
+	}
 	start := time.Now()
 	if _, err := seed.Submit(ctx, sdk.Input{ThreadID: thread.ID, RequestID: "workspace-watch-write", Text: "!workspace-write", WhenBusy: sdk.RejectBusy}); err != nil {
 		t.Fatal(err)
 	}
 	l.until("write tool updates the badge", func(frame string) bool { return strings.Contains(frame, "± 1 file") })
 	t.Logf("submit to painted Git badge: %s", time.Since(start))
+	if result, err := c.SearchWorkspaceFiles(ctx, target, name, 1); err != nil || len(result.Matches) != 1 || result.Matches[0].Path != name {
+		t.Fatalf("search index was not refreshed after the tool write: %+v, %v", result, err)
+	}
 
 	if full {
 		start = time.Now()

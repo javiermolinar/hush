@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type Socket } from "node:net";
-import { diffRevisions, type JsonValue } from "@earendil-works/chord/delta";
+import { diffRevisions } from "@earendil-works/chord/delta";
 import type { Harness } from "@earendil-works/pi-durable";
 import { DurableAdapter, nativeStopVersion, parseStop, projectView, requestError, type NativeHost, type StructuralView } from "./durable.js";
 export type { NativeHost } from "./durable.js";
@@ -29,7 +29,7 @@ import { checkThreadDirectoryReply, parseThreadArchive, parseThreadCreation, par
 export type { PiBinding, PiCommand, PiCommandAction, PiEventsHost, PiEventSink, PiHeader, PiOpen, PiResponse, PiService } from "./pi-events.js";
 import {
   MAX_RECORD, encode, cleanJSON, identity, isCoreMethod, object, parseRecord, patchShape,
-  stateShape, successShape, token, validRequest, WireError, type Envelope, type Params,
+  successShape, token, validRequest, WireError, type Envelope, type Params,
 } from "./wire.js";
 
 const MAX_CONNECTION_REQUESTS = 262_144;
@@ -62,7 +62,7 @@ export interface ServerOptions {
 }
 
 type Context = ReturnType<DurableAdapter["context"]>;
-type Projected = ReturnType<typeof projectView> & JsonValue;
+type Projected = ReturnType<typeof projectView>;
 type EndReason = "overflow" | "source_failed";
 type Write = (record: string, flushed?: () => void) => boolean;
 
@@ -95,9 +95,7 @@ class Feed {
       end: () => this.#fail("source_failed"),
     }, ctx);
     this.#detach = () => observation.detach();
-    const state = projectView(observation.value);
-    if (!cleanJSON(state) || !stateShape(state)) throw new WireError("internal");
-    this.#state = state;
+    const state = this.#state = projectView(observation.value);
     return { ...this.identity, rev: 0, state };
   }
 
@@ -138,9 +136,7 @@ class Feed {
     this.#pendingCount = 0;
     try {
       const next = projectView(view);
-      const before = this.#state!;
-      if (!cleanJSON(next) || !stateShape(next)) throw new WireError("internal");
-      const ops = diffRevisions(before, next);
+      const ops = diffRevisions(this.#state!, next);
       if (ops.length === 0) return;
       const base = { type: "patch", ...this.identity, baseRev: this.#rev, nextRev: this.#rev + 1 };
       const delta = { ...base, ops };

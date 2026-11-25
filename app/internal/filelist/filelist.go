@@ -4,6 +4,7 @@ package filelist
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -49,7 +50,14 @@ type request struct {
 	Limit         int    `json:"limit"`
 }
 
+type command struct {
+	ID     uint64 `json:"id"`
+	Cancel bool   `json:"cancel,omitempty"`
+	request
+}
+
 type response struct {
+	ID     uint64        `json:"id"`
 	Page   *page         `json:"page,omitempty"`
 	Search *searchResult `json:"search,omitempty"`
 	Error  string        `json:"error,omitempty"`
@@ -99,7 +107,7 @@ func openRoot(root, device, inode string) (int, error) {
 	return fd, nil
 }
 
-func read(r request) (page, error) {
+func read(ctx context.Context, r request) (page, error) {
 	fd, err := openRoot(r.Root, r.Device, r.Inode)
 	if err != nil {
 		return page{}, err
@@ -116,6 +124,9 @@ func read(r request) (page, error) {
 	entries := make([]entry, 0)
 	seen := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return page{}, err
+		}
 		batch, err := dir.Readdirnames(64)
 		if err != nil && err != io.EOF {
 			return page{}, err
@@ -174,7 +185,8 @@ func (r request) valid() bool {
 		return false
 	}
 	if r.Query != "" {
-		return r.Directory == "" && r.Offset == 0 && r.Limit <= maxSearchResults && len(r.SearchKey) <= 64 && allowedQuery(r.Query)
+		return r.Directory == "" && r.Offset == 0 && r.Limit <= maxSearchResults &&
+			r.SearchKey != "" && len(r.SearchKey) <= 64 && allowedQuery(r.Query)
 	}
 	if r.SearchKey != "" {
 		return false
@@ -191,40 +203,91 @@ func (r request) valid() bool {
 	return true
 }
 
-// Run serves one private stream from the backend. It caches names, not trusted
-// state: each call reopens the exact root and the backend rechecks grants.
+// Run serves one private stream from the backend. Commands can arrive while a
+// request is running, but search and listing jobs never run concurrently. One
+// reply (success or error) drains each request; a late cancel is a no-op.
 func Run(in io.Reader, out io.Writer) int {
-	lines, replies := bufio.NewScanner(in), json.NewEncoder(out)
+	life, stop := context.WithCancel(context.Background())
+	defer stop()
+	commands := make(chan command)
+	inputDone := make(chan int, 1)
+	go func() { inputDone <- readCommands(life, in, commands) }()
+	replies := json.NewEncoder(out)
 	var cache searchCache
+	var lastID uint64
+	var active <-chan response
+	var cancel context.CancelFunc
+	for {
+		select {
+		case code := <-inputDone:
+			return code // EOF is the end of the backend's lifetime pipe.
+		case cmd := <-commands:
+			if cmd.Cancel {
+				if active != nil && cmd.ID == lastID {
+					cancel()
+				}
+				continue
+			}
+			if active != nil || cmd.ID <= lastID {
+				return 2
+			}
+			lastID = cmd.ID
+			ctx, stopJob := context.WithCancel(life)
+			result := make(chan response, 1)
+			active, cancel = result, stopJob
+			go func() { result <- serve(ctx, life, &cache, cmd) }()
+		case reply := <-active:
+			cancel()
+			active = nil
+			if replies.Encode(reply) != nil {
+				return 3
+			}
+		}
+	}
+}
+
+func readCommands(ctx context.Context, in io.Reader, commands chan<- command) int {
+	lines := bufio.NewScanner(in)
 	for lines.Scan() {
 		dec := json.NewDecoder(bytes.NewReader(lines.Bytes()))
 		dec.DisallowUnknownFields()
-		var r request
-		if dec.Decode(&r) != nil || dec.Decode(&struct{}{}) != io.EOF || !r.valid() {
+		var cmd command
+		if dec.Decode(&cmd) != nil || dec.Decode(&struct{}{}) != io.EOF || cmd.ID == 0 ||
+			cmd.Cancel && cmd.request != (request{}) || !cmd.Cancel && !cmd.valid() {
 			return 2
 		}
-		var reply response
-		var err error
-		if r.Query != "" {
-			var result searchResult
-			result, err = cache.search(r)
-			reply.Search = &result
-		} else {
-			var result page
-			result, err = read(r)
-			reply.Page = &result
-		}
-		if errors.Is(err, errLimit) {
-			reply = response{Error: "limit"}
-		} else if err != nil {
-			reply = response{Error: "not_found"}
-		}
-		if replies.Encode(reply) != nil {
-			return 3
+		select {
+		case commands <- cmd:
+		case <-ctx.Done():
+			return 0
 		}
 	}
 	if lines.Err() != nil {
 		return 2
 	}
 	return 0
+}
+
+func serve(ctx, life context.Context, cache *searchCache, cmd command) response {
+	reply := response{ID: cmd.ID}
+	var err error
+	if cmd.Query != "" {
+		var result searchResult
+		result, err = cache.search(ctx, life, cmd.request)
+		reply.Search = &result
+	} else {
+		var result page
+		result, err = read(ctx, cmd.request)
+		reply.Page = &result
+	}
+	switch {
+	case ctx.Err() != nil:
+		return response{ID: cmd.ID, Error: "cancelled"}
+	case errors.Is(err, errLimit):
+		return response{ID: cmd.ID, Error: "limit"}
+	case err != nil:
+		return response{ID: cmd.ID, Error: "not_found"}
+	default:
+		return reply
+	}
 }

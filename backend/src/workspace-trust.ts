@@ -32,9 +32,19 @@ const run = promisify(execFile);
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const validPath = (path: string) => !!path && !/[\0\r\n]/.test(path) && path.isWellFormed() && Array.from(path).length <= 4096;
 
+export function workspaceGit(cwd: string, signal: AbortSignal, ...args: string[]) {
+  return runWorkspaceGit(cwd, signal, args, 512 * 1024);
+}
+
+// Rewind compares every tracked path and mode. Give only this listing a
+// larger output budget; ordinary metadata and discovery keep the small cap.
+export function workspaceGitIndex(cwd: string, signal: AbortSignal, checkoutConfig: readonly string[]) {
+  return runWorkspaceGit(cwd, signal, ["--no-replace-objects", ...checkoutConfig, "ls-files", "-v", "--stage", "-z"], 32 * 1024 * 1024);
+}
+
 // Use identical Git discovery/config inputs for the trust probe and checkout.
 // Don't inherit environment-based repository, config, or discovery overrides.
-export async function workspaceGit(cwd: string, signal: AbortSignal, ...args: string[]) {
+async function runWorkspaceGit(cwd: string, signal: AbortSignal, args: string[], maxBuffer: number) {
   signal.throwIfAborted();
   // A relative or empty search component would let the requested cwd select
   // which executable is used for the pre-consent probes.
@@ -44,7 +54,7 @@ export async function workspaceGit(cwd: string, signal: AbortSignal, ...args: st
     "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "protocol.allow=never"];
   try {
     const { stdout } = await run("git", [...opts, ...args], {
-      cwd, signal, timeout: 25_000, maxBuffer: 512 * 1024, encoding: "buffer",
+      cwd, signal, timeout: 25_000, maxBuffer, encoding: "buffer",
       env: { PATH: path, HOME: process.env.HOME ?? "", LC_ALL: "C",
         GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
     });
@@ -137,8 +147,10 @@ function present(path: string) {
 }
 
 function grantStamp(path: string, expected: Buffer) {
-  // Verify both the name and the opened file. In particular don't follow links
-  // or block on a FIFO, and never read an unbounded or permissive grant file.
+  // Keep the final grant decision in the action's turn. This reads one
+  // fixed-format record bounded by the workspace path limit, not a directory.
+  // Verify both the name and opened file; don't follow links or open a FIFO
+  // in blocking mode.
   const uid = process.getuid?.();
   const valid = (info: NonNullable<ReturnType<typeof present>>) => uid !== undefined && info.isFile() &&
     info.nlink === 1n && info.uid === BigInt(uid) && (info.mode & 0o7077n) === 0n && info.size === BigInt(expected.length);

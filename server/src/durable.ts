@@ -1,5 +1,6 @@
 // Pin the public Durable 1.6 adapter here. No host settings, provider credentials or Pi CLI imports.
 import { withAbortSignal, BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/delta";
 import {
   AgentDoc, ConversationBusy, ConversationIdle, configure,
   type AgentChange, type AgentState, type Conversation, type ConversationId, type ConversationRecord, type ConversationView,
@@ -12,7 +13,8 @@ import { projectImageBytes, type ImageRef, type ImagesHost, type ImageSubmission
 import { scheduleReportKind } from "./scheduling.js";
 import { checkpointKind, effectKind } from "./checkpoints.js";
 import type { CatalogCreation } from "./model-catalog.js";
-import { durableID, encode, object, WireError, type CoreRequest, type ExplicitRange, type Params } from "./wire.js";
+import { cleanJSON, durableID, encode, entryShape, object, stateEnvelopeShape, WireError,
+  type CoreRequest, type ExplicitRange, type Params } from "./wire.js";
 
 const id = String;
 const maybeID = (value: number | undefined) => value === undefined ? undefined : id(value);
@@ -73,6 +75,21 @@ const projectEntry = (entry: EntryRecord) => ({
   ...field("headEntryId", maybeID(entry.head)),
 });
 
+// Durable retains immutable EntryRecords across observations. Reuse only on
+// object identity, not ID, and don't keep a record alive after Durable drops it.
+// The resulting entries are shared read-only by the feed's diff and encoder.
+type ProjectedEntry = ReturnType<typeof projectEntry>;
+const projectedEntries = new WeakMap<EntryRecord, ProjectedEntry>();
+function projectWindowEntry(entry: EntryRecord) {
+  const cached = projectedEntries.get(entry);
+  if (cached) return cached;
+  const projected = projectEntry(entry);
+  // Use the same depth limit as the whole state at window.entries[i].
+  if (!cleanJSON(projected, 3) || !entryShape(projected)) throw new WireError("internal");
+  projectedEntries.set(entry, projected);
+  return projected;
+}
+
 function projectUsage(ledger: UsageState | undefined) {
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, costUsd: 0 };
   for (const bucket of [ledger?.models, ledger?.tools]) {
@@ -93,8 +110,12 @@ export function projectView(view: ConversationView) {
   const docs: Builtins = view.docs;
   const agent = docs["pi.agent"] ?? {};
   const live = docs["pi.live"] ?? {};
-  const entries = view.entries.map(projectEntry);
-  return {
+  const entries: ProjectedEntry[] = [];
+  for (const entry of view.entries) {
+    if (!entry) throw new WireError("internal");
+    entries.push(projectWindowEntry(entry));
+  }
+  const state = {
     thread: projectThread(view.conversation),
     agent: {
       ...field("model", agent.model && { provider: agent.model.provider, modelId: agent.model.modelId }),
@@ -126,6 +147,12 @@ export function projectView(view: ConversationView) {
       ...field("retry", live.generation.retry && { atMs: live.generation.retry.at, detail: "Generation will retry" }),
     }),
   };
+  // The envelope validator still sees the real array (including its size).
+  // Only cleanJSON's recursive pass skips the already-checked entries.
+  if (!cleanJSON({ ...state, window: { ...state.window, entries: [] } }) || !stateEnvelopeShape(state)) {
+    throw new WireError("internal");
+  }
+  return state as typeof state & JsonValue;
 }
 
 function projectSubmission(row: SubmissionRecord | undefined, thread: ConversationId) {

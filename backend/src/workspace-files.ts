@@ -31,6 +31,7 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
   readonly #cursors = new Cursors();
   readonly #worker: FileListWorker;
   #pending = 0;
+  #searchGeneration = 0;
   readonly #changes = new ChangePulse();
   readonly #revisions = new WorkspaceRevisions();
   #watchers = 0;
@@ -45,7 +46,12 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
     return this.#worker.close();
   }
 
-  grantsChanged() { this.#changes.emit(); }
+  invalidateSearch() { this.#searchGeneration++; }
+
+  grantsChanged() {
+    this.invalidateSearch();
+    this.#changes.emit();
+  }
 
   async waitScope({ target, after }: WorkspaceScopeWatch, peer: AbortSignal) {
     if (this.#watchers++ === 0) {
@@ -124,7 +130,8 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
     const root = await this.#root("workspace", cwd, signal);
     if (!root) throw new WireError("not_found");
     const value = (await this.#scan({ target: query.target, root: "workspace" }, cwd, root,
-      { query: query.query, limit: query.limit, includeGitHub: query.includeGitHub, searchKey: digest([String(root.birth), root.stamp]) }, signal)).search;
+      { query: query.query, limit: query.limit, includeGitHub: query.includeGitHub,
+        searchKey: digest([String(root.birth), root.stamp, this.#searchGeneration]) }, signal)).search;
     if (!object(value) || typeof value.partial !== "boolean" || !Array.isArray(value.matches) || value.matches.length > query.limit ||
         !value.matches.every(x => object(x) && typeof x.directory === "boolean" && searchPath(x.path, !!query.includeGitHub) &&
           (x.path !== githubDirectory || x.directory))) throw new WireError("internal");
@@ -139,8 +146,7 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
     this.#pending++;
     let value: Record<string, unknown>;
     try {
-      const result = await this.#worker.request({ ...input, root: root.path, device: String(root.device), inode: String(root.inode) },
-        signal, "query" in input);
+      const result = await this.#worker.request({ ...input, root: root.path, device: String(root.device), inode: String(root.inode) }, signal);
       if (!object(result) || result.error !== undefined) {
         if (object(result) && result.error === "limit") throw new WireError("limit");
         throw new WireError("not_found");

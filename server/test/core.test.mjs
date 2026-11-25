@@ -8,9 +8,11 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { diffRevisions } from "@earendil-works/chord/delta";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { AgentDoc } from "@earendil-works/pi-durable";
 import { createCoreServer } from "../../dist/server/src/index.js";
+import { encode } from "../../dist/server/src/wire.js";
 import { context, openNative, projectState } from "../../protocol/v1/native-probe.mjs";
 import { assertFrame, Replica } from "../../protocol/v1/replay.mjs";
 import { dial } from "./client.mjs";
@@ -235,6 +237,43 @@ test("socket replica converges for seeded structural changes; history fills a ga
   code(await wire.send("history", { threadId: foreign, range: { kind: "cursor", cursor: page.nextCursor }, limit: 1 }), "invalid_cursor");
   code(await wire.send("history", { threadId, range: { kind: "before", beforeEntryId: "9007199254740991" }, limit: 1 }), "invalid_cursor");
   code(await wire.send("thread.list", { limit: 1, cursor: page.nextCursor }), "invalid_cursor");
+});
+
+test("socket patch bytes match fresh projection at a full window and across evictions", { timeout: 10_000 }, async t => {
+  const { h, conv, path, threadId } = await fixture(t);
+  let timestamp = 100;
+  const append = count => conv.commit(async tx => {
+    for (let i = 0; i < count; i++) {
+      await tx.appendEntry(conv.id, { kind: "fixture.entry",
+        model: [{ role: "user", timestamp: timestamp++, content: "Identical text, distinct IDs. 😀" }] });
+    }
+  }, context);
+  await append(100);
+  const window = { min: 50, max: 100 };
+  let newest;
+  const reference = await h.observeConversation(conv.id, { advance(update) {
+    if (update.kind === "value") newest = update.value;
+  }, end() {} }, context, window);
+  t.after(() => reference.detach());
+  let before = projectState(reference.value);
+  const wire = await client(t, path);
+  await hello(wire);
+  const { epoch, subscriptionId, state } = result(await wire.send("subscribe", { threadId, window }));
+  assert.equal(encode(state), encode(before));
+  assert.equal(state.window.entries.length, 50); // Durable starts at min
+  const changes = [() => append(50), () => conv.configure({ cwd: "/fixture/second" }, context),
+    () => append(1), () => append(12), () => append(49), () => append(100)];
+  for (const [baseRev, change] of changes.entries()) {
+    await change();
+    const nextRev = baseRev + 1;
+    const actual = await wire.wait(frame => frame.type === "patch" && frame.nextRev === nextRev);
+    const next = projectState(newest);
+    if (baseRev === 0) assert.equal(next.window.entries.length, 100);
+    if (baseRev === 2) assert.equal(next.window.entries.length, 50);
+    assert.equal(encode(actual), encode({ type: "patch", epoch, subscriptionId, baseRev, nextRev,
+      ops: diffRevisions(before, next) }));
+    before = next;
+  }
 });
 
 test("paused Unix socket overflows without delaying a healthy client or a commit", { timeout: 15000 }, async t => {

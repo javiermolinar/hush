@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import { projectView } from "../../dist/server/src/durable.js";
-import { cleanJSON, encode, patchShape, stateShape } from "../../dist/server/src/wire.js";
+import { cleanJSON, encode, patchShape } from "../../dist/server/src/wire.js";
 import { checkTarget, samples, summary } from "./perf.mjs";
 
 const count = samples(1000), warmup = 500; // warm the JIT before timing
@@ -36,29 +36,25 @@ const view = (records, text) => ({
 
 function measure(n, toolBytes) {
   const records = entries(n, toolBytes), identity = { epoch: "bench-epoch", subscriptionId: "bench-sub" };
-  const phases = { project: [], validate: [], diff: [], encode: [] }, total = [];
+  const phases = { project_and_validate: [], diff: [], encode: [] }, total = [];
   let before = projectView(view(records, "")), rev = 0, text = "";
   for (let i = 0; i < warmup + count; i++) {
     text += " token";
     const t0 = performance.now();
     const next = projectView(view(records, text));
     const t1 = performance.now();
-    if (!cleanJSON(next) || !stateShape(next)) throw new Error("invalid projection");
-    const t2 = performance.now();
     const ops = diffRevisions(before, next);
-    const t3 = performance.now();
+    const t2 = performance.now();
     const delta = { type: "patch", ...identity, baseRev: rev, nextRev: rev + 1, ops };
-    if (!cleanJSON(ops) || !patchShape(delta)) throw new Error("invalid patch");
-    encode(delta);
-    const t4 = performance.now();
+    encode(cleanJSON(ops) && patchShape(delta) ? delta : { ...delta, ops: [["r", next]] });
+    const t3 = performance.now();
     before = next;
     rev++;
     if (i < warmup) continue;
-    total.push(t4 - t0);
-    phases.project.push(t1 - t0);
-    phases.validate.push(t2 - t1);
-    phases.diff.push(t3 - t2);
-    phases.encode.push(t4 - t3);
+    total.push(t3 - t0);
+    phases.project_and_validate.push(t1 - t0);
+    phases.diff.push(t2 - t1);
+    phases.encode.push(t3 - t2);
   }
   return { total: summary(total), p50_by_phase_ms: Object.fromEntries(Object.entries(phases).map(([k, v]) => [k, summary(v).p50_ms])) };
 }
@@ -67,6 +63,6 @@ for (const [n, toolBytes] of [[10, 2 << 10], [10, 16 << 10], [100, 2 << 10], [10
   test(`feed flush per streamed token: window ${n}, tool results ${toolBytes >> 10} KB`, t => {
     const result = measure(n, toolBytes);
     t.diagnostic(JSON.stringify(result));
-    checkTarget(t, { name: "p99 per flush", value: result.total.p99_ms, limit: target, knownMiss: "projection-memo" });
+    checkTarget(t, { name: "p99 per flush", value: result.total.p99_ms, limit: target });
   });
 }

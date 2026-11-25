@@ -193,7 +193,10 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     // that may have changed files before reporting the failure.
     const withWorkspaceChanges: Extension = trust ? { ...prompt, hooks: [...prompt.hooks ?? [], hook(ToolTask, {
       afterTool: (call, _result, api) => {
-        if (workspaceWriters.has(call.name)) gitDiff?.toolFinished(api.conversationId);
+        if (!workspaceWriters.has(call.name)) return;
+        gitDiff?.toolFinished(api.conversationId);
+        // Shell and Codemode can write outside the thread's own directory.
+        workspaceFiles?.invalidateSearch();
       },
     })] } : prompt;
     const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;

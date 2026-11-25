@@ -2,6 +2,7 @@ package filelist
 
 import (
 	"cmp"
+	"context"
 	"io"
 	"os"
 	"slices"
@@ -21,7 +22,7 @@ const (
 	maxSearchPath    = 2048
 	maxSearchTime    = 1500 * time.Millisecond
 	maxRankTime      = 200 * time.Millisecond
-	searchCacheTTL   = 5 * time.Second
+	searchCacheTTL   = 10 * time.Second
 )
 
 type searchMatch struct {
@@ -88,45 +89,102 @@ type searchKey struct {
 	includeGitHub              bool
 }
 
-// Cache at most one bounded index, with no open descriptors or grants. A peer
-// can change its query without walking the tree again. A different grant, root,
-// or visibility policy cannot reuse its names.
+// One bounded index and one builder at most. A cold build belongs to the
+// helper, not the query: a cancelled query stops waiting/ranking, but a
+// replacement query for the same key can join the build. Superseding the key
+// cancels the old build before another starts. Completed indices are names
+// only; every query reopens its exact root and verifies each match.
 type searchCache struct {
-	key     searchKey
-	expires time.Time
-	index   searchIndex
+	build *searchBuild // only the foreground job reads/writes this field
 }
 
-func (c *searchCache) search(r request) (searchResult, error) {
+type searchBuild struct {
+	key      searchKey
+	cancel   context.CancelFunc
+	obsolete bool
+	done     chan struct{} // publishes the fields below
+	expires  time.Time
+	index    searchIndex
+	err      error
+}
+
+func (b *searchBuild) wait(ctx context.Context) (searchIndex, error) {
+	select {
+	case <-b.done:
+		return b.index, b.err
+	case <-ctx.Done():
+		return searchIndex{}, ctx.Err()
+	}
+}
+
+func (c *searchCache) names(ctx, life context.Context, root int, key searchKey) (searchIndex, error) {
+	if b := c.build; b != nil {
+		if b.key == key && !b.obsolete {
+			select {
+			case <-b.done:
+				if b.err == nil && time.Now().Before(b.expires) {
+					return b.index, nil
+				}
+			default:
+				return b.wait(ctx)
+			}
+		}
+		b.obsolete = true
+		b.cancel()
+		select {
+		case <-b.done:
+			c.build = nil
+		case <-ctx.Done():
+			return searchIndex{}, ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return searchIndex{}, err
+	}
+	fd, err := unix.FcntlInt(uintptr(root), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return searchIndex{}, err
+	}
+	buildCtx, cancel := context.WithCancel(life)
+	b := &searchBuild{key: key, cancel: cancel, done: make(chan struct{})}
+	c.build = b
+	go func() {
+		defer close(b.done)
+		defer cancel()
+		defer unix.Close(fd)
+		b.index, b.err = scanSearchIndex(buildCtx, fd, key.includeGitHub)
+		b.expires = time.Now().Add(searchCacheTTL)
+	}()
+	return b.wait(ctx)
+}
+
+func (c *searchCache) search(ctx, life context.Context, r request) (searchResult, error) {
+	if err := ctx.Err(); err != nil {
+		return searchResult{}, err
+	}
 	root, err := openRoot(r.Root, r.Device, r.Inode)
 	if err != nil {
 		return searchResult{}, err
 	}
 	defer unix.Close(root)
 	key := searchKey{r.Root, r.Device, r.Inode, r.SearchKey, r.IncludeGitHub}
-	if c.key == key && time.Now().Before(c.expires) {
-		return c.index.match(root, r.Query, r.Limit), nil
-	}
-	*c = searchCache{}
-	index, err := scanSearchIndex(root, r.IncludeGitHub)
+	index, err := c.names(ctx, life, root, key)
 	if err != nil {
 		return searchResult{}, err
 	}
-	if r.SearchKey != "" {
-		*c = searchCache{key, time.Now().Add(searchCacheTTL), index}
-	}
-	return index.match(root, r.Query, r.Limit), nil
+	return index.match(ctx, root, r.Query, r.Limit)
 }
 
 type searchScan struct {
 	searchIndex
 	includeGitHub bool
+	ctx           context.Context
 	deadline      time.Time
 	seen          int
 }
 
 func (s *searchScan) exhausted() bool {
-	if s.seen >= maxSearchEntries || time.Now().After(s.deadline) {
+	if s.ctx.Err() != nil || s.seen >= maxSearchEntries || time.Now().After(s.deadline) {
 		s.partial = true
 		return true
 	}
@@ -135,8 +193,8 @@ func (s *searchScan) exhausted() bool {
 
 // Walk breadth-first so shallow paths are scanned before deep ones when the
 // budget runs out. Every directory is opened relative to the verified root.
-func scanSearchIndex(root int, includeGitHub bool) (searchIndex, error) {
-	s := searchScan{searchIndex: searchIndex{dirs: []searchDir{{}}}, includeGitHub: includeGitHub, deadline: time.Now().Add(maxSearchTime)}
+func scanSearchIndex(ctx context.Context, root int, includeGitHub bool) (searchIndex, error) {
+	s := searchScan{searchIndex: searchIndex{dirs: []searchDir{{}}}, includeGitHub: includeGitHub, ctx: ctx, deadline: time.Now().Add(maxSearchTime)}
 	for i := 0; i < len(s.dirs) && !s.exhausted(); i++ {
 		entries, err := s.visit(root, s.dirs[i])
 		s.dirs[i].entries = entries
@@ -147,7 +205,7 @@ func scanSearchIndex(root int, includeGitHub bool) (searchIndex, error) {
 			s.partial = true
 		}
 	}
-	return s.searchIndex, nil
+	return s.searchIndex, ctx.Err()
 }
 
 func openSearchDir(root int, path string) (int, error) {
@@ -225,23 +283,26 @@ type searchRanking struct {
 	partial  bool
 }
 
-func (index searchIndex) match(root int, query string, limit int) searchResult {
+func (index searchIndex) match(ctx context.Context, root int, query string, limit int) (searchResult, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	r := searchRanking{query: query, words: strings.Fields(query), limit: limit, deadline: time.Now().Add(maxRankTime), partial: index.partial}
 	for _, dir := range index.dirs {
-		if !r.matchDir(root, dir) {
+		if ctx.Err() != nil || !r.matchDir(ctx, root, dir) {
 			r.partial = true
 			break
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return searchResult{}, err
 	}
 	result := searchResult{Matches: make([]searchMatch, 0, len(r.best)), Partial: r.partial}
 	for _, hit := range r.best {
 		result.Matches = append(result.Matches, hit.searchMatch)
 	}
-	return result
+	return result, nil
 }
 
-func (r *searchRanking) matchDir(root int, d searchDir) bool {
+func (r *searchRanking) matchDir(ctx context.Context, root int, d searchDir) bool {
 	if len(d.entries) == 0 {
 		return true
 	}
@@ -260,7 +321,7 @@ func (r *searchRanking) matchDir(root int, d searchDir) bool {
 	}
 	fd := -1
 	for i, item := range d.entries {
-		if i%128 == 0 && time.Now().After(r.deadline) {
+		if i%128 == 0 && (ctx.Err() != nil || time.Now().After(r.deadline)) {
 			return false
 		}
 		rank := nameRank(item.folded, r.query)

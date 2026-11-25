@@ -1,59 +1,76 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { FileListWorker } from '../../dist/backend/src/file-list-worker.js';
 
-test('an abandoned listing releases the private worker for the next request', { timeout: 8000 }, async t => {
+async function fixture(t, script) {
   const dir = await mkdtemp('/tmp/hush-file-worker-');
-  const helper = join(dir, 'helper'), started = join(dir, 'started');
+  const helper = join(dir, 'helper.mjs'), started = join(dir, 'started'), launches = join(dir, 'launches');
   const worker = new FileListWorker(helper);
   t.after(async () => { await worker.close(); await rm(dir, { recursive: true, force: true }); });
-  await writeFile(helper, `#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *slow*) : > '${started}'; IFS= read -r unused ;;
-    *) printf '%s\\n' '{"page":true}' ;;
-  esac
-done
+  await writeFile(helper, `#!${process.execPath}
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+appendFileSync(${JSON.stringify(launches)}, process.pid + '\\n');
+const started = ${JSON.stringify(started)};
+const reply = (id, value) => console.log(JSON.stringify({ id, ...value }));
+for await (const line of createInterface({ input: process.stdin })) {
+  const msg = JSON.parse(line);
+  ${script}
+}
 `, { mode: 0o700 });
-  const signal = new AbortController();
-  const abandoned = assert.rejects(worker.request({ directory: 'slow' }, signal.signal));
-  const deadline = AbortSignal.timeout(2000);
-  while (!await access(started).then(() => true, () => false)) await delay(10, undefined, { signal: deadline });
-  const next = worker.request({ directory: '' }, AbortSignal.timeout(2000));
-  signal.abort();
-  await abandoned;
-  assert.deepEqual(await next, { page: true });
+  return { worker, async waitStarted() {
+    const deadline = AbortSignal.timeout(2000);
+    while (!await access(started).then(() => true, () => false)) await delay(5, undefined, { signal: deadline });
+  }, pids: async () => (await readFile(launches, 'utf8')).trim().split('\n').map(Number) };
+}
+
+test('an abandoned search sends its ID, drains the cancel reply and keeps the helper warm', { timeout: 8000 }, async t => {
+  const { worker, waitStarted, pids } = await fixture(t, `
+    if (msg.query === 'cold') { writeFileSync(started, '' + msg.id); continue; }
+    if (msg.cancel) {
+      if (msg.id !== +readFileSync(started, 'utf8')) process.exit(2);
+      reply(msg.id, { error: 'cancelled' });
+      continue;
+    }
+    if (msg.query === 'skipped') process.exit(2);
+    reply(msg.id, { pid: process.pid });
+  `);
+  const running = new AbortController(), queued = new AbortController();
+  const abandoned = assert.rejects(worker.request({ query: 'cold' }, running.signal), { name: 'AbortError' });
+  await waitStarted();
+  const skipped = assert.rejects(worker.request({ query: 'skipped' }, queued.signal), { name: 'AbortError' });
+  const next = worker.request({ query: 'next' }, AbortSignal.timeout(2500));
+  queued.abort(); running.abort();
+  await Promise.all([abandoned, skipped]);
+  const { pid } = await next;
+  assert.deepEqual(await pids(), [pid]);
 });
 
-test('abandoned searches release their callers and reuse the running helper', { timeout: 8000 }, async t => {
-  const dir = await mkdtemp('/tmp/hush-file-worker-');
-  const helper = join(dir, 'helper'), started = join(dir, 'started'), release = join(dir, 'release');
-  const worker = new FileListWorker(helper);
-  t.after(async () => { await worker.close(); await rm(dir, { recursive: true, force: true }); });
-  await writeFile(helper, `#!/bin/sh
-warm=false
-while IFS= read -r line; do
-  case "$line" in
-    *cold*)
-      : > '${started}'
-      while [ ! -f '${release}' ]; do /bin/sleep 0.01; done
-      warm=true ;;
-    *skipped*) warm=false ;;
-  esac
-  printf '{"warm":%s}\\n' "$warm"
-done
-`, { mode: 0o700 });
-  const running = new AbortController(), queued = new AbortController();
-  const abandoned = assert.rejects(worker.request({ query: 'cold' }, running.signal, true), { name: 'AbortError' });
-  const deadline = AbortSignal.timeout(2000);
-  while (!await access(started).then(() => true, () => false)) await delay(10, undefined, { signal: deadline });
-  const skipped = assert.rejects(worker.request({ query: 'skipped' }, queued.signal, true), { name: 'AbortError' });
-  const next = worker.request({ query: 'next' }, AbortSignal.timeout(2000), true);
-  running.abort(); queued.abort();
-  await Promise.all([abandoned, skipped]);
-  await writeFile(release, '');
-  assert.deepEqual(await next, { warm: true });
+test('a helper that does not acknowledge cancellation is replaced', { timeout: 8000 }, async t => {
+  const { worker, waitStarted, pids } = await fixture(t, `
+    if (msg.directory === 'slow') { writeFileSync(started, ''); continue; }
+    if (!msg.cancel) reply(msg.id, { pid: process.pid });
+  `);
+  const running = new AbortController();
+  const abandoned = assert.rejects(worker.request({ directory: 'slow' }, running.signal), { name: 'AbortError' });
+  await waitStarted();
+  const next = worker.request({ directory: '' }, AbortSignal.timeout(2500));
+  running.abort();
+  await abandoned;
+  const reply = await next;
+  const launched = await pids();
+  assert.equal(launched.length, 2);
+  assert.notEqual(launched[0], reply.pid);
+  assert.equal(launched[1], reply.pid);
+});
+
+test('a mismatched reply ID cannot complete the active request', { timeout: 8000 }, async t => {
+  const { worker } = await fixture(t, `
+    reply(msg.wrong ? msg.id - 1 : msg.id, { page: true });
+  `);
+  await assert.rejects(worker.request({ wrong: true }, AbortSignal.timeout(2500)), { code: 'not_found' });
+  assert.deepEqual(await worker.request({}, AbortSignal.timeout(2500)), { page: true });
 });

@@ -1,11 +1,13 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
-import { WireError } from "../../server/src/wire.js";
+import { object, WireError } from "../../server/src/wire.js";
 
 // A search can return 32 paths of 2048 bytes, including JSON escaping.
 const recordLimit = 512 * 1024;
+const cancelGraceMs = 500;
 type Child = ChildProcessByStdio<Writable, Readable, null>;
-type Job = { chunk: Buffer[]; size: number; done: (error?: Error, value?: unknown) => void };
+type Job = { id: number; chunk: Buffer[]; size: number; cancel: () => void;
+  done: (error?: Error, value?: unknown) => void };
 type Pending = { value: object; signal: AbortSignal; abort: () => void;
   resolve: (result: unknown) => void; reject: (error: unknown) => void };
 
@@ -17,6 +19,7 @@ export class FileListWorker {
   #retiring = false;
   #closed = false;
   #job?: Job;
+  #lastID = 0;
   #queue: Pending[] = [];
   #active?: Pending;
   #draining = false;
@@ -37,14 +40,20 @@ export class FileListWorker {
     child.stdin.on("error", () => this.#retire());
     child.stdout.on("error", () => this.#retire());
     child.stdout.on("data", (chunk: Buffer) => {
+      if (this.#closed || this.#retiring) return;
       const job = this.#job;
       if (!job || job.size + chunk.length > recordLimit) { this.#retire(); return; }
       job.chunk.push(chunk);
       job.size += chunk.length;
-      if (chunk.indexOf(10) < 0) return;
-      if (chunk.indexOf(10) !== chunk.length - 1) { this.#retire(); return; }
-      try { job.done(undefined, JSON.parse(Buffer.concat(job.chunk, job.size).toString("utf8"))); }
-      catch { this.#retire(); }
+      const newline = chunk.indexOf(10);
+      if (newline < 0) return;
+      if (newline !== chunk.length - 1) { this.#retire(); return; }
+      try {
+        const reply: unknown = JSON.parse(Buffer.concat(job.chunk, job.size).toString("utf8"));
+        if (!object(reply) || reply.id !== job.id) { this.#retire(); return; }
+        const { id: _, ...value } = reply;
+        job.done(undefined, value);
+      } catch { this.#retire(); }
     });
   }
 
@@ -55,16 +64,16 @@ export class FileListWorker {
     this.#child?.kill("SIGKILL"); // wait for close before reusing the stream
   }
 
-  request(value: object, signal: AbortSignal, finishSearch = false) {
+  request(value: object, signal: AbortSignal) {
     return new Promise<unknown>((resolve, reject) => {
       signal.throwIfAborted();
       if (this.#closed) throw new WireError("not_found");
       const abort = () => {
         const i = this.#queue.indexOf(pending);
         if (i >= 0) this.#queue.splice(i, 1);
-        // Let a bounded search finish for the next query instead of killing
-        // the helper and restarting the same cold index on every keystroke.
-        if (this.#active === pending && this.#job && !finishSearch) this.#retire();
+        // The caller stops now; the next job waits for the correlated reply
+        // (a cancellation or an already-completed result) on this stream.
+        if (this.#active === pending) this.#job?.cancel();
         reject(signal.reason);
       };
       const pending: Pending = { value, signal, abort, resolve, reject };
@@ -97,20 +106,30 @@ export class FileListWorker {
     this.warm();
     const child = this.#child;
     if (!child || this.#retiring || this.#closed) throw new WireError("not_found");
+    const id = ++this.#lastID;
+    const line = JSON.stringify({ ...value, id }) + "\n";
     return new Promise<unknown>((resolve, reject) => {
-      const timeout = setTimeout(() => this.#retire(), 3500);
-      this.#job = { chunk: [], size: 0, done: (error, value) => {
+      let timeout = setTimeout(() => this.#retire(), 3500);
+      this.#job = { id, chunk: [], size: 0, cancel: () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => this.#retire(), cancelGraceMs);
+        child.stdin.write(JSON.stringify({ id, cancel: true }) + "\n");
+      }, done: (error, value) => {
         clearTimeout(timeout);
         this.#job = undefined;
         if (error) reject(error); else resolve(value);
       } };
-      child.stdin.write(JSON.stringify(value) + "\n");
+      child.stdin.write(line);
     });
   }
 
   async close() {
+    if (this.#closed) return this.#exited;
     this.#closed = true;
-    this.#retire();
-    await this.#exited;
+    this.#job?.done(new WireError("not_found"));
+    if (!this.#child || this.#retiring) return this.#exited;
+    const timeout = setTimeout(() => this.#retire(), cancelGraceMs);
+    this.#child.stdin.end();
+    try { await this.#exited; } finally { clearTimeout(timeout); }
   }
 }
