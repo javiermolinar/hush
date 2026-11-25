@@ -16,10 +16,10 @@ import (
 
 type fileScopeFixture struct {
 	inertBackend
-	capable bool
-	scope   sdk.WorkspaceFileScope
-	list    func(context.Context, sdk.WorkspaceFileTarget, string, string, int, string) (sdk.WorkspaceFilePage, error)
-	search  func(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error)
+	capable, projectPaths bool
+	scope                 sdk.WorkspaceFileScope
+	list                  func(context.Context, sdk.WorkspaceFileTarget, string, string, int, string) (sdk.WorkspaceFilePage, error)
+	search                func(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error)
 }
 
 func (f fileScopeFixture) Hello(context.Context) (sdk.Hello, error) {
@@ -28,6 +28,9 @@ func (f fileScopeFixture) Hello(context.Context) (sdk.Hello, error) {
 		caps["workspaceFiles"] = sdk.WorkspaceFilesVersion
 		if f.search != nil {
 			caps["workspaceFiles"] = sdk.WorkspaceFileSearchVersion
+		}
+		if f.projectPaths {
+			caps["workspaceFiles"] = sdk.WorkspaceFileProjectPathsVersion
 		}
 	}
 	return sdk.Hello{Capabilities: caps}, nil
@@ -284,8 +287,10 @@ func openFreshScope(t testing.TB, m *Model, fixture freshSessionFiles) {
 
 func TestFreshSessionBrowsesProspectiveWorkspace(t *testing.T) {
 	var created atomic.Int32
+	const workflow = "delete-old-tempo-releases.yaml"
+	const found = ".github/workflows/" + workflow
 	prospective := sdk.WorkspaceFileTarget{CWD: "/workspace"}
-	fixture := freshSessionFiles{fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true},
+	fixture := freshSessionFiles{fileScopeFixture{capable: true, projectPaths: true, scope: sdk.WorkspaceFileScope{Workspace: true},
 		list: func(_ context.Context, target sdk.WorkspaceFileTarget, root, dir string, _ int, _ string) (sdk.WorkspaceFilePage, error) {
 			if target != prospective || root != "workspace" || dir != "" {
 				t.Errorf("unexpected listing %+v %q %q", target, root, dir)
@@ -293,10 +298,10 @@ func TestFreshSessionBrowsesProspectiveWorkspace(t *testing.T) {
 			return sdk.WorkspaceFilePage{Entries: []sdk.WorkspaceFileEntry{{Name: "README.md"}}}, nil
 		},
 		search: func(_ context.Context, target sdk.WorkspaceFileTarget, query string, _ int) (sdk.WorkspaceFileSearchResult, error) {
-			if target != prospective || query != "read" {
+			if target != prospective || query != workflow {
 				t.Errorf("unexpected search %+v %q", target, query)
 			}
-			return sdk.WorkspaceFileSearchResult{Matches: []sdk.WorkspaceFileMatch{{Path: "docs/README.md"}}}, nil
+			return sdk.WorkspaceFileSearchResult{Matches: []sdk.WorkspaceFileMatch{{Path: found}}}, nil
 		}}, &created}
 	m := modelFor(t, Options{ReducedMotion: true, WorkspaceLocal: true})
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
@@ -314,10 +319,10 @@ func TestFreshSessionBrowsesProspectiveWorkspace(t *testing.T) {
 	if _, choices, ok := m.fileSuggestions(); !ok || len(choices) != 1 || choices[0].Path != "README.md" {
 		t.Fatalf("browse choices: %v, %t", choices, ok)
 	}
-	m.editor.set("look @read")
+	m.editor.set("look @" + workflow)
 	m.Update(m.refreshFilePicker()().(nativeFileSearchMsg))
-	m.replaceFile("docs/README.md")
-	if got := m.editor.value(); got != "look @docs/README.md " {
+	m.replaceFile(found)
+	if got := m.editor.value(); got != "look @"+found+" " {
 		t.Fatal(got)
 	}
 	if created.Load() != 0 || m.active != "" {

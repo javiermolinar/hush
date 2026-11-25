@@ -137,29 +137,38 @@ func waitOn[T any](ctx context.Context, c *Client, method string, params any) (T
 }
 
 func waitOnCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, versions ...uint64) (T, error) {
+	out, _, err := waitOnVersionedCapability[T](ctx, c, method, params, capability, versions...)
+	return out, err
+}
+
+// Payloads that differ by version must be checked against the hello on this
+// passive connection, not the client's shared connection.
+func waitOnVersionedCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, versions ...uint64) (T, uint64, error) {
 	var zero T
 	if c.life.Err() != nil {
-		return zero, ErrClosed
+		return zero, 0, ErrClosed
 	}
 	life, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(c.life, cancel)
 	defer func() { stop(); cancel() }()
 	s, err := c.dial(life, life, c.offered, nil)
 	if err != nil {
-		return zero, err
+		return zero, 0, err
 	}
 	defer s.fail(ErrClosed)
-	if capability != "" && !slices.Contains(versions, s.hello.Capabilities[capability]) {
-		return zero, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: capability}
+	version := s.hello.Capabilities[capability]
+	if capability != "" && !slices.Contains(versions, version) {
+		return zero, 0, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: capability}
 	}
 	v, err := s.call(life, method, params, nil)
 	if ctx.Err() != nil {
-		return zero, ctx.Err()
+		return zero, version, ctx.Err()
 	}
 	if err != nil {
-		return zero, err
+		return zero, version, err
 	}
-	return decode[T](v)
+	out, err := decode[T](v)
+	return out, version, err
 }
 
 type NewThread struct {

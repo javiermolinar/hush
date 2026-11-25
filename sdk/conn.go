@@ -282,11 +282,11 @@ func (s *session) receive(f map[string]any) error {
 		s.mu.Lock()
 		version := s.hello.Capabilities[workspaceFilesCapability]
 		s.mu.Unlock()
-		expected := uint64(WorkspaceFileSearchVersion)
-		if method != workspaceFileSearchMethod && version == WorkspaceFilesVersion {
-			expected = WorkspaceFilesVersion
+		if version != WorkspaceFileProjectPathsVersion && version != WorkspaceFileSearchVersion &&
+			(version != WorkspaceFilesVersion || method == workspaceFileSearchMethod) {
+			return ErrProtocol
 		}
-		if err := optionalEnvelope(f, version, expected); err != nil {
+		if err := optionalEnvelope(f, version, version); err != nil {
 			return err
 		}
 	} else if ok && (method == gitDiffPrefix+"summary" || method == gitDiffPrefix+"file") {

@@ -23,6 +23,7 @@ const (
 	HelperArg  = "--hush-internal-file-list"
 	HelperEnv  = "HUSH_FILE_LIST_HELPER"
 	maxEntries = 4096
+	githubDir  = ".github"
 )
 
 type entry struct {
@@ -37,13 +38,15 @@ type page struct {
 }
 
 type request struct {
-	Root      string `json:"root"`
-	Device    string `json:"device"`
-	Inode     string `json:"inode"`
-	Directory string `json:"directory"`
-	Query     string `json:"query,omitempty"`
-	Offset    int    `json:"offset"`
-	Limit     int    `json:"limit"`
+	Root          string `json:"root"`
+	Device        string `json:"device"`
+	Inode         string `json:"inode"`
+	Directory     string `json:"directory"`
+	Query         string `json:"query,omitempty"`
+	SearchKey     string `json:"searchKey,omitempty"` // opaque cache scope from the authorized host
+	IncludeGitHub bool   `json:"includeGitHub,omitempty"`
+	Offset        int    `json:"offset"`
+	Limit         int    `json:"limit"`
 }
 
 type response struct {
@@ -96,12 +99,12 @@ func openRoot(root, device, inode string) (int, error) {
 	return fd, nil
 }
 
-func read(root, device, inode, relative string, offset, limit int) (page, error) {
-	fd, err := openRoot(root, device, inode)
+func read(r request) (page, error) {
+	fd, err := openRoot(r.Root, r.Device, r.Inode)
 	if err != nil {
 		return page{}, err
 	}
-	fd, err = descend(fd, relative)
+	fd, err = descend(fd, r.Directory)
 	if err != nil {
 		return page{}, err
 	}
@@ -122,7 +125,8 @@ func read(root, device, inode, relative string, offset, limit int) (page, error)
 			return page{}, errLimit
 		}
 		for _, name := range batch {
-			if !allowed(name) {
+			github := r.IncludeGitHub && r.Directory == "" && name == githubDir
+			if !github && !allowed(name) {
 				continue
 			}
 			var st unix.Stat_t
@@ -133,7 +137,7 @@ func read(root, device, inode, relative string, offset, limit int) (page, error)
 			case unix.S_IFDIR:
 				entries = append(entries, entry{name, true})
 			case unix.S_IFREG:
-				if st.Nlink == 1 {
+				if !github && st.Nlink == 1 {
 					entries = append(entries, entry{name, false})
 				}
 			}
@@ -158,8 +162,8 @@ func read(root, device, inode, relative string, offset, limit int) (page, error)
 	hash := sha256.New()
 	// Bind later pages to the directory inode and the observed listing.
 	_ = json.NewEncoder(hash).Encode([]any{identity.Dev, identity.Ino, entries})
-	offset = min(offset, len(entries))
-	end := min(offset+limit, len(entries))
+	offset := min(r.Offset, len(entries))
+	end := min(offset+r.Limit, len(entries))
 	return page{entries[offset:end], fmt.Sprintf("%x", hash.Sum(nil)), end < len(entries)}, nil
 }
 
@@ -170,22 +174,28 @@ func (r request) valid() bool {
 		return false
 	}
 	if r.Query != "" {
-		return r.Directory == "" && r.Offset == 0 && r.Limit <= maxSearchResults && allowedQuery(r.Query)
+		return r.Directory == "" && r.Offset == 0 && r.Limit <= maxSearchResults && len(r.SearchKey) <= 64 && allowedQuery(r.Query)
+	}
+	if r.SearchKey != "" {
+		return false
 	}
 	if r.Directory != "" {
+		github := r.IncludeGitHub
 		for name := range strings.SplitSeq(r.Directory, "/") {
-			if !allowed(name) {
+			if !(github && name == githubDir) && !allowed(name) {
 				return false
 			}
+			github = false // only the first component may be .github
 		}
 	}
 	return true
 }
 
-// Run serves one private stream from the backend. It caches no trusted state:
-// every call reopens the exact root by descriptor; the backend rechecks grants.
+// Run serves one private stream from the backend. It caches names, not trusted
+// state: each call reopens the exact root and the backend rechecks grants.
 func Run(in io.Reader, out io.Writer) int {
 	lines, replies := bufio.NewScanner(in), json.NewEncoder(out)
+	var cache searchCache
 	for lines.Scan() {
 		dec := json.NewDecoder(bytes.NewReader(lines.Bytes()))
 		dec.DisallowUnknownFields()
@@ -197,11 +207,11 @@ func Run(in io.Reader, out io.Writer) int {
 		var err error
 		if r.Query != "" {
 			var result searchResult
-			result, err = search(r)
+			result, err = cache.search(r)
 			reply.Search = &result
 		} else {
 			var result page
-			result, err = read(r.Root, r.Device, r.Inode, r.Directory, r.Offset, r.Limit)
+			result, err = read(r)
 			reply.Page = &result
 		}
 		if errors.Is(err, errLimit) {

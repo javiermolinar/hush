@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func searchFixture(t *testing.T, names ...string) request {
 	if err := unix.Stat(root, &st); err != nil {
 		t.Fatal(err)
 	}
-	return request{Root: root, Device: fmt.Sprint(st.Dev), Inode: fmt.Sprint(st.Ino), Query: "generator.go", Limit: maxSearchResults}
+	return request{Root: root, Device: fmt.Sprint(st.Dev), Inode: fmt.Sprint(st.Ino), Query: "generator.go", SearchKey: "fixture", Limit: maxSearchResults}
 }
 
 func TestSearchNestedCheckouts(t *testing.T) {
@@ -39,10 +40,11 @@ func TestSearchNestedCheckouts(t *testing.T) {
 		"another/generator.go", "generator.go.txt", "test-generator.go", "generator-a.go",
 		".hidden/generator.go", "tempo.fork/node_modules/generator.go", "vendor/generator.go", "~/generator.go",
 		"literal folder/générateur.go")
+	var cache searchCache
 	check := func(query string, expected ...searchMatch) {
 		t.Helper()
 		r.Query = query
-		got, err := search(r)
+		got, err := cache.search(r)
 		if err != nil || got.Partial || !reflect.DeepEqual(got.Matches, expected) {
 			t.Fatalf("search(%q): %+v, %v; want %v", query, got, err, expected)
 		}
@@ -75,14 +77,75 @@ func TestSearchChecksEntryTypesAndRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Query = "secret"
-	got, err := search(r)
+	var cache searchCache
+	got, err := cache.search(r)
 	if err != nil || got.Partial || !reflect.DeepEqual(got.Matches, []searchMatch{{"found/secret", false}}) {
 		t.Fatalf("search returned %+v, %v", got, err)
 	}
 	r.Inode += "0"
-	if _, err := search(r); err == nil {
+	if _, err := cache.search(r); err == nil {
 		t.Fatal("search ran with a mismatched root")
 	}
+}
+
+func TestSearchIncludesOnlyTopLevelGitHubDirectory(t *testing.T) {
+	const workflow = "delete-old-tempo-releases.yaml"
+	const path = ".github/workflows/" + workflow
+	r := searchFixture(t, path, ".github/.hidden/"+workflow, ".git/"+workflow, "nested/.github/"+workflow)
+	r.Query = workflow
+	r.IncludeGitHub = true
+	var cache searchCache
+	got, err := cache.search(r)
+	if err != nil || got.Partial || !reflect.DeepEqual(got.Matches, []searchMatch{{path, false}}) {
+		t.Fatalf("GitHub search: %+v, %v", got, err)
+	}
+	r.IncludeGitHub = false
+	if got, err := cache.search(r); err != nil || len(got.Matches) != 0 {
+		t.Fatalf("legacy search reused the GitHub index: %+v, %v", got, err)
+	}
+}
+
+func TestWarmSearchVerifiesNamesAndRefreshesIndex(t *testing.T) {
+	r := searchFixture(t, "src/old.yaml", "folder/old.yaml")
+	var cache searchCache
+	check := func(query string, expected ...searchMatch) {
+		t.Helper()
+		r.Query = query
+		got, err := cache.search(r)
+		if err != nil || !slices.Equal(got.Matches, expected) {
+			t.Fatalf("search(%q): %+v, %v; want %v", query, got, err, expected)
+		}
+	}
+	check("old.yaml", searchMatch{"folder/old.yaml", false}, searchMatch{"src/old.yaml", false})
+	expires := cache.expires
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "old.yaml"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(r.Root, "src/old.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(outside, "old.yaml"), filepath.Join(r.Root, "src/old.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(r.Root, "folder"), filepath.Join(r.Root, "renamed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(r.Root, "folder")); err != nil {
+		t.Fatal(err)
+	}
+	check("old") // neither the symlinked parent nor the hard link can escape revalidation
+	if !cache.expires.Equal(expires) {
+		t.Fatal("changing the query rebuilt the index")
+	}
+	r.SearchKey = "new grant"
+	check("old", searchMatch{"renamed/old.yaml", false})
+	if err := os.WriteFile(filepath.Join(r.Root, "src/new.yaml"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	check("new")
+	cache.expires = time.Time{}
+	check("new", searchMatch{"src/new.yaml", false})
 }
 
 func TestSearchReturnsPartialAtEntryBudget(t *testing.T) {
@@ -92,8 +155,8 @@ func TestSearchReturnsPartialAtEntryBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(root)
-	s := searchScan{query: "missing", limit: 1, deadline: time.Now().Add(5 * time.Second), seen: maxSearchEntries - 1}
-	if err := s.visit(root, searchDir{}); err != nil || !s.partial || s.seen != maxSearchEntries {
+	s := searchScan{deadline: time.Now().Add(5 * time.Second), seen: maxSearchEntries - 1}
+	if _, err := s.visit(root, searchDir{}); err != nil || !s.partial || s.seen != maxSearchEntries {
 		t.Fatalf("search didn't stop at entry budget: seen=%d partial=%t err=%v", s.seen, s.partial, err)
 	}
 }

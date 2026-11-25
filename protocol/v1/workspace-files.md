@@ -1,11 +1,12 @@
-# Workspace files (`workspaceFiles:1` and `workspaceFiles:2`)
+# Workspace files (`workspaceFiles:1`–`workspaceFiles:3`)
 
 This optional read-only capability leaves all unnegotiated native v1 frames unchanged.
 Persistent Hush hosts advertise it only when a local descriptor-relative listing helper
 is configured. It does not authorize reads on its own.
 
-Offer `[2,1]` to negotiate recursive workspace search when available and retain
-browsing on older hosts. Versions 1 and 2 both support the same scope and list calls:
+Offer `[3,2,1]` to negotiate recursive workspace search with `.github` support when
+available and retain search or browsing on older hosts. All versions support scope
+and list:
 
 - `ext.workspaceFiles.scope` takes `{threadId}` and returns `{workspace,home}` (two
   booleans). The host resolves the existing, unarchived thread's recorded working
@@ -15,28 +16,32 @@ browsing on older hosts. Versions 1 and 2 both support the same scope and list c
   `workspace` or `home`; the latter is always the backend profile's home and requires
   a separate grant. `directory` is `""` or a relative slash-delimited path of up to 32
   components and 2048 UTF-8 bytes. Components are at most 255 bytes; no dot-prefixed
-  component, quotes, slashes within a component, `@`, `:`, backslashes, or controls.
-  `limit` is 1–100. The result is `{entries:[{name,directory}],nextCursor?}`; the names
+  component (except the workspace's top-level `.github` directory on version 3),
+  quotes, slashes within a component, `@`, `:`, backslashes, or controls. `limit` is
+  1–100. The result is `{entries:[{name,directory}],nextCursor?}`; the names
   describe immediate children only, with directories first. No file contents, root
-  path, symlinks, special files, hard-linked regular files, or hidden names are listed.
+  path, symlinks, special files, or hard-linked regular files are listed. Other hidden
+  names are excluded, and the home root never includes hidden names.
 
 The host reads at most 4096 directory entries per request (including filtered
 names) and rejects larger directories with `limit`. `nextCursor` is opaque and
 expires within 60 seconds. It is scoped to the backend boot, exact thread or
-prospective directory, root, current grant, directory, listing and limit. Changing or revoking a grant, replacing
+prospective directory, root, current grant, directory, visibility rules, listing
+and limit. Changing or revoking a grant, replacing
 an ancestor with a symlink, or changing a directory invalidates continuation. An
 unknown or unauthorized first page returns `not_found`; an invalid continuation
 returns `invalid_cursor`.
 
-With `workspaceFiles:2`, `ext.workspaceFiles.search` takes `{threadId,query,limit}`.
+With `workspaceFiles:2` or later, `ext.workspaceFiles.search` takes `{threadId,query,limit}`.
 It searches only the thread's authorized workspace, never the backend home
 separately. Queries are nonblank UTF-8, at most 255 bytes, without slashes,
 backslashes, quotes, `@`, `:`, or controls. The limit is 1–32. Results are
 `{matches:[{path,directory}],partial}` with workspace-relative paths using the
-same component and path limits as `list`. Search returns names only; it does
-not traverse symlinks or hidden directories, list hard-linked regular files,
-or descend into `node_modules`, `vendor`, `dist`, and `target`. These directories
-can still be browsed explicitly. Search does not depend on Git or ripgrep.
+same component and path limits as `list`, including the same `.github` exception
+on version 3. Search returns names only; it does not traverse symlinks or other
+hidden directories, list hard-linked regular files, or descend into `node_modules`,
+`vendor`, `dist`, and `target`. These four directories can still be browsed explicitly.
+Search does not depend on Git or ripgrep.
 
 Matching is case-insensitive. Exact basename matches rank ahead of prefixes,
 substrings, and subsequences, with shallower paths first within each rank. For
@@ -44,11 +49,14 @@ a query with multiple words, the words before the last can also narrow matches
 by parent path. The breadth-first scan is bounded by elapsed time, entries,
 directories, and depth. `partial` is true if those limits or unreadable
 subdirectories prevented a complete scan. Search is not paginated, and an
-untrusted workspace returns `not_found`.
+untrusted workspace returns `not_found`. The host may reuse a bounded index of
+names for five seconds. Each match is verified again, and the host still checks
+root identity and current grants on every request. Newly created names may not
+appear until the next scan; explicit directory browsing always scans fresh.
 
 ## Prospective threads
 
-With `workspaceFiles:2`, all three calls also accept `{cwd}` instead of `{threadId}`
+With `workspaceFiles:2` or later, all three calls also accept `{cwd}` instead of `{threadId}`
 to address a thread before it exists. Send exactly one of the two. `cwd` is an
 absolute path of at most 4096 UTF-8 bytes without controls, naming an existing
 directory on the backend host: the working directory a `thread.new` with that `cwd`

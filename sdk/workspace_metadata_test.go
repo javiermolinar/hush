@@ -68,11 +68,17 @@ func TestWorkspaceFileSearchNegotiationAndValidation(t *testing.T) {
 		name    string
 		version uint64
 		path    string
+		valid   bool
 	}{
-		{"v1 does not search", 1, ""},
-		{"relative path", 2, "tempo.fork/modules/generator/generator.go"},
-		{"dot path", 2, "repo/../generator.go"},
-		{"home path", 2, "~/generator.go"},
+		{"v1 does not search", 1, "", false},
+		{"relative path", 2, "tempo.fork/modules/generator/generator.go", true},
+		{"dot path", 2, "repo/../generator.go", false},
+		{"home path", 2, "~/generator.go", false},
+		{"github paths need v3", 2, ".github/workflows/generator.go", false},
+		{"v3 github workflow", 3, ".github/workflows/generator.go", true},
+		{"v3 nested github", 3, "repo/.github/generator.go", false},
+		{"v3 hidden file", 3, ".github/.generator.go", false},
+		{"v3 github must be a directory", 3, ".github", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			ctx, socket := runContext(t)
@@ -86,21 +92,21 @@ func TestWorkspaceFileSearchNegotiationAndValidation(t *testing.T) {
 				if err != nil {
 					return
 				}
-				if scenario.version != 2 || q.Method != workspaceFileSearchMethod || q.Params["threadId"] != "7" || q.Params["query"] != "generator.go" {
+				if scenario.version < 2 || q.Method != workspaceFileSearchMethod || q.Params["threadId"] != "7" || q.Params["query"] != "generator.go" {
 					t.Errorf("unexpected file search: %+v", q)
 				}
 				reply(c, q, WorkspaceFileSearchResult{Matches: []WorkspaceFileMatch{{Path: scenario.path}}, Partial: true})
 				_, _ = r.ReadByte()
 			})
-			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceFilesCapability: {2, 1}}})
+			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceFilesCapability: {3, 2, 1}}})
 			defer c.Close()
 			got, err := c.SearchWorkspaceFiles(ctx, WorkspaceFileTarget{ThreadID: "7"}, "generator.go", 10)
-			switch scenario.name {
-			case "relative path":
+			switch {
+			case scenario.valid:
 				if err != nil || !got.Partial || len(got.Matches) != 1 || got.Matches[0].Path != scenario.path {
 					t.Fatalf("search=%+v; %v", got, err)
 				}
-			case "v1 does not search":
+			case scenario.version == 1:
 				if !IsCode(err, "unsupported_capability") {
 					t.Fatalf("search on v1: %v", err)
 				}
@@ -113,11 +119,11 @@ func TestWorkspaceFileSearchNegotiationAndValidation(t *testing.T) {
 	}
 }
 
-// A prospective thread is addressed by directory only on workspaceFiles:2.
+// A prospective thread requires workspaceFiles:2 or later.
 // A v1 host never receives the request.
 func TestWorkspaceFileProspectiveTarget(t *testing.T) {
 	const cwd = "/work space/repo"
-	for _, version := range []uint64{WorkspaceFilesVersion, WorkspaceFileSearchVersion} {
+	for _, version := range []uint64{WorkspaceFilesVersion, WorkspaceFileSearchVersion, WorkspaceFileProjectPathsVersion} {
 		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
 			ctx, socket := runContext(t)
 			var calls atomic.Int32
@@ -139,7 +145,16 @@ func TestWorkspaceFileProspectiveTarget(t *testing.T) {
 				case workspaceFilesPrefix + "scope":
 					reply(c, q, map[string]bool{"workspace": true, "home": false})
 				case workspaceFilesPrefix + "list":
-					reply(c, q, map[string]any{"entries": []WorkspaceFileEntry{{Name: "README.md"}}})
+					dir := q.Params["directory"]
+					file := WorkspaceFileEntry{Name: "README.md"}
+					if version == WorkspaceFileProjectPathsVersion && dir == "" {
+						file = WorkspaceFileEntry{Name: ".github", Directory: true}
+					} else if version == WorkspaceFileProjectPathsVersion && dir == ".github/workflows" {
+						file = WorkspaceFileEntry{Name: "workflow.yaml"}
+					} else if dir != "" {
+						t.Errorf("unexpected directory on v%d: %q", version, dir)
+					}
+					reply(c, q, map[string]any{"entries": []WorkspaceFileEntry{file}})
 				case workspaceFileSearchMethod:
 					reply(c, q, WorkspaceFileSearchResult{Matches: []WorkspaceFileMatch{{Path: "docs/README.md"}}})
 				default:
@@ -147,7 +162,7 @@ func TestWorkspaceFileProspectiveTarget(t *testing.T) {
 				}
 				_, _ = r.ReadByte()
 			})
-			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceFilesCapability: {2, 1}}})
+			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceFilesCapability: {3, 2, 1}}})
 			defer c.Close()
 			target := WorkspaceFileTarget{CWD: cwd}
 			scope, scopeErr := c.WorkspaceFileScope(ctx, target)
@@ -166,6 +181,15 @@ func TestWorkspaceFileProspectiveTarget(t *testing.T) {
 			}
 			if scopeErr != nil || listErr != nil || searchErr != nil || !scope.Workspace || len(page.Entries) != 1 || len(found.Matches) != 1 {
 				t.Fatalf("scope=%+v %v; page=%+v %v; search=%+v %v", scope, scopeErr, page, listErr, found, searchErr)
+			}
+			workflows, err := c.ListWorkspaceFiles(ctx, target, "workspace", ".github/workflows", 10, "")
+			if version == WorkspaceFileProjectPathsVersion {
+				if page.Entries[0] != (WorkspaceFileEntry{Name: ".github", Directory: true}) || err != nil ||
+					len(workflows.Entries) != 1 || workflows.Entries[0].Name != "workflow.yaml" {
+					t.Fatalf("github listing %+v: %v; root %+v", workflows, err, page)
+				}
+			} else if !IsCode(err, "unsupported_capability") {
+				t.Fatalf("v%d accepted a hidden directory: %v", version, err)
 			}
 		})
 	}

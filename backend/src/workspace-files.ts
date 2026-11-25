@@ -4,7 +4,7 @@ import { access, realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Cursors } from "../../server/src/cursor.js";
-import { browseName, searchPath, type WorkspaceFileQuery, type WorkspaceFileSearch, type WorkspaceFileSearchResult, type WorkspaceFilesHost,
+import { browseName, githubDirectory, searchPath, type WorkspaceFileQuery, type WorkspaceFileSearch, type WorkspaceFileSearchResult, type WorkspaceFilesHost,
   type WorkspaceFileTarget } from "../../server/src/workspace-files.js";
 import { object, WireError } from "../../server/src/wire.js";
 import type { WorkspaceTrust } from "./workspace-trust.js";
@@ -23,6 +23,7 @@ export async function workspaceFileHelper() {
 }
 
 export class WorkspaceFiles implements WorkspaceFilesHost {
+  readonly projectPaths = true;
   readonly #cursors = new Cursors();
   readonly #worker: FileListWorker;
   #pending = 0;
@@ -55,15 +56,16 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
     const root = await this.#root(query.root, cwd, signal);
     if (!root) throw new WireError(query.cursor ? "invalid_cursor" : "not_found");
     const scope = digest([query.target, cwd, query.root, query.directory, query.limit, root.path,
-      String(root.device), String(root.inode), String(root.birth), root.stamp]);
+      String(root.device), String(root.inode), String(root.birth), root.stamp, !!query.includeGitHub]);
     const cursor = query.cursor ? this.#cursors.decode<Cursor>("workspaceFiles", query.cursor) : undefined;
     if (cursor && (cursor.scope !== scope || cursor.expires < Date.now())) throw new WireError("invalid_cursor");
-    const value = (await this.#scan(query, cwd, root, { directory: query.directory, offset: cursor?.offset ?? 0, limit: query.limit },
-      signal, query.cursor ? "invalid_cursor" : "not_found")).page;
+    const value = (await this.#scan(query, cwd, root, { directory: query.directory, offset: cursor?.offset ?? 0, limit: query.limit,
+      includeGitHub: query.includeGitHub }, signal, query.cursor ? "invalid_cursor" : "not_found")).page;
     if (!object(value) || typeof value.stamp !== "string" || !/^[a-f0-9]{64}$/.test(value.stamp) ||
         typeof value.more !== "boolean" || !Array.isArray(value.entries) || value.entries.length > query.limit ||
         value.more && value.entries.length !== query.limit ||
-        !value.entries.every(x => object(x) && browseName(x.name) && typeof x.directory === "boolean")) throw new WireError("internal");
+        !value.entries.every(x => object(x) && typeof x.directory === "boolean" &&
+          browseName(x.name, !!query.includeGitHub && query.directory === "" && x.directory))) throw new WireError("internal");
     if (cursor && cursor.listing !== value.stamp) throw new WireError("invalid_cursor");
     const entries = value.entries.map(({ name, directory }) => ({ name: name as string, directory: directory as boolean }));
     return { entries, ...(value.more && { nextCursor: this.#cursors.encode("workspaceFiles", { scope, listing: value.stamp,
@@ -76,9 +78,10 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
     const root = await this.#root("workspace", cwd, signal);
     if (!root) throw new WireError("not_found");
     const value = (await this.#scan({ target: query.target, root: "workspace" }, cwd, root,
-      { query: query.query, limit: query.limit }, signal)).search;
+      { query: query.query, limit: query.limit, includeGitHub: query.includeGitHub, searchKey: digest([String(root.birth), root.stamp]) }, signal)).search;
     if (!object(value) || typeof value.partial !== "boolean" || !Array.isArray(value.matches) || value.matches.length > query.limit ||
-        !value.matches.every(x => object(x) && searchPath(x.path) && typeof x.directory === "boolean")) throw new WireError("internal");
+        !value.matches.every(x => object(x) && typeof x.directory === "boolean" && searchPath(x.path, !!query.includeGitHub) &&
+          (x.path !== githubDirectory || x.directory))) throw new WireError("internal");
     const matches = value.matches.map(({ path, directory }) => ({ path: path as string, directory: directory as boolean }));
     if (new Set(matches.map(x => x.path)).size !== matches.length) throw new WireError("internal");
     return { matches, partial: value.partial };
@@ -90,7 +93,8 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
     this.#pending++;
     let value: Record<string, unknown>;
     try {
-      const result = await this.#worker.request({ ...input, root: root.path, device: String(root.device), inode: String(root.inode) }, signal);
+      const result = await this.#worker.request({ ...input, root: root.path, device: String(root.device), inode: String(root.inode) },
+        signal, "query" in input);
       if (!object(result) || result.error !== undefined) {
         if (object(result) && result.error === "limit") throw new WireError("limit");
         throw new WireError("not_found");

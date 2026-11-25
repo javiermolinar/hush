@@ -20,6 +20,8 @@ const (
 	maxSearchDepth   = 32
 	maxSearchPath    = 2048
 	maxSearchTime    = 1500 * time.Millisecond
+	maxRankTime      = 200 * time.Millisecond
+	searchCacheTTL   = 5 * time.Second
 )
 
 type searchMatch struct {
@@ -32,9 +34,15 @@ type searchResult struct {
 	Partial bool          `json:"partial"`
 }
 
+type searchName struct {
+	name, folded string
+	directory    bool
+}
+
 type searchDir struct {
-	path  string
-	depth int
+	path    string
+	depth   int
+	entries []searchName
 }
 
 type rankedMatch struct {
@@ -70,15 +78,51 @@ func compareMatches(a, b rankedMatch) int {
 	return cmp.Or(cmp.Compare(a.rank, b.rank), cmp.Compare(a.depth, b.depth), strings.Compare(a.Path, b.Path))
 }
 
+type searchIndex struct {
+	dirs    []searchDir
+	partial bool
+}
+
+type searchKey struct {
+	root, device, inode, scope string
+	includeGitHub              bool
+}
+
+// Cache at most one bounded index, with no open descriptors or grants. A peer
+// can change its query without walking the tree again. A different grant, root,
+// or visibility policy cannot reuse its names.
+type searchCache struct {
+	key     searchKey
+	expires time.Time
+	index   searchIndex
+}
+
+func (c *searchCache) search(r request) (searchResult, error) {
+	root, err := openRoot(r.Root, r.Device, r.Inode)
+	if err != nil {
+		return searchResult{}, err
+	}
+	defer unix.Close(root)
+	key := searchKey{r.Root, r.Device, r.Inode, r.SearchKey, r.IncludeGitHub}
+	if c.key == key && time.Now().Before(c.expires) {
+		return c.index.match(root, r.Query, r.Limit), nil
+	}
+	*c = searchCache{}
+	index, err := scanSearchIndex(root, r.IncludeGitHub)
+	if err != nil {
+		return searchResult{}, err
+	}
+	if r.SearchKey != "" {
+		*c = searchCache{key, time.Now().Add(searchCacheTTL), index}
+	}
+	return index.match(root, r.Query, r.Limit), nil
+}
+
 type searchScan struct {
-	query    string
-	words    []string
-	limit    int
-	deadline time.Time
-	seen     int
-	partial  bool
-	dirs     []searchDir
-	best     []rankedMatch
+	searchIndex
+	includeGitHub bool
+	deadline      time.Time
+	seen          int
 }
 
 func (s *searchScan) exhausted() bool {
@@ -89,45 +133,39 @@ func (s *searchScan) exhausted() bool {
 	return false
 }
 
-// Search breadth-first to reach neighboring checkouts before exploring deeper
-// paths. Keep the verified root descriptor and open every component with
-// O_NOFOLLOW, including when revisiting parent paths.
-func search(r request) (searchResult, error) {
-	root, err := openRoot(r.Root, r.Device, r.Inode)
-	if err != nil {
-		return searchResult{}, err
-	}
-	defer unix.Close(root)
-	query := strings.ToLower(strings.TrimSpace(r.Query))
-	s := searchScan{query: query, words: strings.Fields(query), limit: r.Limit, deadline: time.Now().Add(maxSearchTime), dirs: []searchDir{{}}}
+// Walk breadth-first so shallow paths are scanned before deep ones when the
+// budget runs out. Every directory is opened relative to the verified root.
+func scanSearchIndex(root int, includeGitHub bool) (searchIndex, error) {
+	s := searchScan{searchIndex: searchIndex{dirs: []searchDir{{}}}, includeGitHub: includeGitHub, deadline: time.Now().Add(maxSearchTime)}
 	for i := 0; i < len(s.dirs) && !s.exhausted(); i++ {
-		d := s.dirs[i]
-		if err := s.visit(root, d); err != nil {
-			if d.depth == 0 {
-				return searchResult{}, err
+		entries, err := s.visit(root, s.dirs[i])
+		s.dirs[i].entries = entries
+		if err != nil {
+			if i == 0 {
+				return searchIndex{}, err
 			}
 			s.partial = true
 		}
 	}
-	result := searchResult{Matches: make([]searchMatch, 0, len(s.best)), Partial: s.partial}
-	for _, hit := range s.best {
-		result.Matches = append(result.Matches, hit.searchMatch)
-	}
-	return result, nil
+	return s.searchIndex, nil
 }
 
-func (s *searchScan) visit(root int, d searchDir) error {
-	first, rest, _ := strings.Cut(d.path, "/")
+func openSearchDir(root int, path string) (int, error) {
+	first, rest, _ := strings.Cut(path, "/")
 	if first == "" {
 		first = "."
 	}
 	fd, err := unix.Openat(root, first, openDir, 0)
 	if err != nil {
-		return err
+		return -1, err
 	}
-	fd, err = descend(fd, rest)
+	return descend(fd, rest)
+}
+
+func (s *searchScan) visit(root int, d searchDir) ([]searchName, error) {
+	fd, err := openSearchDir(root, d.path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dir := os.NewFile(uintptr(fd), "workspace search")
 	defer dir.Close()
@@ -135,54 +173,39 @@ func (s *searchScan) visit(root int, d searchDir) error {
 	if prefix != "" {
 		prefix += "/"
 	}
-	// A quoted query may qualify a basename with parent path terms, e.g.
-	// @"tempo.fork generator.go". Still try the whole query as a filename.
-	qualifier := ""
-	if len(s.words) > 1 {
-		parent := strings.ToLower(d.path)
-		if !slices.ContainsFunc(s.words[:len(s.words)-1], func(word string) bool { return !strings.Contains(parent, word) }) {
-			qualifier = s.words[len(s.words)-1]
-		}
-	}
+	var names []searchName
 	for !s.exhausted() {
-		// Use directory entry types to avoid a stat per file. Matching entries
-		// are verified by descriptor below; child directories are opened with
-		// no-follow, never via the path returned to the caller.
+		// Use entry types instead of statting every file. Verify matches again
+		// by descriptor just before returning them, even on a cold search.
 		batch, err := dir.ReadDir(min(128, maxSearchEntries-s.seen))
 		s.seen += len(batch)
 		for _, item := range batch {
-			name := item.Name()
-			if !allowed(name) || d.depth == 0 && name == "~" || !item.IsDir() && !item.Type().IsRegular() {
+			name, isDir := item.Name(), item.IsDir()
+			github := s.includeGitHub && d.depth == 0 && name == githubDir && isDir
+			if !github && !allowed(name) || d.depth == 0 && name == "~" || !isDir && !item.Type().IsRegular() {
 				continue
 			}
 			if len(prefix)+len(name) > maxSearchPath {
 				s.partial = true
 				continue
 			}
-			if item.IsDir() && !skipSearchDir(name) {
+			if isDir && !skipSearchDir(name) {
 				if d.depth+1 >= maxSearchDepth || len(s.dirs) >= maxSearchDirs {
 					s.partial = true
 				} else {
-					s.dirs = append(s.dirs, searchDir{prefix + name, d.depth + 1})
+					s.dirs = append(s.dirs, searchDir{path: prefix + name, depth: d.depth + 1})
 				}
 			}
-			folded := strings.ToLower(name)
-			rank := nameRank(folded, s.query)
-			if rank < 0 && qualifier != "" {
-				rank = nameRank(folded, qualifier)
-			}
-			if rank >= 0 {
-				s.add(fd, name, rankedMatch{searchMatch{prefix + name, item.IsDir()}, rank, d.depth})
-			}
+			names = append(names, searchName{name, strings.ToLower(name), isDir})
 		}
 		if err == io.EOF {
-			return nil
+			return names, nil
 		}
 		if err != nil {
-			return err
+			return names, err
 		}
 	}
-	return nil
+	return names, nil
 }
 
 func skipSearchDir(name string) bool {
@@ -193,21 +216,92 @@ func skipSearchDir(name string) bool {
 	return false
 }
 
-func (s *searchScan) add(fd int, name string, match rankedMatch) {
-	at, duplicate := slices.BinarySearchFunc(s.best, match, compareMatches)
-	if duplicate || at >= s.limit {
-		return
+type searchRanking struct {
+	query    string
+	words    []string
+	limit    int
+	deadline time.Time
+	best     []rankedMatch
+	partial  bool
+}
+
+func (index searchIndex) match(root int, query string, limit int) searchResult {
+	query = strings.ToLower(strings.TrimSpace(query))
+	r := searchRanking{query: query, words: strings.Fields(query), limit: limit, deadline: time.Now().Add(maxRankTime), partial: index.partial}
+	for _, dir := range index.dirs {
+		if !r.matchDir(root, dir) {
+			r.partial = true
+			break
+		}
 	}
-	var st unix.Stat_t
-	if unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil {
-		return
+	result := searchResult{Matches: make([]searchMatch, 0, len(r.best)), Partial: r.partial}
+	for _, hit := range r.best {
+		result.Matches = append(result.Matches, hit.searchMatch)
 	}
-	kind := st.Mode & unix.S_IFMT
-	if match.Directory && kind != unix.S_IFDIR || !match.Directory && (kind != unix.S_IFREG || st.Nlink != 1) {
-		return
+	return result
+}
+
+func (r *searchRanking) matchDir(root int, d searchDir) bool {
+	if len(d.entries) == 0 {
+		return true
 	}
-	if len(s.best) == s.limit {
-		s.best = s.best[:s.limit-1]
+	prefix := d.path
+	if prefix != "" {
+		prefix += "/"
 	}
-	s.best = slices.Insert(s.best, at, match)
+	// A quoted query may qualify a basename with parent path terms, e.g.
+	// @"tempo.fork generator.go". Still try the whole query as a filename.
+	qualifier := ""
+	if len(r.words) > 1 {
+		parent := strings.ToLower(d.path)
+		if !slices.ContainsFunc(r.words[:len(r.words)-1], func(word string) bool { return !strings.Contains(parent, word) }) {
+			qualifier = r.words[len(r.words)-1]
+		}
+	}
+	fd := -1
+	for i, item := range d.entries {
+		if i%128 == 0 && time.Now().After(r.deadline) {
+			return false
+		}
+		rank := nameRank(item.folded, r.query)
+		if rank < 0 && qualifier != "" {
+			rank = nameRank(item.folded, qualifier)
+		}
+		if rank < 0 {
+			continue
+		}
+		if len(r.best) == r.limit {
+			last := r.best[len(r.best)-1]
+			if rank > last.rank || rank == last.rank && d.depth > last.depth {
+				continue
+			}
+		}
+		match := rankedMatch{searchMatch{prefix + item.name, item.directory}, rank, d.depth}
+		at, duplicate := slices.BinarySearchFunc(r.best, match, compareMatches)
+		if duplicate || at >= r.limit {
+			continue
+		}
+		if fd < 0 {
+			var err error
+			fd, err = openSearchDir(root, d.path)
+			if err != nil {
+				r.partial = true
+				return true
+			}
+			defer unix.Close(fd)
+		}
+		var st unix.Stat_t
+		if unix.Fstatat(fd, item.name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil {
+			continue
+		}
+		kind := st.Mode & unix.S_IFMT
+		if item.directory && kind != unix.S_IFDIR || !item.directory && (kind != unix.S_IFREG || st.Nlink != 1) {
+			continue
+		}
+		if len(r.best) == r.limit {
+			r.best = r.best[:r.limit-1]
+		}
+		r.best = slices.Insert(r.best, at, match)
+	}
+	return true
 }

@@ -142,9 +142,10 @@ func (m *Model) menuProbe() tea.Cmd {
 			f |= x.GitDiff
 		}
 		fileVersion, skillVersion := hello.Capabilities["workspaceFiles"], hello.Capabilities["workspaceSkills"]
+		searchable := fileVersion == sdk.WorkspaceFileSearchVersion || fileVersion == sdk.WorkspaceFileProjectPathsVersion
 		return menuCapabilities{features: f, directory: managed && directory,
-			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || fileVersion == sdk.WorkspaceFileSearchVersion),
-			fileSearch: files && fileSearch && fileVersion == sdk.WorkspaceFileSearchVersion,
+			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || searchable),
+			fileSearch: files && fileSearch && searchable,
 			skills:     skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),
 			skillDraft: skillDraft && skillVersion == sdk.WorkspaceSkillDraftVersion,
 			context:    loadedContext && hello.Capabilities["loadedContext"] == sdk.LoadedContextVersion}

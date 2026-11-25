@@ -9,13 +9,15 @@ import (
 )
 
 const (
-	WorkspaceFilesVersion         = 1
-	WorkspaceFileSearchVersion    = 2
-	WorkspaceFileSearchLimit      = 32
-	WorkspaceFileSearchQueryBytes = 255
-	workspaceFilesCapability      = "workspaceFiles"
-	workspaceFilesPrefix          = "ext.workspaceFiles."
-	workspaceFileSearchMethod     = workspaceFilesPrefix + "search"
+	WorkspaceFilesVersion            = 1
+	WorkspaceFileSearchVersion       = 2
+	WorkspaceFileProjectPathsVersion = 3
+	WorkspaceFileSearchLimit         = 32
+	WorkspaceFileSearchQueryBytes    = 255
+	workspaceFilesCapability         = "workspaceFiles"
+	workspaceFilesPrefix             = "ext.workspaceFiles."
+	workspaceFileSearchMethod        = workspaceFilesPrefix + "search"
+	githubDirectory                  = ".github"
 )
 
 // WorkspaceFileScope describes the two independently authorized roots for a
@@ -23,9 +25,9 @@ const (
 type WorkspaceFileScope struct{ Workspace, Home bool }
 
 // WorkspaceFileTarget selects the workspace whose grants authorize a file
-// request. Set exactly one field: an existing thread, or, with
-// workspaceFiles:2, a prospective thread's absolute working directory (the CWD
-// NewThread would record). Neither creates a thread. Send CWD only for a
+// request. Set exactly one field: an existing thread, or, with workspaceFiles:2
+// or later, a prospective thread's absolute working directory (the CWD NewThread
+// would record). Neither creates a thread. Send CWD only for a
 // workspace the client shares with the backend host.
 type WorkspaceFileTarget struct {
 	ThreadID ID
@@ -42,9 +44,9 @@ func (t WorkspaceFileTarget) valid() bool {
 // params returns the target's wire fields and the versions that accept them.
 func (t WorkspaceFileTarget) params() (map[string]any, []uint64) {
 	if t.ThreadID != "" {
-		return map[string]any{"threadId": t.ThreadID}, []uint64{WorkspaceFilesVersion, WorkspaceFileSearchVersion}
+		return map[string]any{"threadId": t.ThreadID}, []uint64{WorkspaceFilesVersion, WorkspaceFileSearchVersion, WorkspaceFileProjectPathsVersion}
 	}
-	return map[string]any{"cwd": t.CWD}, []uint64{WorkspaceFileSearchVersion}
+	return map[string]any{"cwd": t.CWD}, []uint64{WorkspaceFileSearchVersion, WorkspaceFileProjectPathsVersion}
 }
 
 type WorkspaceFileEntry struct {
@@ -77,7 +79,10 @@ func (c *Client) WorkspaceFileScope(ctx context.Context, target WorkspaceFileTar
 	return WorkspaceFileScope{*out.Workspace, *out.Home}, nil
 }
 
-func validBrowseName(s string) bool {
+func validBrowseName(s string, includeGitHub bool) bool {
+	if includeGitHub && s == githubDirectory {
+		return true
+	}
 	return s != "" && len(s) <= 255 && utf8.ValidString(s) && s[0] != '.' &&
 		!strings.ContainsAny(s, "/\\\"@:") && strings.IndexFunc(s, unicode.IsControl) < 0
 }
@@ -87,16 +92,19 @@ func validBrowseName(s string) bool {
 // The opaque cursor may be reused only with the same request fields and boot.
 func (c *Client) ListWorkspaceFiles(ctx context.Context, target WorkspaceFileTarget, root, directory string, limit int, cursor string) (WorkspaceFilePage, error) {
 	var zero WorkspaceFilePage
-	if !target.valid() || root != "workspace" && root != "home" || directory != "" && !validBrowsePath(directory) ||
+	if !target.valid() || root != "workspace" && root != "home" || directory != "" && !validBrowsePath(directory, root == "workspace") ||
 		limit < 1 || limit > 100 || cursor != "" && !directoryCursor.MatchString(cursor) {
 		return zero, ErrProtocol
 	}
 	params, versions := target.params()
+	if first, _, _ := strings.Cut(directory, "/"); first == githubDirectory {
+		versions = []uint64{WorkspaceFileProjectPathsVersion}
+	}
 	params["root"], params["directory"], params["limit"] = root, directory, limit
 	if cursor != "" {
 		params["cursor"] = cursor
 	}
-	out, err := waitOnCapability[struct {
+	out, version, err := waitOnVersionedCapability[struct {
 		Entries []struct {
 			Name      string `json:"name"`
 			Directory *bool  `json:"directory"`
@@ -112,8 +120,9 @@ func (c *Client) ListWorkspaceFiles(ctx context.Context, target WorkspaceFileTar
 	}
 	result := WorkspaceFilePage{Entries: make([]WorkspaceFileEntry, 0, len(out.Entries)), NextCursor: out.NextCursor}
 	seen := make(map[string]bool, len(out.Entries))
+	includeGitHub := version == WorkspaceFileProjectPathsVersion && root == "workspace" && directory == ""
 	for _, item := range out.Entries {
-		if item.Directory == nil || !validBrowseName(item.Name) || seen[item.Name] {
+		if item.Directory == nil || !validBrowseName(item.Name, includeGitHub && *item.Directory) || seen[item.Name] {
 			return zero, ErrProtocol
 		}
 		seen[item.Name] = true
@@ -122,14 +131,15 @@ func (c *Client) ListWorkspaceFiles(ctx context.Context, target WorkspaceFileTar
 	return result, nil
 }
 
-func validBrowsePath(s string) bool {
+func validBrowsePath(s string, includeGitHub bool) bool {
 	if len(s) > 2048 || strings.Count(s, "/") >= 32 {
 		return false
 	}
 	for component := range strings.SplitSeq(s, "/") {
-		if !validBrowseName(component) {
+		if !validBrowseName(component, includeGitHub) {
 			return false
 		}
+		includeGitHub = false // only the first component may be .github
 	}
 	return true
 }
@@ -145,7 +155,7 @@ type WorkspaceFileSearchResult struct {
 }
 
 // SearchWorkspaceFiles returns ranked paths below the target's authorized
-// workspace. It requires workspaceFiles:2 and uses a cancelable passive connection.
+// workspace. It requires workspaceFiles:2 or later and uses a cancelable passive connection.
 func (c *Client) SearchWorkspaceFiles(ctx context.Context, target WorkspaceFileTarget, query string, limit int) (WorkspaceFileSearchResult, error) {
 	var zero WorkspaceFileSearchResult
 	if !target.valid() || len(query) > WorkspaceFileSearchQueryBytes || !utf8.ValidString(query) || strings.TrimSpace(query) == "" ||
@@ -155,13 +165,13 @@ func (c *Client) SearchWorkspaceFiles(ctx context.Context, target WorkspaceFileT
 	}
 	params, _ := target.params()
 	params["query"], params["limit"] = query, limit
-	out, err := waitOnCapability[struct {
+	out, version, err := waitOnVersionedCapability[struct {
 		Matches []struct {
 			Path      string `json:"path"`
 			Directory *bool  `json:"directory"`
 		} `json:"matches"`
 		Partial *bool `json:"partial"`
-	}](ctx, c, workspaceFileSearchMethod, params, workspaceFilesCapability, WorkspaceFileSearchVersion)
+	}](ctx, c, workspaceFileSearchMethod, params, workspaceFilesCapability, WorkspaceFileSearchVersion, WorkspaceFileProjectPathsVersion)
 	if err != nil {
 		return zero, err
 	}
@@ -170,8 +180,10 @@ func (c *Client) SearchWorkspaceFiles(ctx context.Context, target WorkspaceFileT
 	}
 	result := WorkspaceFileSearchResult{Matches: make([]WorkspaceFileMatch, 0, len(out.Matches)), Partial: *out.Partial}
 	seen := make(map[string]bool, len(out.Matches))
+	includeGitHub := version == WorkspaceFileProjectPathsVersion
 	for _, match := range out.Matches {
-		if match.Directory == nil || !validBrowsePath(match.Path) || match.Path == "~" || strings.HasPrefix(match.Path, "~/") || seen[match.Path] {
+		if match.Directory == nil || !validBrowsePath(match.Path, includeGitHub) || match.Path == githubDirectory && !*match.Directory ||
+			match.Path == "~" || strings.HasPrefix(match.Path, "~/") || seen[match.Path] {
 			return zero, ErrProtocol
 		}
 		seen[match.Path] = true

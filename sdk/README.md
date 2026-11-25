@@ -53,10 +53,11 @@ version 3 and creates a thread with a validated model and thinking level.
 
 ## Workspace metadata
 
-Offer `workspaceFiles: [2, 1]` for `WorkspaceFileScope` and `ListWorkspaceFiles`,
-and `SearchWorkspaceFiles` on a host that selects version 2. The file methods
-take a `WorkspaceFileTarget`: an existing thread or, on version 2, the absolute
-`CWD` of a [prospective thread](../protocol/v1/workspace-files.md#prospective-threads).
+Offer `workspaceFiles: [3, 2, 1]` for `WorkspaceFileScope` and `ListWorkspaceFiles`,
+and `SearchWorkspaceFiles` on a host that selects version 2 or later. Version 3
+includes the workspace's top-level `.github` directory in browsing and search.
+The file methods take a `WorkspaceFileTarget`: an existing thread or, on version 2
+or later, the absolute `CWD` of a [prospective thread](../protocol/v1/workspace-files.md#prospective-threads).
 
 Offer `workspaceSkills: [2, 1]` for `ListWorkspaceSkills` and, on version 2,
 `PreviewWorkspaceSkills` for a prospective checkout without creating a thread.

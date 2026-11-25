@@ -21,13 +21,18 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   const env = { HOME: home, PATH: dirname(process.execPath) + ':/usr/bin:/bin', LANG: 'C' };
   const cli = (...args) => invoke(executable, ['--backend', bundle, ...args], { cwd: workspace, env, timeout: 12_000 });
   const stop = () => invoke(executable, ['stop'], { cwd: workspace, env, timeout: 12_000 });
-  let client, older, listOnly;
+  let client, older, listOnly, project;
   t.after(async () => {
-    client?.close(); older?.close(); listOnly?.close();
+    client?.close(); older?.close(); listOnly?.close(); project?.close();
     await stop();
     await rm(dir, { recursive: true, force: true });
   });
   for (const path of [home, workspace, nested, foreign]) await mkdir(path);
+  const workflow = 'delete-old-tempo-releases.yaml', workflowPath = `.github/workflows/${workflow}`;
+  await mkdir(join(workspace, '.github/workflows'), { recursive: true });
+  await mkdir(join(home, '.github'));
+  await writeFile(join(workspace, workflowPath), 'content must not be sent');
+  await writeFile(join(workspace, '.github/workflows/.secret'), 'hidden');
   await writeFile(join(home, 'home notes.txt'), 'not in workspace');
   await writeFile(join(workspace, 'a file.txt'), 'content must not be sent');
   await writeFile(join(workspace, 'z.txt'), '');
@@ -46,6 +51,8 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   assert.deepEqual(ok(await older.send('hello', { versions: [1] })).capabilities, {});
   listOnly = await dial(socket);
   assert.deepEqual(ok(await listOnly.send('hello', { versions: [1], capabilities: { workspaceFiles: [1] } })).capabilities, { workspaceFiles: 1 });
+  project = await dial(socket);
+  assert.deepEqual(ok(await project.send('hello', { versions: [1], capabilities: { workspaceFiles: [3, 2, 1] } })).capabilities, { workspaceFiles: 3 });
   const { id } = ok(await client.send('thread.new', { cwd: workspace }));
   const { id: same } = ok(await client.send('thread.new', { cwd: workspace }));
   const { id: outside } = ok(await client.send('thread.new', { cwd: foreign }));
@@ -71,6 +78,21 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   denied(await search({ threadId: outside }), 'not_found');
   assert.deepEqual(ok(await search()), { matches: [{ path: 'nested folder/an inner file.txt', directory: false }], partial: false });
   assert.deepEqual(ok(await search({ query: 'secret' })), { matches: [], partial: false });
+  const projectList = overrides => project.send('ext.workspaceFiles.list', {
+    threadId: id, root: 'workspace', directory: '', limit: 1, ...overrides,
+  });
+  assert.deepEqual(ok(await search({ query: 'delete-old-tempo' }, project)), { matches: [{ path: workflowPath, directory: false }], partial: false });
+  assert.deepEqual(ok(await search({ query: workflow }, project)), { matches: [{ path: workflowPath, directory: false }], partial: false });
+  assert.deepEqual(ok(await search({ query: workflow })), { matches: [], partial: false });
+  assert.deepEqual(ok(await search({ query: '.secret' }, project)), { matches: [], partial: false });
+  const projectFirst = ok(await projectList());
+  assert.deepEqual(projectFirst.entries, [{ name: '.github', directory: true }]);
+  denied(await list({ cursor: projectFirst.nextCursor }), 'invalid_cursor');
+  assert.deepEqual(ok(await projectList({ directory: '.github/workflows' })), { entries: [{ name: workflow, directory: false }] });
+  denied(await list({ directory: '.github/workflows' }), 'invalid_request');
+  for (const directory of ['.git', '.github/..', '.github/.secret', 'nested folder/.github']) {
+    denied(await projectList({ directory }), 'invalid_request');
+  }
   for (const overrides of [{ root: 'home' }, { cwd: foreign }, { query: '../foreign' }, { query: '\u00a0' }, { limit: 33 }]) {
     denied(await search(overrides), 'invalid_request');
   }
@@ -116,6 +138,8 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   await cli('trust', 'grant', '--scope', 'home');
   assert.deepEqual(ok(await scope()), { workspace: true, home: true });
   assert.deepEqual(ok(await list({ root: 'home', limit: 100 })).entries, [{ name: 'home notes.txt', directory: false }]);
+  assert.deepEqual(ok(await projectList({ root: 'home' })).entries, [{ name: 'home notes.txt', directory: false }]);
+  denied(await projectList({ root: 'home', directory: '.github' }), 'invalid_request');
   denied(await list({ root: 'home', cursor: first.nextCursor }), 'invalid_cursor');
   await cli('trust', 'revoke', '--cwd', workspace);
   denied(await list({ cursor: first.nextCursor }), 'invalid_cursor');

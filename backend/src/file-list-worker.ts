@@ -6,17 +6,20 @@ import { WireError } from "../../server/src/wire.js";
 const recordLimit = 512 * 1024;
 type Child = ChildProcessByStdio<Writable, Readable, null>;
 type Job = { chunk: Buffer[]; size: number; done: (error?: Error, value?: unknown) => void };
+type Pending = { value: object; signal: AbortSignal; abort: () => void;
+  resolve: (result: unknown) => void; reject: (error: unknown) => void };
 
-// One private, stateless descriptor walker per active backend. Avoid paying
-// for a process launch on each editor token or page. Only the Node host holds
-// grants/cursors; every request, including continuation, reopens the directory.
+// One private descriptor walker per backend. Only the Node host holds
+// grants/cursors; every request reopens the root, even when reusing names.
 export class FileListWorker {
   #child?: Child;
   #exited?: Promise<void>;
   #retiring = false;
   #closed = false;
   #job?: Job;
-  #tail = Promise.resolve();
+  #queue: Pending[] = [];
+  #active?: Pending;
+  #draining = false;
 
   constructor(private readonly executable: string) {}
 
@@ -52,33 +55,56 @@ export class FileListWorker {
     this.#child?.kill("SIGKILL"); // wait for close before reusing the stream
   }
 
-  request(value: object, signal: AbortSignal) {
-    const operation = this.#tail.then(async () => {
-      signal.throwIfAborted(); // an abandoned queued request never scans disk
-      if (this.#retiring) await this.#exited;
+  request(value: object, signal: AbortSignal, finishSearch = false) {
+    return new Promise<unknown>((resolve, reject) => {
       signal.throwIfAborted();
-      return this.#exchange(value, signal);
+      if (this.#closed) throw new WireError("not_found");
+      const abort = () => {
+        const i = this.#queue.indexOf(pending);
+        if (i >= 0) this.#queue.splice(i, 1);
+        // Let a bounded search finish for the next query instead of killing
+        // the helper and restarting the same cold index on every keystroke.
+        if (this.#active === pending && this.#job && !finishSearch) this.#retire();
+        reject(signal.reason);
+      };
+      const pending: Pending = { value, signal, abort, resolve, reject };
+      signal.addEventListener("abort", abort, { once: true });
+      this.#queue.push(pending);
+      void this.#drain();
     });
-    this.#tail = operation.then(() => {}, () => {});
-    return operation;
   }
 
-  #exchange(value: object, signal: AbortSignal) {
+  async #drain() {
+    if (this.#draining) return;
+    this.#draining = true;
+    try {
+      for (let pending; (pending = this.#queue.shift());) {
+        try {
+          if (this.#retiring) await this.#exited;
+          pending.signal.throwIfAborted();
+          this.#active = pending;
+          pending.resolve(await this.#exchange(pending.value));
+        } catch (error) { pending.reject(error); }
+        finally {
+          this.#active = undefined;
+          pending.signal.removeEventListener("abort", pending.abort);
+        }
+      }
+    } finally { this.#draining = false; }
+  }
+
+  #exchange(value: object) {
     this.warm();
     const child = this.#child;
     if (!child || this.#retiring || this.#closed) throw new WireError("not_found");
     return new Promise<unknown>((resolve, reject) => {
-      const stop = () => this.#retire();
-      const timeout = setTimeout(stop, 3500);
+      const timeout = setTimeout(() => this.#retire(), 3500);
       this.#job = { chunk: [], size: 0, done: (error, value) => {
         clearTimeout(timeout);
-        signal.removeEventListener("abort", stop);
         this.#job = undefined;
         if (error) reject(error); else resolve(value);
       } };
-      signal.addEventListener("abort", stop, { once: true });
-      if (signal.aborted) stop();
-      else child.stdin.write(JSON.stringify(value) + "\n");
+      child.stdin.write(JSON.stringify(value) + "\n");
     });
   }
 

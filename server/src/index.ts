@@ -14,7 +14,8 @@ import { parseSchedule, schedulesVersion, type SchedulesHost } from "./schedulin
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
 import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
 import { parseLoadedContext, loadedContextVersion, type LoadedContextHost } from "./loaded-context.js";
-import { parseWorkspaceFiles, parseWorkspaceFileSearch, workspaceFilesVersion, workspaceFileSearchVersion, type WorkspaceFilesHost } from "./workspace-files.js";
+import { parseWorkspaceFiles, parseWorkspaceFileSearch, workspaceFilesVersion, workspaceFileSearchVersion,
+  workspaceFileProjectPathsVersion, type WorkspaceFilesHost } from "./workspace-files.js";
 import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillDraftVersion, workspaceSkillsVersion,
   type WorkspaceSkillsHost, type WorkspaceSkillsVersion } from "./workspace-skills.js";
 import { PiPeer, piEventsVersion, type PiEventsHost } from "./pi-events.js";
@@ -304,8 +305,8 @@ class Peer {
         }
         if (parts[1] === "workspaceFiles" && this.#workspaceFiles) {
           const { host, version } = this.#workspaceFiles;
-          if (parts[2] === "search" && version === workspaceFileSearchVersion && host.search) {
-            const search = host.search.bind(host), query = parseWorkspaceFileSearch(req.params);
+          if (parts[2] === "search" && version >= workspaceFileSearchVersion && host.search) {
+            const search = host.search.bind(host), query = parseWorkspaceFileSearch(req.params, version);
             this.#metadata(req, parts[1], () => search(query, this.#abort.signal));
           } else {
             const query = parseWorkspaceFiles(parts[2]!, req.params, version);
@@ -503,7 +504,8 @@ class Peer {
         }
         const files = this.capabilities?.workspaceFiles, offeredFiles = req.params.capabilities?.workspaceFiles;
         if (files) {
-          const version = files.search && offeredFiles?.includes(workspaceFileSearchVersion) ? workspaceFileSearchVersion :
+          const version = files.search && files.projectPaths && offeredFiles?.includes(workspaceFileProjectPathsVersion) ? workspaceFileProjectPathsVersion :
+            files.search && offeredFiles?.includes(workspaceFileSearchVersion) ? workspaceFileSearchVersion :
             offeredFiles?.includes(workspaceFilesVersion) ? workspaceFilesVersion : undefined;
           if (version !== undefined) {
             capabilities.workspaceFiles = version;

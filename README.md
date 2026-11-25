@@ -59,7 +59,8 @@ as agent tools. Use `/trust` in the local TUI or `hush trust grant --cwd PATH`
 on the backend host.
 
 Type `@name` to fuzzy-search the active thread’s trusted workspace, including nested
-files. Use ↑/↓ to scroll through matches, or add a parent path term inside quotes
+files and the top-level `.github` directory. Other hidden names are excluded.
+Use ↑/↓ to scroll through matches, or add a parent path term inside quotes
 (e.g. `@"tempo.fork generator.go"`). Type `@` or `@dir/` to browse one directory at
 a time. Tab or Enter completes the path without submitting. In a new local
 session this works before your first message, without creating a thread. `@~/` browses the
