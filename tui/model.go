@@ -957,15 +957,7 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 			if err != nil {
 				return m.notifyRoute(r, err.Error(), extension.Danger)
 			}
-			if m.foreground(r) && m.editor.revision == rev {
-				if edited, ok := v.(string); ok && edited != text {
-					m.editor.set(edited)
-					m.slashHidden = false
-				}
-			} else {
-				return m.notifyRoute(r, "Prompt changed; external edit not applied", extension.Warning)
-			}
-			return nil
+			return m.applyPromptEdit(r, rev, v.(string))
 		}, budget)
 	case extension.CopyText:
 		return m.copyText(r, e.Text, budget)

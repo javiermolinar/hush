@@ -27,10 +27,14 @@ type foldedPaste struct {
 }
 
 func pasteDraft(text string, id int) promptDraft {
+	return importedDraft(text, id, false)
+}
+
+func importedDraft(text string, id int, keepTabs bool) promptDraft {
 	var label string
 	if lines := strings.Count(text, "\n") + 1; lines > 10 {
 		label = fmt.Sprintf("[paste #%d +%d lines]", id, lines)
-	} else if chars := utf8.RuneCountInString(text); chars > 1000 {
+	} else if chars := utf8.RuneCountInString(text); chars > 1000 || (keepTabs && strings.ContainsRune(text, '\t')) {
 		label = fmt.Sprintf("[paste #%d %d chars]", id, chars)
 	} else {
 		return promptDraft{text: strings.ReplaceAll(text, "\t", " ")}

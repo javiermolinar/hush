@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -195,6 +197,78 @@ func TestPromptPasteEditAndCopyUseFullText(t *testing.T) {
 		t.Fatalf("edit/copy got %q / %q; want full pasted text", edit, copyText)
 	}
 	checkPromptPaste(t, m, pasteLabel29, pasteFixture())
+}
+
+func TestExternalPromptEditPreservesDraft(t *testing.T) {
+	large := "original\t文\n" + strings.Repeat("\n", 10_100) + "retained suffix"
+	changed := strings.Replace(large, "original", "edited", 1)
+	for _, source := range []string{"hook", "terminal"} {
+		t.Run(source, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, initial, edited, view, full string
+				preserved, send, stale            bool
+			}{
+				{name: "changed-large", initial: large, edited: changed, view: "[paste #1 +10102 lines]", full: changed, send: true},
+				{name: "large-new-result", initial: "ordinary", edited: changed, view: "[paste #1 +10102 lines]", full: changed, send: true},
+				{name: "shortened-fold-with-tab", initial: large, edited: "a\tb", view: "[paste #1 3 chars]", full: "a\tb", send: true},
+				{name: "plain-edit", initial: "ordinary", edited: "Edit\r\n文\tline\x1b", view: "Edit\n文 line", full: "Edit\n文 line"},
+				{name: "unchanged", initial: large, edited: large, view: "[paste #1 +10102 lines]", full: large, preserved: true},
+				{name: "oversized", initial: large, edited: strings.Repeat("e", maxPromptBytes+1), view: "[paste #1 +10102 lines]", full: large, preserved: true},
+				{name: "stale", initial: large, edited: changed, view: "[paste #1 +10102 lines]?", full: large + "?", preserved: true, stale: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					m, _ := demo(t, Options{ReducedMotion: true, EditPrompt: func(_ context.Context, draft string) (string, error) {
+						if draft != tc.initial {
+							t.Fatal("editor did not receive the expanded draft")
+						}
+						return tc.edited, nil
+					}})
+					m.Update(tea.PasteMsg{Content: tc.initial})
+					r := m.route(m.active, coreID)
+					var cmd tea.Cmd
+					if source == "hook" {
+						budget := maxEffects
+						cmd = m.admit(r, x.Outcome{x.Local{Op: x.EditPrompt}}, &budget)
+					} else {
+						dir := t.TempDir()
+						path := filepath.Join(dir, "prompt.txt")
+						if err := os.WriteFile(path, []byte(tc.edited), 0600); err != nil {
+							t.Fatal(err)
+						}
+						m.editorTemp = dir
+						cmd = m.finishPromptEdit(promptEditFinished{route: r, rev: m.editor.revision, dir: dir, path: path})
+					}
+					if tc.stale {
+						m.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
+					}
+					rev := m.editor.revision
+					m.finishWork(cmd().(workMsg))
+					if source == "terminal" && m.editorTemp != "" {
+						t.Fatal("editor cleanup did not clear the temp path")
+					}
+					if p := &m.editor; p.value() != tc.view || p.area.Value() != tc.view || p.expanded() != tc.full {
+						t.Fatalf("unexpected draft after edit: display has %d bytes, expanded has %d bytes; want %d and %d", len(p.value()), len(p.expanded()), len(tc.view), len(tc.full))
+					}
+					if tc.preserved != (m.editor.revision == rev) {
+						t.Fatal("unexpected editor revision after completion")
+					}
+					if tc.name == "oversized" && !strings.Contains(m.notice.text, "prompt limit") {
+						t.Fatal("oversized edit did not report the limit")
+					}
+					if tc.send {
+						backend := &pasteBackend{}
+						m.backend = backend
+						workflowWork(t, m, m.sendPrompt(sdk.RejectBusy))
+						if backend.input.Text != tc.full {
+							t.Fatal("submission did not preserve the edited draft")
+						}
+						press(m, tea.KeyUp, 0)
+						checkPromptPaste(t, m, tc.view, tc.full)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestPromptPasteDoesNotFoldDialogInput(t *testing.T) {

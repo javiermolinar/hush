@@ -359,14 +359,32 @@ func (m *Model) finishPromptEdit(msg promptEditFinished) tea.Cmd {
 		if err != nil {
 			return m.notifyRoute(r, err.Error(), extension.Danger)
 		}
-		if m.foreground(r) && m.editor.revision == msg.rev {
-			if edited := v.(string); edited != m.editor.expanded() {
-				m.editor.set(edited)
-				m.slashHidden = false
-			}
-		}
-		return nil
+		return m.applyPromptEdit(r, msg.rev, v.(string))
 	}, &b)
+}
+
+func (m *Model) applyPromptEdit(r ownerRoute, rev uint64, edited string) tea.Cmd {
+	if !m.foreground(r) || m.editor.revision != rev {
+		return m.notifyRoute(r, "Prompt changed; external edit not applied", extension.Warning)
+	}
+	if len(edited) > maxPromptBytes {
+		return m.notifyRoute(r, "Editor result exceeds the prompt limit", extension.Warning)
+	}
+	if edited == m.editor.expanded() {
+		return nil
+	}
+	clean := sanitizePrompt(edited, true)
+	if len(clean) > maxPromptBytes {
+		return m.notifyRoute(r, "Editor result exceeds the prompt limit", extension.Warning)
+	}
+	// Treat changed text as an import, not as a textarea replacement.
+	// Keep tab-bearing payloads from an existing fold out of the textarea.
+	draft := importedDraft(clean, 1, len(m.editor.pastes) != 0)
+	if !m.editor.setDraftAt(draft, len(draft.text)) {
+		return m.notifyRoute(r, "External edit could not be applied; prompt text unchanged", extension.Warning)
+	}
+	m.promptChanged()
+	return nil
 }
 
 func readLimited(f *os.File, buf []byte) (int, error) {
