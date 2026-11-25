@@ -10,12 +10,12 @@ The TUI uses Bubble Tea v2, Lip Gloss v2, and x/ansi. See [TUI design](tui-desig
 
 ## Frame cost
 
-`View` runs after every message, even with draws capped at 120 fps. `TestFrameBudget` enforces p99 `Update` + `View` under 2.08 ms per message. Its contract cases hold keystrokes and streaming patches to 1 ms: typing into 1, 4 and 16 KB drafts, streaming through a real `sdk.Replica` (`replica-streaming`) and typing in an image thread. `linked-streaming` holds `View` to 0.5 ms per patch as a linked answer grows to 64 KB. A case that misses today names its fixing step in `frameTargets`, and reports rather than fails until that step lands. Profile before changing the budget (`go test ./tui -run '^$' -bench Frame -cpuprofile /tmp/cpu.prof`). Add new hot paths and lists to `perf_test.go`.
+`View` runs after every message, even with draws capped at 120 fps. `TestFrameBudget` enforces p99 `Update` + `View` under 2.08 ms per message. Its contract cases hold keystrokes and streaming patches to 1 ms: typing into 1, 4 and 16 KB drafts, streaming through a real `sdk.Replica` (`replica-streaming`) and typing in an image thread. `linked-streaming` holds `View` to 0.5 ms p99 per patch for answers with inline links at 4, 16 and 64 KiB. A case that misses today names its fixing step in `frameTargets`, and reports rather than fails until that step lands. Profile before changing the budget (`go test ./tui -run '^$' -bench Frame -cpuprofile /tmp/cpu.prof`). Add new hot paths and lists to `perf_test.go`.
 
 - Render the transcript lazily from newest block back, stopping at the viewport (`cache.go`). Never compute total heights or re-wrap the whole list per frame.
 - Cache blocks by all render inputs, including width, palette revision, expansion, image mode, and speaker breaks. Invalidate a burst's summary when a result arrives. Only live blocks render each frame.
 - Composite overlays over just the rows they cover. In `motionFilter`, drop no-op input by effect, not by time, so the last position isn't lost.
-- Use goldmark to parse Markdown once per text; only layout depends on width. Lay out just the streaming suffix after the last safe cut, or the current line in an open code block. `TestStreamingMatchesFullRender` covers equivalence. hush lays out Markdown and highlights code itself (`syntax.go`).
+- Use Goldmark to parse Markdown; layout depends on width. In a stream, reuse the prefix before the last safe cut, or lay out only the current line in an open code block. A reference definition can change the meaning of earlier brackets. When one is recognized, render the full accumulated prefix to preserve equivalence with a full render, including late definitions. That path is outside the inline-link timing budget. `TestStreamingMatchesFullRender` covers prefix equivalence. Hush lays out Markdown and highlights code itself (`syntax.go`).
 
 ## Frame invariants
 

@@ -555,7 +555,20 @@ func TestCodexAuthLoopback(t *testing.T) {
 	if !bytes.Equal(saved, readFile(authFile)) {
 		t.Fatal("cancelled login replaced the prior credential")
 	}
+	history := func() []byte {
+		t.Helper()
+		page := result(call("history", fmt.Sprintf(`{%s,"range":{"kind":"before","beforeEntryId":null},"limit":50}`, scope)))
+		entries, err := json.Marshal(page["entries"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries
+	}
 	ask("after-cancel", "done")
+	priorHistory := history()
+	if !bytes.Contains(priorHistory, []byte("Explain the auth fixture")) || !bytes.Contains(priorHistory, []byte("Loopback Codex reply")) {
+		t.Fatal("expected committed user and assistant text before restart")
+	}
 	stop()
 	mu.Lock()
 	beforeOK := len(exchanges) == 1 && exchanges[0] == manual && devices == 1 && len(refreshes) == 0 &&
@@ -585,19 +598,29 @@ func TestCodexAuthLoopback(t *testing.T) {
 	if hello() == epoch {
 		t.Fatal("backend did not restart")
 	}
+	if !bytes.Equal(history(), priorHistory) {
+		t.Fatal("reopened thread did not return its original committed history before the new prompt")
+	}
 	ask("after-restart", "done")
 	mu.Lock()
 	refreshOK := len(refreshes) == 1 && refreshes[0] == refresh && len(bearers) == 3 && bearers[2] == "Bearer "+fresh
 	failGeneration = true
 	mu.Unlock()
-	if !refreshOK || !bytes.Contains(readFile(authFile), []byte(rotated)) {
-		t.Fatal("expected one locked refresh with persisted rotation")
+	var persisted map[string]map[string]any
+	if err := json.Unmarshal(readFile(authFile), &persisted); err != nil {
+		t.Fatal("invalid persisted credential file")
 	}
+	codex := persisted["openai-codex"]
+	expires, _ := codex["expires"].(float64)
+	if !refreshOK || codex["type"] != "oauth" || codex["access"] != fresh || codex["refresh"] != rotated ||
+		expires <= float64(time.Now().UnixMilli()) || persisted["other-fixture-provider"]["key"] != altKey {
+		t.Fatal("expected one refresh, a generation using the new bearer, and persisted rotation without changing the other entry")
+	}
+	if page := history(); bytes.Equal(page, priorHistory) || !bytes.Contains(page, []byte("Loopback Codex reply")) {
+		t.Fatal("expected an updated history after the reopened thread accepted a new prompt")
+	}
+	t.Log("loopback: CLI login, original history after restart, one expired-token refresh, new bearer on a completed prompt, rotated record on disk")
 	ask("provider-error", "unanswered")
-	result(call("history", fmt.Sprintf(`{%s,"range":{"kind":"before","beforeEntryId":null},"limit":50}`, scope)))
-	if !strings.Contains(ordinary.String(), "Loopback Codex reply") {
-		t.Fatal("expected a settled provider answer in history")
-	}
 	var issue map[string]any
 	for i := 0; i < 50; i++ {
 		intro := result(call("ext.intro.get", "{"+scope+"}"))

@@ -14,8 +14,10 @@ mise run test:race
 geometry, golden frames and frame budgets. The Go race run uses `-short` to skip timing checks.
 Linux also checks Go formatting, verifies the SDK schema
 copies (`go generate ./sdk`), and verifies the embedded release binary at the minimum supported Node
-version. The normal tests use local fixtures and don't need API keys. Live provider and real OS
-keyring checks remain opt-in.
+version. For a source-only gate, dispatch CI on the review branch with `source_only=true`. Both
+platforms still run the source and race checks; only the installable-binary check is skipped. This
+option does not change push or pull-request checks. The normal tests use local fixtures and don't
+need API keys. Live provider and real OS keyring checks remain opt-in.
 
 [Security](.github/workflows/security.yml) scans reachable Git history with Gitleaks, checks workflow
 syntax and security with actionlint and zizmor, and checks the npm lockfile for high and critical
@@ -77,7 +79,8 @@ npm run server:bench:feed                                            # server Fe
 HUSH_BENCH_SAMPLES=30 node app/test/cold-start.test.mjs              # Go launcher using the development bundle
 ```
 
-Thread switching only reports. The cold-start test times `hush restart` on a stopped backend
+Linked-streaming timing covers inline links. Late reference definitions are tested for full-prefix
+render equivalence, not bounded patch cost. Thread switching only reports. The cold-start test times `hush restart` on a stopped backend
 with an existing store and warm Node compile cache, through command exit after the compatible
 `hello`: p50 ≤ 315 ms, p95 ≤ 333 ms. It reports the first start separately.
 `mise run release` also runs this test with the installed binary on Node 22.19.0, including

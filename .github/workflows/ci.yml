@@ -8,6 +8,11 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
+    inputs:
+      source_only:
+        description: Skip the Linux installable-binary check for source-only verification
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -69,7 +74,7 @@ jobs:
       - name: Run short Go tests with the race detector
         run: mise run --skip-deps test:race
       - name: Verify the installable binary at minimum Node
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || !inputs.source_only)
         env:
           HUSH_PERF_MODE: report
         run: mise run release
