@@ -19,11 +19,21 @@ type threadPicker struct {
 	cancel                  context.CancelFunc
 	cursor                  string
 	rows                    []threadPickerRow // aligned with the dialog choices
+	creation                *workspaceThreadCreation
 }
 
 type threadPickerRow struct {
 	workspaceID, workspaceName string
 	status                     x.ThreadStatus
+	destination                *workspaceThreadTarget
+	directory                  string // a choice in the directory picker
+}
+
+func (p *threadPicker) selectedRow(d *dialog) threadPickerRow {
+	if d.selected < len(d.filtered) {
+		return p.rows[d.filtered[d.selected]]
+	}
+	return threadPickerRow{}
 }
 
 type threadPickerResult struct {
@@ -70,7 +80,16 @@ func (m *Model) loadThreadPicker(d *dialog, cursor string, delay time.Duration) 
 	if p.searchable {
 		op.Query = strings.TrimSpace(d.query)
 	}
-	run := m.clientJob(d.route, op)
+	var run func(context.Context) (any, error)
+	if p.creation != nil {
+		source, _ := m.backend.(workspaceDirectoryBackend)
+		target := p.creation.target
+		run = func(ctx context.Context) (any, error) {
+			return workspaceThreadPage(ctx, source, target.id, target.scope, op.Cursor, op.Limit), nil
+		}
+	} else {
+		run = m.clientJob(d.route, op)
+	}
 	return func() tea.Msg {
 		if delay > 0 {
 			timer := time.NewTimer(delay)
@@ -80,6 +99,9 @@ func (m *Model) loadThreadPicker(d *dialog, cursor string, delay time.Duration) 
 				return nil
 			case <-timer.C:
 			}
+		}
+		if ctx.Err() != nil {
+			return nil
 		}
 		call, cancel := context.WithTimeout(ctx, menuTimeout)
 		defer cancel()
@@ -93,16 +115,28 @@ func (m *Model) loadThreadPicker(d *dialog, cursor string, delay time.Duration) 
 }
 
 func (m *Model) receiveThreadPicker(v threadPickerResult) tea.Cmd {
-	// Results can arrive under an overlay, but not after the sheet was replaced
-	// or the active thread changed.
+	// Results can arrive under an overlay, but not after their picker was
+	// closed or the active thread changed.
 	d := m.sheet
-	if d == nil || d.threadPicker == nil || d.token != v.token || !m.foreground(d.route) {
+	if d == nil || d.token != v.token {
+		d = nil
+		for _, overlay := range m.overlays {
+			if overlay.token == v.token {
+				d = overlay
+				break
+			}
+		}
+	}
+	if d == nil || d.threadPicker == nil || !m.foreground(d.route) {
 		return nil
 	}
 	p := d.threadPicker
 	p.stop()
 	d.token = m.token()
 	r := v.result
+	if p.creation != nil {
+		return m.receiveWorkspaceDirectories(d, v.op.Cursor, r)
+	}
 	if r.Err != nil {
 		p.failed = true
 		p.addChoice(d, "refresh", "Retry thread list…", "", threadPickerRow{})
@@ -117,8 +151,19 @@ func (m *Model) receiveThreadPicker(v threadPickerResult) tea.Cmd {
 		// Input can arrive before the first list reports search support.
 		return m.loadThreadPicker(d, "", threadSearchDelay)
 	}
+	// Open tabs can override display metadata. Use only the directory's
+	// recorded paths, not the active tab's projected workspace, for creation.
+	var directories map[sdk.ID]string
+	if _, ok := m.backend.(workspaceDirectoryBackend); ok && p.all && p.searchable {
+		directories = make(map[sdk.ID]string, len(r.Threads))
+		for _, t := range r.Threads {
+			if validWorkspaceDirectory(t.Workspace) {
+				directories[t.ID] = t.Workspace
+			}
+		}
+	}
 	m.applyMenuResult(v.op, &r)
-	p.setPage(d, m.active, r)
+	p.setPage(d, m.active, r, directories)
 	return nil
 }
 
@@ -127,7 +172,7 @@ func (p *threadPicker) addChoice(d *dialog, id, label, detail string, row thread
 	p.rows = append(p.rows, row)
 }
 
-func (p *threadPicker) setPage(d *dialog, active sdk.ID, r x.ClientResult) {
+func (p *threadPicker) setPage(d *dialog, active sdk.ID, r x.ClientResult, directories map[sdk.ID]string) {
 	d.choices, p.rows = d.choices[:0], p.rows[:0]
 	p.cursor = r.Cursor
 	d.title = "Switch thread · workspace unverified"
@@ -178,6 +223,14 @@ func (p *threadPicker) setPage(d *dialog, active sdk.ID, r x.ClientResult) {
 		groups[at].indices = append(groups[at].indices, i)
 	}
 	addGroup := func(g group) {
+		g.row.destination = workspaceThreadDestination(g.row, g.indices, r, directories)
+		if dest := g.row.destination; dest != nil {
+			detail := "Choose directory…"
+			if dest.preview != "" {
+				detail = workspaceDirectoryLabel(dest.preview)
+			}
+			p.addChoice(d, newThreadHereChoice, "+ New thread here", detail, g.row)
+		}
 		for _, i := range g.indices {
 			t := r.Threads[i]
 			row := g.row
@@ -202,7 +255,7 @@ func (p *threadPicker) setPage(d *dialog, active sdk.ID, r x.ClientResult) {
 	}
 	// Keep navigation available while filtering, including when the current
 	// workspace has no matches. It carries the query into the next request.
-	if strings.TrimSpace(d.query) == "" || !p.searchable {
+	if !p.all && (strings.TrimSpace(d.query) == "" || !p.searchable) {
 		p.addChoice(d, "new", "+ New thread", "", threadPickerRow{})
 	}
 	if r.Indexing {
@@ -261,6 +314,15 @@ func threadPickerStatus(status x.ThreadStatus) (icon, label string, tone x.Tone)
 }
 
 func (p *threadPicker) message(d *dialog) string {
+	if p.creation != nil {
+		switch {
+		case p.cancel != nil:
+			return "Loading working directories…"
+		case p.failed:
+			return "Could not load working directories"
+		}
+		return ""
+	}
 	query := strings.TrimSpace(d.query)
 	switch {
 	case p.failed:
@@ -336,7 +398,11 @@ func (m *Model) threadPickerLine(item x.Choice, row threadPickerRow, selected bo
 	if label != "" {
 		room = max(1, w-stringWidth(label)-2)
 	}
-	line := paint(tone, ansi.Truncate(prefix+oneLine(item.Label), room, "…"))
+	labelText := oneLine(item.Label)
+	if row.directory != "" {
+		labelText = shortenDirectory(labelText, room-stringWidth(prefix))
+	}
+	line := paint(tone, ansi.Truncate(prefix+labelText, room, "…"))
 	if label != "" {
 		line += "  " + paint(statusTone, label)
 	}
@@ -345,7 +411,11 @@ func (m *Model) threadPickerLine(item x.Choice, row threadPickerRow, selected bo
 		sep = " · "
 	}
 	if room = w - stringWidth(line) - stringWidth(sep); room > 1 && item.Description != "" {
-		line += m.control(sep + ansi.Truncate(oneLine(item.Description), room, "…"))
+		detail := oneLine(item.Description)
+		if item.ID == newThreadHereChoice && row.destination.preview != "" {
+			detail = shortenDirectory(detail, room)
+		}
+		line += m.control(sep + ansi.Truncate(detail, room, "…"))
 	}
 	return line
 }

@@ -116,21 +116,28 @@ func Resolve(ctx context.Context, opts Options) (string, error) {
 	return t.socket, nil
 }
 
-func (t target) ensure(ctx context.Context, bundlePath string) error {
+func (t target) needsStart(ctx context.Context) (bool, error) {
 	socket := t.socket
 	if err := t.hello(ctx); err == nil {
-		return nil // Attaching doesn't require a bundle or Node.
+		return false, nil // Attaching doesn't require a bundle or Node.
 	} else if errors.Is(err, syscall.ENOTSOCK) {
-		return fmt.Errorf("backend path is not a Unix socket: %s", socket)
+		return false, fmt.Errorf("backend path is not a Unix socket: %s", socket)
 	} else if !unavailable(err) {
-		return fmt.Errorf("backend at %s failed hello; not replacing it: %w", socket, err)
+		return false, fmt.Errorf("backend at %s failed hello; not replacing it: %w", socket, err)
 	}
 	// Never remove even a stale socket ourselves. The backend checks ownership
 	// and staleness under the same lock that guards its SQLite writer.
 	if info, err := os.Lstat(socket); err == nil && info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("backend path is not a Unix socket: %s", socket)
+		return false, fmt.Errorf("backend path is not a Unix socket: %s", socket)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect backend socket: %w", err)
+		return false, fmt.Errorf("inspect backend socket: %w", err)
+	}
+	return true, nil
+}
+
+func (t target) ensure(ctx context.Context, bundlePath string) error {
+	if needed, err := t.needsStart(ctx); err != nil || !needed {
+		return err
 	}
 	startup, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
@@ -155,7 +162,7 @@ func (t target) ensure(ctx context.Context, bundlePath string) error {
 	// A competing launcher can lose the data-directory lock long before the
 	// winner starts listening. Wait for that winner, never respawn or kill it.
 	if err := t.waitHello(startup); err != nil {
-		return fmt.Errorf("wait for persistent backend at %s: %w", socket, err)
+		return fmt.Errorf("wait for persistent backend at %s: %w", t.socket, err)
 	}
 	return nil
 }

@@ -219,8 +219,16 @@ func TestReleaseFrames(t *testing.T) {
 			m.editor.set("")
 			openGroupedThreadPicker(t, m)
 			if body := shot("thread-switcher"); !strings.Contains(body, "Deployment tools") ||
-				!strings.Contains(body, "needs attention") || !strings.Contains(body, "stopped") {
-				t.Fatal("the thread picker did not show workspace groups and statuses")
+				!strings.Contains(body, "needs attention") || !strings.Contains(body, "stopped") ||
+				!strings.Contains(body, "+ New thread here") || !strings.Contains(body, "ctrl+x n new here") {
+				t.Fatal("the thread picker did not show groups, statuses, and workspace creation")
+			}
+			press(m, tea.KeyDown, 0)
+			press(m, tea.KeyDown, 0)
+			threadPickerStep(t, m, press(m, tea.KeyEnter, 0))
+			if body := shot("thread-directory-chooser"); !strings.Contains(body, "New thread · Deployment tools") ||
+				!strings.Contains(body, deployCWD) || !strings.Contains(body, deployCheckout) {
+				t.Fatal("the directory chooser did not show both checkout paths")
 			}
 		})
 	}

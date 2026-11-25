@@ -199,10 +199,11 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 	write(filepath.Join(root, "AGENTS.md"), "tui-outside-workspace-sentinel")
 	agents := filepath.Join(cwd, "AGENTS.md")
 	write(agents, "tui-agents-original\n")
+	personalAgents := filepath.Join(home, "AGENTS.md")
+	write(personalAgents, "tui-personal-agents-original\n")
 	appendPath := filepath.Join(home, "APPEND_SYSTEM.md")
-	if _, err := os.Lstat(appendPath); !os.IsNotExist(err) {
-		t.Fatalf("expected a fresh Hush home without a personal prompt: %v", err)
-	}
+	const appendMarker = "tui-personal-append-sentinel"
+	write(appendPath, appendMarker+"\n")
 	bundled, err := os.ReadFile("../backend/src/prompts/system.md")
 	if err != nil {
 		t.Fatal(err)
@@ -225,8 +226,13 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 	}
 	m.receiveFeed(first)
 	for i, local := range []string{"tui-agents-original", "tui-agents-edited"} {
+		personal := "tui-personal-agents-original"
 		if i > 0 {
-			write(appendPath, "tui-personal-sentinel\n")
+			if err := os.Remove(appendPath); err != nil {
+				t.Fatal(err)
+			}
+			personal = "tui-personal-agents-edited"
+			write(personalAgents, personal+"\n")
 			write(agents, local+"\n")
 		}
 		m.editor.set(fmt.Sprintf("TUI prompt fixture turn %d", i+1))
@@ -269,15 +275,14 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 			system = append(system, text)
 		}
 		prompt := strings.Join(system, "\n\n")
-		expected := []string{strings.TrimSpace(string(bundled)), fmt.Sprintf("Working directory: %q", cwd)}
+		expected := []string{strings.TrimSpace(string(bundled)), fmt.Sprintf("Working directory: %q", cwd), "## Personal instructions"}
 		ignored := []string{"tui-pi-system-sentinel", "tui-pi-append-sentinel", "tui-project-system-sentinel", "tui-project-append-sentinel", "tui-outside-workspace-sentinel"}
-		if i > 0 {
-			expected = append(expected, "## Personal instructions", "tui-personal-sentinel")
-			ignored = append(ignored, "tui-agents-original")
+		if i == 0 {
+			expected = append(expected, appendMarker)
 		} else {
-			ignored = append(ignored, "## Personal instructions", "tui-personal-sentinel")
+			ignored = append(ignored, appendMarker, "tui-personal-agents-original", "tui-agents-original")
 		}
-		expected = append(expected, "## Workspace context", local, "## Environment", "Client OS: macOS", "Client shell (invoking process): fish")
+		expected = append(expected, personal, "## Workspace context", local, "## Environment", "Client OS: macOS", "Client shell (invoking process): fish")
 		after := 0
 		for _, text := range expected {
 			at := strings.Index(prompt[after:], text)
@@ -1148,7 +1153,13 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 		m.sheet.threadPicker.rows[m.sheet.filtered[m.sheet.selected]].workspaceName != "outside" {
 		t.Fatal("explicit browse did not retain the query and find the outside workspace by chat text")
 	}
-	threadPickerStep(t, m, m.changeDialogQuery(m.sheet, ""))
+	press(m, tea.KeyUp, 0)
+	workflowWork(t, m, threadPickerStep(t, m, press(m, tea.KeyEnter, 0)))
+	if !m.active.Valid() || m.active == outsideID || m.sheet != nil {
+		t.Fatal("new thread here did not open a fresh thread in the selected workspace")
+	}
+	ask(m, paths[outside]) // tool reads must use the selected workspace, not the launch directory
+	threadPickerStep(t, m, m.runAction(m.host.byID[switchAllID], ""))
 	_ = pick(m, string(insideID))
 	if m.active != insideID {
 		t.Fatal("picker did not switch projects")
@@ -1209,7 +1220,7 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 	v1 := sdk.NewClient(socket, sdk.ClientOptions{Capabilities: v1Caps})
 	defer v1.Close()
 	v1Opts := sdk.ThreadDirectoryOptions{Limit: 10, Workspace: outside}
-	if got, err := v1.ListThreadDirectory(ctx, v1Opts); err != nil || !reflect.DeepEqual(got.WorkspaceMatches, []string{"inside"}) || got.Workspaces != nil {
+	if got, err := v1.ListThreadDirectory(ctx, v1Opts); err != nil || !reflect.DeepEqual(got.WorkspaceMatches, []string{"inside", "inside"}) || got.Workspaces != nil {
 		t.Fatalf("v1 directory workspace shape changed: %+v (%v)", got, err)
 	}
 	v1Opts.Query = "outside"

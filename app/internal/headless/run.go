@@ -71,6 +71,10 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 	if err != nil {
 		return report(err)
 	}
+	// Only the opt-in Pi profile accepts implicit positional prompts.
+	if profile == backendstart.Hush && o.implicitPrompt {
+		return report(fmt.Errorf("unknown command %q; run 'hush --help' for commands or use 'hush --print' for a prompt", o.prompt[0]))
+	}
 	o.ui.Profile = string(profile)
 	inputTTY := (o.command == printAnswer || o.command == piJSON) && term.IsTerminal(int(in.Fd()))
 	if o.interactive(inputTTY, term.IsTerminal(int(out.Fd()))) {
@@ -109,6 +113,24 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 			line = "backend stopped"
 		}
 		return report(writeValue(out, o.json, runtimeStopResult{Stopped: stopped}, line))
+	}
+	if o.command == restartBackend {
+		if o.restartOpen && (!term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd()))) {
+			return report(errors.New("restart --open requires terminal stdin and stdout"))
+		}
+		stopped, err := backendstart.Restart(ctx, target)
+		if err != nil {
+			return report(err)
+		}
+		if o.restartOpen {
+			return report(openUI(ctx, o.ui))
+		}
+		line := "backend started"
+		if stopped {
+			line = "backend restarted"
+		}
+		_, err = fmt.Fprintln(out, line)
+		return report(err)
 	}
 	var sdkOpts sdk.ClientOptions
 	if preferPi && !needPi {

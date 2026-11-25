@@ -176,8 +176,10 @@ func TestFrameBudget(t *testing.T) {
 			var threadPage x.ClientResult
 			if which == "thread-picker" {
 				page := groupedThreadPage()
+				m.backend = threadPickerBackend{}
 				for i := len(page.Threads); i < 50; i++ {
-					page.Threads = append(page.Threads, sdk.ThreadDirectoryRow{ID: sdk.ID(fmt.Sprint(i + 1)), Title: fmt.Sprintf("Thread %d", i+1), Status: "running"})
+					page.Threads = append(page.Threads, sdk.ThreadDirectoryRow{ID: sdk.ID(fmt.Sprint(i + 1)), Title: fmt.Sprintf("Thread %d", i+1), Status: "running",
+						Checkout: &sdk.ThreadCheckout{Kind: "shared", CWD: fmt.Sprintf("/remote/workspace-%d", i)}})
 					page.Workspaces = append(page.Workspaces, &sdk.ThreadWorkspace{ID: fmt.Sprint(i), Name: fmt.Sprintf("Workspace %d", i)})
 					page.WorkspaceMatches = append(page.WorkspaceMatches, "outside")
 				}

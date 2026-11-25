@@ -13,7 +13,7 @@ import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost 
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
 import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
-import { parseLoadedContext, loadedContextVersion, type LoadedContextHost } from "./loaded-context.js";
+import { parseLoadedContext, loadedContextAgentsVersion, loadedContextVersion, type LoadedContextHost, type LoadedContextVersion } from "./loaded-context.js";
 import { parseWorkspaceFiles, parseWorkspaceFileSearch, workspaceFilesVersion, workspaceFileSearchVersion,
   workspaceFileProjectPathsVersion, type WorkspaceFilesHost } from "./workspace-files.js";
 import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillDraftVersion, workspaceSkillsVersion,
@@ -170,7 +170,7 @@ class Peer {
   #checkpoints?: CheckpointsHost;
   #gitDiff?: GitDiffHost;
   #gitDiffPending = false;
-  #loadedContext?: LoadedContextHost;
+  #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
   #workspaceSkills?: { host: WorkspaceSkillsHost; version: WorkspaceSkillsVersion };
   readonly #pendingMetadata = new Set<string>();
@@ -300,8 +300,8 @@ class Peer {
         }
         if (parts[1] === "loadedContext" && this.#loadedContext) {
           if (parts[2] !== "get") throw new WireError("unknown_method");
-          const host = this.#loadedContext, threadId = parseLoadedContext(req.params);
-          this.#metadata(req, parts[1], () => host.get(threadId, this.#abort.signal));
+          const { host, version } = this.#loadedContext, threadId = parseLoadedContext(req.params);
+          this.#metadata(req, parts[1], () => host.get(threadId, version, this.#abort.signal));
           return;
         }
         if (parts[1] === "workspaceFiles" && this.#workspaceFiles) {
@@ -504,9 +504,12 @@ class Peer {
           capabilities.checkpoints = checkpointsVersion;
           this.#checkpoints = this.capabilities.checkpoints;
         }
-        if (this.capabilities?.loadedContext && req.params.capabilities?.loadedContext?.includes(loadedContextVersion)) {
-          capabilities.loadedContext = loadedContextVersion;
-          this.#loadedContext = this.capabilities.loadedContext;
+        const loadedContext = this.capabilities?.loadedContext, offeredContext = req.params.capabilities?.loadedContext;
+        const contextVersion = offeredContext?.includes(loadedContextAgentsVersion) ? loadedContextAgentsVersion
+          : offeredContext?.includes(loadedContextVersion) ? loadedContextVersion : undefined;
+        if (loadedContext && contextVersion !== undefined) {
+          capabilities.loadedContext = contextVersion;
+          this.#loadedContext = { host: loadedContext, version: contextVersion };
         }
         const skills = this.capabilities?.workspaceSkills, offeredSkills = req.params.capabilities?.workspaceSkills;
         const skillsVersion = offeredSkills?.includes(workspaceSkillDraftVersion) ? workspaceSkillDraftVersion

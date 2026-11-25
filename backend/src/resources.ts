@@ -1,6 +1,6 @@
 import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
 import { ModelRegistry, DefaultResourceLoader, ProjectTrustStore, SettingsManager, stripFrontmatter } from "@earendil-works/pi-coding-agent";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -14,6 +14,7 @@ import { Rejected } from "./pi/commands.js";
 import { readScopedText } from "./workspace-file.js";
 import type { InstructionSource } from "../../server/src/loaded-context.js";
 import { workspaceAncestors } from "./workspace-ancestors.js";
+import type { StandaloneSkills } from "./workspace-skills.js";
 
 export type Warn = (code: "resource_watch_failed" | "mcp_unavailable" | "harness_report" | "closing" | "listening") => void;
 const keys = ["preamble", "tools", "rules", "docs", "addendum", "project_context", "skills", "cwd"] as const;
@@ -22,11 +23,11 @@ const safeEnv = Object.fromEntries(Object.entries(process.env).filter(([k, v]) =
 
 // Inlined by backend/bundle.mjs; no runtime prompt asset is needed.
 declare const HUSH_SYSTEM_PROMPT: string;
-const standaloneKeys = ["preamble", "cwd", "addendum", "project_context"] as const;
+const standaloneKeys = ["preamble", "cwd", "addendum", "project_context", "skills"] as const;
 const promptFileLimit = 64 * 1024;
 const workspaceLimit = 256 * 1024;
 
-type Instruction = InstructionSource & { text: string; length: number };
+type Instruction = InstructionSource & { text: string; length: number; legacy: boolean };
 
 async function readSupplement(dir: string, name: string, kind: InstructionSource["kind"], limit: number, signal?: AbortSignal): Promise<Instruction | undefined> {
   const path = join(dir, name);
@@ -34,43 +35,64 @@ async function readSupplement(dir: string, name: string, kind: InstructionSource
   signal?.throwIfAborted();
   try {
     const { text, length } = await readScopedText(dir, name, limit, signal);
-    if (text.trim()) return { kind, path, text: text.trim(), length };
+    // The v1 context inspector only accepts these legacy locations.
+    const legacy = name === (kind === "personal" ? "APPEND_SYSTEM.md" : "AGENTS.md");
+    if (text.trim()) return { kind, path, text: text.trim(), length, legacy };
   } catch { signal?.throwIfAborted(); /* Missing, unsafe, or invalid text. */ }
 }
 
-async function workspaceContext(cwd: string, signal?: AbortSignal) {
-  const parents = await workspaceAncestors(cwd, signal);
-  const files: Instruction[] = [];
-  let remaining = workspaceLimit;
-  for (const dir of parents.reverse()) {
-    if (!remaining) break;
-    const file = await readSupplement(dir, "AGENTS.md", "workspace", Math.min(promptFileLimit, remaining), signal);
-    if (!file) continue;
-    remaining -= file.length;
-    files.push(file);
-  }
-  return files;
+async function personalContext(profileDir: string, signal?: AbortSignal) {
+  const profile = await realpath(profileDir).catch(() => undefined);
+  if (!profile) return [];
+  const files = await Promise.all([
+    readSupplement(profile, "APPEND_SYSTEM.md", "personal", promptFileLimit, signal),
+    readSupplement(profile, "AGENTS.md", "personal", promptFileLimit, signal),
+    readSupplement(dirname(profile), ".agents/AGENTS.md", "personal", promptFileLimit, signal),
+  ]);
+  return files.filter(file => file !== undefined);
 }
 
 // Both generation and the inspector project this same ordered resolution. Do
 // not read cached prompt bytes, Pi resources or private provider configuration.
 async function standaloneInstructions(profileDir: string, cwd: string, includeWorkspace: boolean, signal?: AbortSignal) {
-  const [personal, workspace] = await Promise.all([
-    realpath(profileDir).catch(() => undefined).then(dir => dir ? readSupplement(dir, "APPEND_SYSTEM.md", "personal", promptFileLimit, signal) : undefined),
-    includeWorkspace ? workspaceContext(cwd, signal) : [],
+  const [files, parents] = await Promise.all([
+    personalContext(profileDir, signal),
+    includeWorkspace ? workspaceAncestors(cwd, signal) : [],
   ]);
-  return personal ? [personal, ...workspace] : workspace;
+  const seen = new Set(files.map(file => file.path));
+  let remaining = workspaceLimit;
+  for (const dir of parents.reverse()) {
+    for (const name of ["AGENTS.md", ".agents/AGENTS.md"]) {
+      if (!remaining) return files;
+      if (seen.has(join(dir, name))) continue;
+      const file = await readSupplement(dir, name, "workspace", Math.min(promptFileLimit, remaining), signal);
+      if (!file) continue;
+      remaining -= file.length;
+      seen.add(file.path);
+      files.push(file);
+    }
+  }
+  return files;
 }
 
-async function standalonePromptSections(profileDir: string, cwd: string, workspace: string | undefined, signal?: AbortSignal): Promise<Record<string, string>> {
-  const sources = await standaloneInstructions(profileDir, workspace ?? cwd, workspace !== undefined, signal);
-  const personal = sources.find(s => s.kind === "personal");
-  const files = sources.filter(s => s.kind === "workspace").map(s => `### ${JSON.stringify(s.path)}\n\n${s.text}`);
+function renderInstruction({ path, text }: Instruction) {
+  return `### ${JSON.stringify(path)}\n\n${text}`;
+}
+
+async function standalonePromptSections(profileDir: string, cwd: string, workspace: string | undefined, signal?: AbortSignal,
+    catalog?: Pick<StandaloneSkills, "promptCatalog">): Promise<Record<string, string>> {
+  const [sources, skills] = await Promise.all([
+    standaloneInstructions(profileDir, workspace ?? cwd, workspace !== undefined, signal),
+    catalog?.promptCatalog(workspace ?? cwd, workspace !== undefined, signal),
+  ]);
+  const personal = sources.filter(s => s.kind === "personal").map(s => basename(s.path) === "APPEND_SYSTEM.md" ? s.text : renderInstruction(s));
+  const files = sources.filter(s => s.kind === "workspace").map(renderInstruction);
   return {
     preamble: HUSH_SYSTEM_PROMPT.trimEnd(),
     cwd: `Working directory: ${JSON.stringify(cwd)}`,
-    ...(personal && { addendum: `## Personal instructions\n\n${personal.text}` }),
+    ...(personal.length && { addendum: `## Personal instructions\n\n${personal.join("\n\n")}` }),
     ...(files.length && { project_context: `## Workspace context\n\n${files.join("\n\n")}` }),
+    ...(skills && { skills }),
   };
 }
 
@@ -128,7 +150,7 @@ export class ProjectResources {
 
   constructor(private readonly cwd: string, private readonly agentDir: string, registry: Registry,
     models: ModelRegistry, private readonly warn: Warn, ephemeral: boolean, tapTool?: (tool: ToolRegistration) => ToolRegistration,
-    standalone = false) {
+    standalone = false, private readonly catalog?: Pick<StandaloneSkills, "promptCatalog">) {
     if (standalone) {
       this.#standalone = { trusted: false, settings: SettingsManager.inMemory(), pref: { snippet: {}, rules: {} }, prompt: new Map() };
     } else {
@@ -302,18 +324,18 @@ export class ProjectResources {
     return this.expand(loaded, await this.expandSkill(loaded, input)) ?? input;
   }
 
-  async instructionSources(cwd: string, includeWorkspace: boolean, signal: AbortSignal): Promise<InstructionSource[]> {
+  async instructionSources(cwd: string, includeWorkspace: boolean, includeExtended: boolean, signal: AbortSignal): Promise<InstructionSource[]> {
     if (!this.#standalone) return [];
     const sources = await standaloneInstructions(this.agentDir, cwd, includeWorkspace, signal);
     signal.throwIfAborted();
-    return sources.map(({ kind, path }) => ({ kind, path }));
+    return sources.filter(source => includeExtended || source.legacy).map(({ kind, path }) => ({ kind, path }));
   }
 
   async promptSections(loaded: Loaded, cwd: string, selectedTools: string[],
       overrides?: { systemPrompt?: string; appendSystemPrompt?: string }, includeWorkspace = true, signal?: AbortSignal, workspaceAuthorized = false): Promise<Record<string, string>> {
     if (this.#standalone) {
       const physical = includeWorkspace && !workspaceAuthorized ? await realpath(cwd).catch(() => undefined) : cwd;
-      return standalonePromptSections(this.agentDir, cwd, includeWorkspace ? physical : undefined, signal);
+      return standalonePromptSections(this.agentDir, cwd, includeWorkspace ? physical : undefined, signal, this.catalog);
     }
     const loader = loaded.loader;
     if (!loader) return {};

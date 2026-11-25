@@ -63,8 +63,9 @@ or later, the absolute `CWD` of a [prospective thread](../protocol/v1/workspace-
 
 Offer `workspaceSkills: [2, 1]` for `ListWorkspaceSkills` and, on version 2,
 `PreviewWorkspaceSkills` for a prospective checkout without creating a thread.
-Offer `loadedContext:1` for `LoadedContext` on an existing thread. Metadata
-reads run on cancelable passive connections.
+Offer `loadedContext: [2, 1]` for `LoadedContext` on an existing thread. Version 2
+also reports personal `AGENTS.md` and workspace `.agents/AGENTS.md` sources.
+Metadata reads run on cancelable passive connections.
 
 When submitting a selected standalone skill,
 set `Input.SkillToken` to its opaque selection token and use its

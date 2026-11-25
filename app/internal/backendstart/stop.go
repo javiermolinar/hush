@@ -19,6 +19,10 @@ func Stop(ctx context.Context, opts Options) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return t.stop(ctx)
+}
+
+func (t target) stop(ctx context.Context) (bool, error) {
 	bounded, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
 	options := t.clientOptions(sdk.ClientOptions{Capabilities: map[string][]uint64{"runtime": {sdk.RuntimeVersion}}})

@@ -21,8 +21,9 @@ launcher waits for the lock holder's socket, and a restart can recover work and 
 The app stays up while clients, runnable work, or deadlines exist. Once all three are absent for `--idle-ms`
 (default 600000), it closes the Harness and releases the lock. SIGINT/SIGTERM close it explicitly. The negotiated
 [`runtime:1` capability](../protocol/v1/runtime.md) provides the same orderly shutdown through `hush stop`; the next
-managed CLI command can start the replacement. `hush.log` records fixed lifecycle/error labels, not prompts, provider
-errors or credential material.
+managed CLI command can start the replacement. `hush restart` does both for the managed local backend and waits for
+`hello` from the replacement. Use `hush service restart` if the login supervisor owns the backend. `hush.log` records
+fixed lifecycle/error labels, not prompts, provider errors or credential material.
 
 Flags include `--cwd`, `--profile hush|pi`, `--data-dir`, `--model provider/id`,
 `--idle-ms`, and `--faux` (local scripted test model). `--config <file>` reads a JSON
@@ -211,10 +212,11 @@ clients reload the setting on their next configuration read or restart rather th
 
 Codemode is off by default. To enable it, add `"codemode": true` to the JSON object in
 `~/.hush/settings.json` on the **backend host**. The file must be owned by your user and private
-(`chmod 600 ~/.hush/settings.json`). Restart the backend (`hush stop`, then open Hush again for a
-managed backend). Set the key to `false` or remove it and restart to turn it off. The installable
-binary includes QuickJS; it does not need Pi or adjacent Node packages. Project settings and
-prompts cannot enable Codemode. The Pi compatibility profile and `--no-session` runs do not get it.
+(`chmod 600 ~/.hush/settings.json`). Restart the backend (`hush restart --open` for a local
+backend, or `hush service restart` for a supervised backend). Set the key to `false` or remove it
+and restart to turn it off. The installable binary includes QuickJS; it does not need Pi or
+adjacent Node packages. Project settings and prompts cannot enable Codemode. The Pi compatibility
+profile and `--no-session` runs do not get it.
 
 Direct tools remain available. A `codemode` script can only call `tools.inspect_file({ path })`,
 a read-only tool for regular, single-link UTF-8 files up to 32 KiB. Paths are relative to the thread's
@@ -243,18 +245,22 @@ for measured costs of filtering four independent reads in one script.
 The backend bundle includes [`src/prompts/system.md`](src/prompts/system.md) as text. No prompt file is
 required at startup. The default tells the model to answer questions after only the necessary checks,
 without editing, and to keep explicitly requested changes scoped. Hush renders it first, followed by
-instructions for the active tools and the thread's working directory, then optional personal instructions
-from `~/.hush/APPEND_SYSTEM.md` on the **backend host**. It adds applicable `AGENTS.md` files in a separate
-workspace-context section, ordered from the nearest Git root (`.git` directory or worktree marker file)
-down to the working directory. Outside a repository, only the working directory's `AGENTS.md` applies.
+instructions for the active tools and the thread's working directory, then instruction files on the
+**backend host** in this order:
 
-Hush re-reads these optional files when rendering for the next provider request; no restart is needed.
-It reads regular UTF-8 files up to 64 KiB each without following a symlink at the file itself, uses a
-256 KiB workspace text budget, and
-skips missing, unreadable, empty, invalid or oversized files. There is no full override, project `.hush/`
-prompt, or Pi resource discovery in this profile. The text goes to the model provider, not into chat
-history as a message. Prompt text guides the model; it cannot grant tool permissions or weaken host
-policy. Loopback fixtures check the request contents, not whether a model follows the instructions.
+1. **Personal instructions**: `~/.hush/APPEND_SYSTEM.md`, `~/.hush/AGENTS.md`, then `~/.agents/AGENTS.md`.
+2. **Workspace context**: from the nearest Git root (`.git` directory or worktree marker file) down to
+   the working directory, `AGENTS.md` then `.agents/AGENTS.md` at each level. Outside a repository, only
+   the working directory is checked. Persistent Hush requires [workspace trust](#workspace-trust) for
+   workspace instructions.
+
+These files are additive, and Hush includes each path at most once per prompt. Hush re-reads them for the
+next provider request; no restart is needed. It reads regular UTF-8 files up to 64 KiB each without
+following symlinks, uses a 256 KiB workspace text budget, and skips missing, unreadable, empty, invalid
+or oversized files. There is no full override, project `.hush/` prompt, or Pi resource discovery in this
+profile. The text goes to the model provider, not into chat history as a message. Prompt text guides the
+model; it cannot grant tool permissions or weaken host policy. Loopback fixtures check the request
+contents, not whether a model follows the instructions.
 
 ## Standalone skills
 
@@ -277,6 +283,11 @@ No configuration file is needed. A private (mode 600) `~/.hush/skills.json`
 can disable both personal roots with `"personal": false` or add per-workspace
 relative paths with `"projectRoots": [{"workspace": "/absolute/physical/project",
 "directory": "other-skills"}]`. Adding a root does not grant trust.
+
+Persistent standalone model requests include a catalog of available
+`/skill:NAME` commands and their authored descriptions, capped at 8 KiB. The catalog sends no skill
+bodies, file paths, or selection tokens, and makes no extra model calls. Only
+an explicit invocation loads the skill instructions.
 
 Use `/skills` or choose a suggestion under `/` in an existing thread or at a
 fresh local prompt. Selection only stages `/skill:NAME`; press Enter to submit.

@@ -123,6 +123,39 @@ func TestParseStop(t *testing.T) {
 	}
 }
 
+func TestParseRestart(t *testing.T) {
+	o, err := parse([]string{"restart"})
+	if err != nil || o.command != restartBackend || o.restartOpen || o.interactive(true, true) {
+		t.Fatalf("restart options = %+v, %v", o, err)
+	}
+	o, err = parse([]string{"--backend", "fixture.mjs", "restart", "--open", "--thread", "7"})
+	if err != nil || o.command != restartBackend || !o.restartOpen || o.ui.Thread != "7" || o.ui.Bundle != "fixture.mjs" || o.interactive(true, true) {
+		t.Fatalf("restart --open options = %+v, %v", o, err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"restart", "extra"}, "unexpected positional"},
+		{[]string{"restart", "--socket", "/tmp/hush.sock"}, "attach-only"},
+		{[]string{"restart", "--thread", "7"}, "only accepts --thread with --open"},
+		{[]string{"restart", "--open", "--thread", "invalid"}, "must be a valid durable ID"},
+		{[]string{"restart", "--json"}, "not valid for restart"},
+		{[]string{"restart", "--no-session"}, "--no-session requires"},
+		{[]string{"stop", "--open"}, "--open is for restart"},
+	} {
+		if _, err := parse(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("parse(%v) = %v, want error containing %q", tc.args, err, tc.want)
+		}
+	}
+	for _, flag := range []string{"--", "--print"} {
+		o, err := parse([]string{flag, "restart"})
+		if err != nil || o.command != printAnswer || strings.Join(o.prompt, " ") != "restart" {
+			t.Errorf("literal restart prompt with %s = %+v, %v", flag, o, err)
+		}
+	}
+}
+
 func TestParseLocalAuth(t *testing.T) {
 	for _, action := range []string{"login", "status", "logout"} {
 		for _, provider := range []string{"", "openrouter", "openai-codex"} {

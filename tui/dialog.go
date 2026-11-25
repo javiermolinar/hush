@@ -329,7 +329,10 @@ func (d *dialog) filter() {
 	}
 	d.selected = 0
 	for j, i := range d.filtered {
-		if !d.choices[i].Disabled {
+		c := d.choices[i]
+		// Workspace creation is selectable, but Enter after searching should
+		// still open the first matching conversation.
+		if !c.Disabled && (d.threadPicker == nil || c.ID != newThreadHereChoice) {
 			d.selected = j
 			break
 		}
@@ -383,6 +386,10 @@ func (m *Model) acceptChoice(d *dialog) tea.Cmd {
 		case "all-workspaces":
 			p.all = true
 			return m.loadThreadPicker(d, "", 0)
+		case newThreadHereChoice:
+			return m.openWorkspaceDirectories(d)
+		case workspaceDirectoryChoice:
+			return m.createWorkspaceThread(d, p.selectedRow(d).directory, false)
 		}
 	}
 	if d.palette {
@@ -479,6 +486,14 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 			bind := m.host.actions[i].action.Binding
 			if (seq == "" && chord != "" && bind.Direct == chord) || (seq != "" && bind.Leader == seq) {
 				c, _ := d.choice()
+				if p := d.threadPicker; p != nil && p.all {
+					if a == newThreadID {
+						return m.openWorkspaceDirectories(d)
+					}
+					if c.ID == newThreadHereChoice {
+						return nil // this row doesn't target an existing thread
+					}
+				}
 				b := maxEffects
 				return m.invoke(d.route, x.ActionRef{ID: a, Target: c.ID}, &b)
 			}
@@ -687,8 +702,11 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 	}
 	if !d.confirm && n-len(rows) >= 2 {
 		placeholder := "Type to filter"
-		if d.threadPicker != nil {
+		if p := d.threadPicker; p != nil {
 			placeholder = "Workspace, thread, or message"
+			if p.creation != nil {
+				placeholder = "Filter working directories"
+			}
 		}
 		filter, _ := m.filterInput(d.query, w, placeholder)
 		add(filter, -1)
@@ -740,6 +758,8 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 		if (d.modelSearch != nil || d.threadPicker != nil) && count == 0 {
 			hint := m.keyHint("esc", "close")
 			add(m.hintRow(w, hint, hint, ""), -1)
+		} else if d.threadPicker != nil {
+			add(m.threadPickerFooter(d, w, visibleRange(lo, hi, count)), -1)
 		} else {
 			add(m.choiceFooter(w, "choose", visibleRange(lo, hi, count)), -1)
 		}

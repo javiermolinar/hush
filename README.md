@@ -30,6 +30,10 @@ The local build writes `dist/release/<os>-<arch>/hush`.
 
 ## Pick up a thread
 
+In the default Hush profile, pass a prompt with `hush --print '...'` or
+`hush -- '...'`, or pipe it to `hush` on stdin. Unknown commands aren’t sent
+as prompts.
+
 This is from a run against Hush’s scripted test model. I restarted the backend
 between the first prompt and `thread list`.
 
@@ -48,7 +52,12 @@ In the Go TUI, open the thread switcher with `Ctrl+X S` or `/threads`. It groups
 threads under workspace names and shows which are running, need attention, or have stopped.
 Type a workspace name, thread title, or phrase from a message to search. Chat search starts
 at three characters. Local sessions start in the launch workspace; choose **Browse all
-workspaces** or run `/threads-all` to search across them.
+workspaces** or run `/threads-all` to search across them. To start a thread in a known
+workspace, filter to it, then move up to **+ New thread here** and press Enter.
+You can also press `Ctrl+X N` on a thread in that workspace. If there’s more than one
+working directory, choose which one to use. At the prompt, `/new` still uses the launch
+directory. Use `/close` to close the current tab without deleting its thread or stopping
+its run.
 
 The TUI caches transcript blocks and renders the visible window rather than rewrapping
 the whole thread on each keystroke. Use `/config` to set the default model and thinking effort for new threads, and to show live and
@@ -76,6 +85,15 @@ Open `?` → **Show loaded context** to see the instruction files the backend
 resolves for the active thread’s next submission. The inspector lists paths,
 not contents. Hush [discovers skills](backend/README.md#standalone-skills) from
 personal roots and trusted workspaces. Use `/skills` to stage one without submitting.
+
+## Restart the local backend
+
+Run `hush restart` to shut down the local backend and wait for its replacement.
+If it isn’t running, this starts it. `hush restart --open` also opens the TUI;
+add `--thread ID` to reopen a specific thread. Restart disconnects existing
+clients but keeps stored threads and history. Explicit sockets (`--socket` or
+`HUSH_SOCKET`) are attach-only. For an installed user service, use
+`hush service restart` instead.
 
 ## Keep the backend running after exit
 

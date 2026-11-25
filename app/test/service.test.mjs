@@ -80,6 +80,10 @@ test('supervisor owns managed start, ignores idle, and wakes a parked Durable to
   const connected = await Promise.all(Array.from({ length: 6 }, () => f.cli('status', '--json')));
   const epoch = json(connected[0]).epoch;
   for (const result of connected) assert.equal(json(result).epoch, epoch);
+  const restart = await f.cli('restart');
+  assert.equal(restart.code, 1);
+  assert.match(restart.stderr, /service owns this backend.*hush service restart/);
+  assert.equal(json(await f.cli('status', '--json')).epoch, epoch);
   await exerciseDeadline(f);
   await delay(250);
   assert.equal(json(await f.cli('status', '--json')).epoch, epoch);
@@ -88,6 +92,8 @@ test('supervisor owns managed start, ignores idle, and wakes a parked Durable to
   assert.deepEqual(await close, { code: 0, signal: null });
   await writeFile(join(f.agent, 'supervisor-hold-v1'), 'paused\n', { mode: 0o600 });
   ok(await invoke(binary, argv, f.env));
+  assert.match((await f.cli('status')).stderr, /service is paused/);
+  assert.match((await f.cli('restart')).stderr, /service owns this backend/);
   assert.match((await f.cli('status')).stderr, /service is paused/);
   await rm(join(f.agent, 'supervisor-hold-v1'));
   // An unknown persistent cutover record must not be opened by restart.

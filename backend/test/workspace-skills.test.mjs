@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import { getSystemMessageText } from '@earendil-works/pi-ai';
 import { dial } from '../../server/test/client.mjs';
 import { WorkspaceTrust } from '../../dist/backend/src/workspace-trust.js';
 import { startBackend } from '../../dist/hush-backend.mjs';
@@ -157,4 +159,38 @@ test('fresh prompts discover standard roots without configuration and keep previ
   await writeFile(join(agentDir, 'skills.json'), JSON.stringify({ personal: false, projectRoots: [{ workspace: other, directory: 'custom texts' }] }), { mode: 0o600 });
   assert.deepEqual((await preview(other)).map(s => s.name), ['custom']);
   assert.deepEqual(await preview(), []);
+});
+
+test('standalone model prompts advertise eligible skill descriptions, not skill bodies', { timeout: 15_000 }, async t => {
+  const dir = await realpath(await mkdtemp('/tmp/hs-skill-prompt-'));
+  const agentDir = join(dir, '.hush'), dataDir = join(dir, 'run'), socket = join(dataDir, 'hush.sock');
+  const cwd = join(dir, 'checkout'), other = join(dir, 'other');
+  for (const path of [agentDir, cwd, other]) await mkdir(path, { mode: 0o700 });
+  await addSkill(join(agentDir, 'skills'), 'review', 'Review an API change', 'PERSONAL-BODY-SENTINEL');
+  await addSkill(join(cwd, '.agents/skills'), 'check-docs', 'Compare docs with source', 'WORKSPACE-BODY-SENTINEL');
+  await addSkill(join(other, '.agents/skills'), 'other-only', 'Not in this checkout', 'OTHER-BODY-SENTINEL');
+  const trust = new WorkspaceTrust(agentDir);
+  for (const path of [cwd, other]) await trust.change(path, 'grant', AbortSignal.timeout(5000));
+  const host = await startBackend({ profile: 'hush', cwd, agentDir, dataDir, socket, idleMs: 8000, ephemeral: false, faux: true });
+  let wire;
+  t.after(async () => { wire?.close(); await host.close(); await rm(dir, { recursive: true, force: true }); });
+  wire = await dial(socket);
+  ok(await wire.send('hello', { versions: [1] })); // no client extension is needed to render the catalog
+  const capture = async (path) => {
+    const { id: threadId } = ok(await wire.send('thread.new', { cwd: path }));
+    const { submissionId } = ok(await wire.send('submit', { threadId, requestId: 'capture', text: 'Hello', whenBusy: 'reject' }));
+    assert.equal(ok(await wire.send('submission.wait', { threadId, submissionId })).status, 'done');
+    const view = await host.harness.conversation(Number(threadId), BACKGROUND_CONTEXT);
+    const entries = (await view.entries({}, 100, undefined, BACKGROUND_CONTEXT)).items;
+    return entries.flatMap(e => e.model ?? []).filter(m => m.role === 'system').map(getSystemMessageText).join('\n');
+  };
+  let prompt = await capture(cwd);
+  assert.match(prompt, /## Available skills/);
+  assert.ok(prompt.includes('{"command":"/skill:review","description":"Review an API change"}'));
+  assert.ok(prompt.includes('{"command":"/skill:check-docs","description":"Compare docs with source"}'));
+  assert.doesNotMatch(prompt, /other-only|BODY-SENTINEL|SKILL\.md/);
+  await writeFile(join(agentDir, 'skills.json'), '{"personal":false}', { mode: 0o600 });
+  prompt = await capture(other);
+  assert.match(prompt, /\/skill:other-only/);
+  assert.doesNotMatch(prompt, /\/skill:review|\/skill:check-docs|BODY-SENTINEL/);
 });

@@ -343,6 +343,31 @@ func TestSheetShowsRangeAndFooterDoesNotSelect(t *testing.T) {
 	}
 }
 
+func TestCloseSlashClosesActiveTab(t *testing.T) {
+	m, _ := demo(t, Options{ReducedMotion: true})
+	m.editor.set("draft in the other tab")
+	m.switchThread("2")
+
+	m.editor.set("/clos")
+	press(m, tea.KeyTab, 0)
+	if got := m.editor.value(); got != "/close " {
+		t.Fatalf("close command did not autocomplete: %q", got)
+	}
+	press(m, tea.KeyEnter, 0)
+	if m.quitting || m.active != "1" || !slices.Equal(m.tabs, []sdk.ID{"1"}) || m.threads["2"] != nil {
+		t.Fatalf("expected only tab 2 to close; active=%q tabs=%v quitting=%v", m.active, m.tabs, m.quitting)
+	}
+	if got := m.editor.value(); got != "draft in the other tab" {
+		t.Fatalf("switching back did not restore the other tab's draft: %q", got)
+	}
+
+	m.editor.set("/close")
+	press(m, tea.KeyEnter, 0)
+	if m.quitting || m.active != "" || len(m.tabs) != 0 || m.editor.value() != "" {
+		t.Fatal("closing the last tab should return to the empty prompt without quitting")
+	}
+}
+
 func TestSlashCompletionUsesUTF8ByteCursorAcrossWrap(t *testing.T) {
 	var request x.CompletionRequest
 	m, _ := demo(t, Options{Extensions: []x.Registration{{

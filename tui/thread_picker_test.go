@@ -13,6 +13,8 @@ import (
 )
 
 const switchAllID = x.ActionID(menusID + ".switch-all")
+const deployCWD = "/work/deploy"
+const deployCheckout = "/worktrees/deploy/release"
 
 type threadPickerBackend struct {
 	inertBackend
@@ -44,10 +46,10 @@ func groupedThreadPage() sdk.ThreadDirectoryPage {
 	deploy := &sdk.ThreadWorkspace{ID: "deploy-id", Name: "Deployment tools"}
 	return sdk.ThreadDirectoryPage{
 		Threads: []sdk.ThreadDirectoryRow{
-			{ID: "4", Title: "Rollout review", Status: "failed"},
-			{ID: "3", Title: "Go TUI", Status: "running"},
-			{ID: "2", Title: "Trace annotations", Status: "stopped"},
-			{ID: "1", Title: "List display", Status: "parked"},
+			{ID: "4", Title: "Rollout review", Status: "failed", Checkout: &sdk.ThreadCheckout{Kind: "shared", CWD: deployCWD}},
+			{ID: "3", Title: "Go TUI", Status: "running", Checkout: &sdk.ThreadCheckout{Kind: "shared", CWD: "/launch/hush"}},
+			{ID: "2", Title: "Trace annotations", Status: "stopped", Checkout: &sdk.ThreadCheckout{Kind: "managed", CWD: deployCheckout, Branch: "release"}},
+			{ID: "1", Title: "List display", Status: "parked", Checkout: &sdk.ThreadCheckout{Kind: "shared", CWD: "/launch/hush"}},
 		},
 		Workspaces:       []*sdk.ThreadWorkspace{deploy, hush, deploy, hush},
 		WorkspaceMatches: []string{"outside", "inside", "outside", "inside"},
@@ -58,10 +60,14 @@ func openGroupedThreadPicker(t *testing.T, m *Model) {
 	t.Helper()
 	m.options.NewThread.CWD, m.options.WorkspaceLocal = "/launch/hush", true
 	m.backend = threadPickerBackend{list: func(opts sdk.ThreadDirectoryOptions) (sdk.ThreadDirectoryPage, error) {
-		if opts.Workspace != "/launch/hush" || !opts.BrowseAll {
+		switch opts {
+		case sdk.ThreadDirectoryOptions{Workspace: "/launch/hush", Limit: 50, BrowseAll: true}:
+			return groupedThreadPage(), nil
+		case sdk.ThreadDirectoryOptions{Workspace: deployCWD, Limit: 50}:
+			return deploymentPage(deployCWD, deployCheckout), nil
+		default:
 			return sdk.ThreadDirectoryPage{}, sdk.ErrProtocol
 		}
-		return groupedThreadPage(), nil
 	}}
 	threadPickerStep(t, m, m.runAction(m.host.byID[switchAllID], ""))
 }
@@ -87,10 +93,14 @@ func TestThreadPickerGroupsAndStatus(t *testing.T) {
 			break
 		}
 	}
-	if m.sheet != d || d.selected != 0 || m.active != "1" {
-		t.Fatal("workspace headings must not be selectable")
+	if item, ok := d.choice(); m.sheet != d || !ok || item.ID != "3" || m.active != "1" {
+		t.Fatal("workspace headings must not be selectable; default to the first conversation")
 	}
 	press(m, tea.KeyDown, 0)
+	press(m, tea.KeyDown, 0)
+	if item, ok := d.choice(); !ok || item.ID != newThreadHereChoice {
+		t.Fatalf("missing creation row at the start of the next workspace: %+v", item)
+	}
 	press(m, tea.KeyDown, 0)
 	if item, ok := d.choice(); !ok || item.ID != "4" {
 		t.Fatalf("keyboard navigation selected the wrong row across groups: %+v", item)

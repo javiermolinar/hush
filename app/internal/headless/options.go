@@ -15,13 +15,15 @@ import (
 
 const usage = `Usage:
   hush [--backend BUNDLE | --socket PATH] [--thread ID] [--local] [--fills auto|on|off] [--images auto|kitty|blocks|none] [--motion=false]
-  hush [--print | --mode text] [--socket PATH] [--thread ID] [--request-id KEY] [PROMPT...]
+  hush (--print | --mode text) [--socket PATH] [--thread ID] [--request-id KEY] [PROMPT...]
+  hush [--socket PATH] [--thread ID] [--request-id KEY] -- PROMPT...
   hush --no-wait [--json] [--thread ID] [--request-id KEY] [PROMPT...]
   hush --no-session [--backend BUNDLE] [PROMPT...]
   hush status [--thread ID] [--json]
   hush service install [--backend BUNDLE]
   hush service status|pause|resume|restart|uninstall
   hush stop [--socket PATH] [--json | -q]
+  hush restart [--backend BUNDLE] [--open [--thread ID]]
   hush auth login|status|logout [PROVIDER] [--backend BUNDLE]
   hush trust status|grant|revoke [--cwd PATH | --scope home] [--json]
   hush store inspect|activate|rollback [--backend BUNDLE]
@@ -46,11 +48,11 @@ const usage = `Usage:
   hush --mode rpc [--no-session] [--model MODEL]
   hush --list-models [PATTERN]
 
-With terminal stdin and stdout, and no prompt or headless mode, hush opens
-the TUI. Use --print (or -p) to force one-shot text. Persistent commands
-reuse or start the default local backend (use --backend or
-HUSH_BACKEND to select a bundle). --socket and HUSH_SOCKET are attach-only;
---mode protocol just relays bytes. --no-session starts a private backend.
+With terminal stdin and stdout, plain hush opens the TUI. Use --print (or -p)
+or -- before a prompt, or pipe it to hush on stdin. Persistent commands
+reuse or start the default local backend (use --backend or HUSH_BACKEND to
+select a bundle). --socket and HUSH_SOCKET are attach-only; --mode protocol
+just relays bytes. --no-session starts a private backend.
 Use --profile pi (or HUSH_PROFILE=pi) to select the legacy Pi profile.
 Pi modes and options select it explicitly and require a backend with piEvents.
 Auth commands default to openai-codex; use /login to see the local OAuth providers.
@@ -75,6 +77,7 @@ const (
 	unarchiveThread
 	localAuth
 	stopBackend
+	restartBackend
 	localTrust
 	localStore
 	scheduleCommand
@@ -97,7 +100,8 @@ type options struct {
 	socket, bundle, key     string
 	thread, submission      sdk.ID
 	forcePrint, help, json  bool
-	quiet                   bool
+	implicitPrompt          bool
+	quiet, restartOpen      bool
 	noWait, ephemeral       bool
 	pi                      sdk.PiOptions
 	profile, textMode       bool
@@ -153,6 +157,7 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.key, "request-id", "", "")
 	f.BoolVar(&o.json, "json", false, "")
 	f.BoolVarP(&o.quiet, "quiet", "q", false, "")
+	f.BoolVar(&o.restartOpen, "open", false, "")
 	f.BoolVar(&o.noWait, "no-wait", false, "")
 	f.BoolVar(&o.ephemeral, "no-session", false, "")
 	f.StringVar(&o.pi.Model, "model", "", "")
@@ -323,6 +328,8 @@ func parse(args []string) (options, error) {
 			o.command, rest = backendStatus, rest[1:]
 		case "stop":
 			o.command, rest = stopBackend, rest[1:]
+		case "restart":
+			o.command, rest = restartBackend, rest[1:]
 		case "wait":
 			o.command, rest = waitIdle, rest[1:]
 		case "thread":
@@ -344,10 +351,15 @@ func parse(args []string) (options, error) {
 				return o, errors.New("use submission get or submission wait")
 			}
 			rest = rest[2:]
+		default:
+			o.implicitPrompt = !o.noWait && !o.ephemeral
 		}
 	}
 	if o.command != printAnswer && o.noWait {
 		return o, errors.New("--no-wait only applies to submitting a prompt")
+	}
+	if o.command != restartBackend && f.Changed("open") {
+		return o, errors.New("--open is for restart")
 	}
 	for _, group := range []struct {
 		command command
@@ -467,6 +479,22 @@ func parse(args []string) (options, error) {
 		}
 		if o.quiet && o.json {
 			return o, errors.New("stop --quiet cannot be combined with --json")
+		}
+	case restartBackend:
+		if o.socket != "" {
+			return o, errors.New("restart requires a managed local backend; --socket is attach-only")
+		}
+		if o.thread != "" && !o.restartOpen {
+			return o, errors.New("restart only accepts --thread with --open")
+		}
+		var invalid string
+		f.Visit(func(v *pflag.Flag) {
+			if invalid == "" && !slices.Contains([]string{"backend", "profile", "open", "thread"}, v.Name) {
+				invalid = v.Name
+			}
+		})
+		if invalid != "" {
+			return o, fmt.Errorf("--%s is not valid for restart", invalid)
 		}
 	case getSubmission, waitSubmission:
 		if o.thread == "" || (o.key == "") == (o.submission == "") {

@@ -173,10 +173,11 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     compatibleStore = manifest?.format !== 1;
     const { models: modelRegistry, runtime } = models = await loadModels(config);
     const sources = config.piEvents ? new PiSources(runtime) : undefined;
-    const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral, sources?.tapTool, standalone);
     const trust = standalone && !config.ephemeral ? new WorkspaceTrust(config.agentDir) : undefined;
     const workspaceSkills = trust && config.dataDir && ["darwin", "linux"].includes(process.platform)
       ? new StandaloneSkills(() => h!, config.agentDir, trust) : undefined;
+    const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral,
+      sources?.tapTool, standalone, workspaceSkills);
     const authorizeWork = trust && ((cwd: string | undefined, ctx: Context) =>
       trust.require(dirs.directory(cwd), ctx.abortSignal));
     const prompt = dirs.extension(() => h, !!trust);

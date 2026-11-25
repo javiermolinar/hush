@@ -58,9 +58,10 @@ func TestGoldenLoadedContextFromPalette(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff, WorkspaceLocal: tc.local})
 			m.Update(tea.WindowSizeMsg{Width: tc.width, Height: tc.height})
-			caps := map[string]uint64{"loadedContext": 1}
+			caps := map[string]uint64{"loadedContext": sdk.LoadedContextVersion}
 			if tc.skills {
 				caps["workspaceSkills"] = 1
+				caps["loadedContext"] = sdk.LoadedContextAgentsVersion
 			}
 			m.backend = workspaceMetadataFixture{caps: caps,
 				context: func(_ context.Context, id sdk.ID) ([]sdk.InstructionSource, error) {

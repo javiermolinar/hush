@@ -113,6 +113,15 @@ async function eventually(read, message, ms = 5000) {
   assert.fail(message);
 }
 
+test("unknown Hush commands exit before using the backend or reading stdin", { timeout: 5000 }, async t => {
+  const cfg = await layout(t);
+  delete cfg.env.HUSH_PROFILE;
+  cfg.env.HUSH_BACKEND = join(cfg.dir, "missing.mjs");
+  failed(await cli(t, cfg, ["test"], null).exit, /^hush: unknown command "test".*--help.*--print/);
+  failed(await cli(t, cfg, ["--thread", "7", "stauts", "extra"], null).exit, /^hush: unknown command "stauts"/);
+  await assert.rejects(lstat(join(cfg.dir, ".hush")), { code: "ENOENT" });
+});
+
 test("redirected default print handles text, length, failed model, and an aborted run", { timeout: 20_000 }, async t => {
   const { cfg, wire } = await faux(t);
   success(await cli(t, cfg, ["hello", "from args"]).exit, "Faux: hello from args\n");
@@ -305,7 +314,7 @@ test("standalone workspace trust uses one exact-directory grant across operation
   assert.equal(await readFile(join(created.checkout.cwd, "file"), "utf8"), "committed\n");
   await writeFile(join(created.checkout.cwd, "file"), "keep isolated edits\n");
   assert.equal((await trust("status", created.checkout.cwd)).trusted, false);
-  const prompt = (id, text) => cli(t, cfg, ["--socket", h.socket, "--thread", id, text]).exit;
+  const prompt = (id, text) => cli(t, cfg, ["--socket", h.socket, "--thread", id, "--mode", "text", text]).exit;
   const source = value(await cli(t, cfg, ["--socket", h.socket, "thread", "new", "--cwd", cwd, "--json"]).exit);
   success(await prompt(source.id, "one grant"), "Faux: one grant\n");
   failed(await prompt(created.id, "does not inherit the source grant"), /not trusted for tool execution/);
@@ -389,7 +398,7 @@ test("checkpoint CLI previews exact scope and known effects before a separate co
   t.after(async () => { if (host.child.exitCode === null) host.child.kill("SIGTERM"); await host.exit; });
   const cliRun = args => cli(t, cfg, ["--socket", socket, ...args], null).exit;
   const threadId = value(await cliRun(["thread", "new", "--json"])).id;
-  success(await cliRun(["--thread", threadId, "checkpoint anchor"]), "Faux: checkpoint anchor\n");
+  success(await cliRun(["--thread", threadId, "--", "checkpoint anchor"]), "Faux: checkpoint anchor\n");
   const common = ["--thread", threadId, "--json"];
   const marker = value(await cliRun(["checkpoint", "bookmark", ...common, "--title", "Before release"]));
   assert.equal(marker.kind, "bookmark");
@@ -894,6 +903,7 @@ test("persistent autostart never replaces an incompatible socket or executes a b
   await once(incompatible, "listening");
   try {
     failed(await cli(t, cfg, ["--backend", entry, "status", "--json"]).exit, /unsupported_version/);
+    failed(await cli(t, cfg, ["--backend", entry, "restart"]).exit, /unsupported_version/);
     assert.equal(await accepting(socket), true);
     await assert.rejects(lstat(launched), { code: "ENOENT" });
     await assert.rejects(lstat(join(dataDir, "history.sqlite")), { code: "ENOENT" });
@@ -944,6 +954,47 @@ test("hush stop is attach-only and the next command starts the replacement backe
   value(await cli(t, cfg, ["status", "--json"]).exit);
   success(await cli(t, cfg, ["stop", "-q"]).exit, "");
   success(await cli(t, cfg, ["stop", "--quiet"]).exit, "");
+});
+
+test("hush restart starts cold, waits through a busy writer lock, and keeps threads", { timeout: 20_000 }, async t => {
+  const cfg = await layout(t);
+  delete cfg.env.HUSH_PROFILE;
+  const socket = join(cfg.dir, ".hush", "runtime", "hush.sock");
+  const entry = join(cfg.dir, "restart-fixture.mjs"), override = join(cfg.dir, "replacement.mjs");
+  const tried = join(cfg.dir, "replacement-attempted"), source = await readFile(bundle);
+  const flags = "process.argv.push('--faux', '--idle-ms', '5000');\n";
+  await writeFile(entry, Buffer.concat([Buffer.from(flags), source]));
+  // Model a closing writer that has dropped its listener but still holds the lock.
+  await writeFile(override, Buffer.concat([Buffer.from(`
+import {existsSync as triedRestart, writeFileSync as markRestart} from 'node:fs';
+if (!triedRestart(${JSON.stringify(tried)})) {
+  markRestart(${JSON.stringify(tried)}, '');
+  markRestart(3, '{"error":"data_locked"}\\n');
+  process.exit(78);
+}
+${flags}`), source]));
+  cfg.env.HUSH_BACKEND = entry;
+  // An attach-only status must see the ready backend without cold-starting it.
+  const status = async () => value(await cli(t, cfg, ["--socket", socket, "status", "--json"]).exit);
+  try {
+    success(await cli(t, cfg, ["restart"], null).exit, "backend started\n");
+    const first = await status();
+    const { id } = value(await cli(t, cfg, ["thread", "new", "--json"]).exit);
+    failed(await cli(t, cfg, ["restart", "--open"]).exit, /requires terminal stdin and stdout/);
+    failed(await cli(t, cfg, ["restart", "--socket", socket]).exit, /attach-only/);
+    const external = { ...cfg, env: { ...cfg.env, HUSH_SOCKET: socket } };
+    failed(await cli(t, external, ["restart"]).exit, /HUSH_SOCKET.*attach-only/);
+    failed(await cli(t, cfg, ["restart", "--backend", join(cfg.dir, "missing.mjs")]).exit, /read backend bundle/);
+    assert.equal((await status()).epoch, first.epoch, "rejected restarts must leave the listener alone");
+
+    success(await cli(t, cfg, ["restart", "--backend", override]).exit, "backend restarted\n");
+    await lstat(tried); // The --backend override was used despite HUSH_BACKEND.
+    assert.notEqual((await status()).epoch, first.epoch);
+    const { threads } = value(await cli(t, cfg, ["thread", "list", "--json"]).exit);
+    assert.ok(threads.some(row => row.id === id));
+  } finally {
+    await cli(t, cfg, ["stop", "-q"]).exit;
+  }
 });
 
 test("managed work cannot fall back to a running host without tool trust", { timeout: 10_000 }, async t => {
@@ -1041,17 +1092,17 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
   cfg.env.TERM_PROGRAM = "rex";
   cfg.env.SHELL = "/pretend/login/fish";
   const workspace = cfg.cwd;
-  const home = join(cfg.dir, ".hush");
+  const home = join(cfg.dir, ".hush"), shared = join(cfg.dir, ".agents");
   const middle = join(workspace, "src");
   const leaf = join(middle, "nested");
-  const projectHush = join(leaf, ".hush");
-  await Promise.all([home, projectHush, join(workspace, ".git"), leaf].map(path =>
+  const projectHush = join(leaf, ".hush"), projectAgents = join(leaf, ".agents");
+  await Promise.all([home, shared, projectHush, projectAgents, join(workspace, ".git")].map(path =>
     mkdir(path, { mode: 0o700, recursive: true })));
   cfg.cwd = await realpath(leaf);
-  const agents = join(cfg.cwd, "AGENTS.md");
+  const agents = join(projectAgents, "AGENTS.md");
   const outside = join(cfg.dir, "AGENTS.md");
   const ignored = ["pi-system-sentinel", "pi-append-sentinel", "project-system-sentinel", "project-append-sentinel",
-    "host-replacement-sentinel", "above-repository-sentinel", "symlink-agents-sentinel", "pi-agents-sentinel"];
+    "host-replacement-sentinel", "above-repository-sentinel", "symlink-agents-sentinel", "pi-agents-sentinel", "project-hush-agents-sentinel"];
   await Promise.all([
     ...["models.json", "auth.json"].map(file => writeFile(join(home, file), JSON.stringify(config[file]), { mode: 0o600 })),
     writeFile(join(cfg.agent, "SYSTEM.md"), ignored[0]),
@@ -1062,8 +1113,12 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
     writeFile(outside, ignored[5]),
     writeFile(join(cfg.dir, "unscoped.md"), ignored[6]),
     writeFile(join(cfg.agent, "AGENTS.md"), ignored[7]),
+    writeFile(join(projectHush, "AGENTS.md"), ignored[8]),
     symlink(join(cfg.dir, "unscoped.md"), join(middle, "AGENTS.md")),
+    writeFile(join(home, "AGENTS.md"), "hush-agents-sentinel\n"),
+    writeFile(join(shared, "AGENTS.md"), "shared-agents-sentinel\n"),
     writeFile(join(workspace, "AGENTS.md"), "repo-agents-sentinel\n"),
+    writeFile(join(leaf, "AGENTS.md"), "leaf-root-sentinel\n"),
     writeFile(agents, "leaf-agents-original\n"),
   ]);
   assert.equal(value(await cli(t, cfg, ["--backend", bundle, "trust", "grant", "--scope", "work", "--json"]).exit).trusted, true);
@@ -1090,9 +1145,9 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
     const { messages, tools } = seen[i];
     const prompt = messages.filter(message => message.role === "system" || message.role === "developer")
       .map(message => message.content).join("\n\n");
-    const expected = [bundled, `Working directory: ${JSON.stringify(cfg.cwd)}`,
-      ...(i ? ["## Personal instructions", "personal-append-sentinel"] : []),
-      "## Workspace context", "repo-agents-sentinel", local, "## Environment", "Tool host OS:"];
+    const expected = [bundled, `Working directory: ${JSON.stringify(cfg.cwd)}`, "## Personal instructions",
+      ...(i ? ["personal-append-sentinel"] : []), "hush-agents-sentinel", "shared-agents-sentinel",
+      "## Workspace context", "repo-agents-sentinel", "leaf-root-sentinel", local, "## Environment", "Tool host OS:"];
     assert.doesNotMatch(prompt, /\n- Client |\/pretend\/login\/fish/);
     let after = 0;
     for (const text of expected) {
@@ -1109,7 +1164,7 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
     const edits = edit.parameters.properties.edits;
     assert.match(edits.description, /matched against the original file/);
     assert.match(edits.items.properties.oldText.description, /unique.*not overlap/);
-    for (const text of [...ignored, "oversized-agents-sentinel", ...(i ? ["leaf-agents-original"] : ["## Personal instructions", "personal-append-sentinel"])]) {
+    for (const text of [...ignored, "oversized-agents-sentinel", i ? "leaf-agents-original" : "personal-append-sentinel"]) {
       assert.ok(!JSON.stringify(messages).includes(text), `unexpected: ${text}`);
     }
     for (const message of messages.filter(m => m.role !== "system" && m.role !== "developer")) {

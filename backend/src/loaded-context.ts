@@ -1,5 +1,5 @@
 import type { Harness } from "@earendil-works/pi-durable";
-import type { LoadedContextHost } from "../../server/src/loaded-context.js";
+import { loadedContextAgentsVersion, type LoadedContextHost, type LoadedContextVersion } from "../../server/src/loaded-context.js";
 import { WireError } from "../../server/src/wire.js";
 import type { ProjectResources } from "./resources.js";
 import { threadWorkspace } from "./thread-workspace.js";
@@ -10,14 +10,14 @@ export class LoadedContext implements LoadedContextHost {
 
   constructor(private readonly h: Harness, private readonly resources: ProjectResources, private readonly work: WorkspaceTrust) {}
 
-  async get(threadId: string, peer: AbortSignal) {
+  async get(threadId: string, version: LoadedContextVersion, peer: AbortSignal) {
     if (this.#pending >= 8) throw new WireError("limit");
     this.#pending++;
     try {
       const signal = AbortSignal.any([peer, AbortSignal.timeout(3500)]);
       const cwd = await threadWorkspace(this.h, threadId, signal);
       const binding = await this.work.binding(cwd, signal).catch(() => undefined);
-      const sources = await this.resources.instructionSources(binding?.path ?? cwd, !!binding, signal);
+      const sources = await this.resources.instructionSources(binding?.path ?? cwd, !!binding, version === loadedContextAgentsVersion, signal);
       if (await threadWorkspace(this.h, threadId, signal) !== cwd) throw new WireError("not_found");
       if (binding) {
         const current = await this.work.binding(cwd, signal).catch(() => undefined);

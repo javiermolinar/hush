@@ -250,7 +250,10 @@ func (s *session) receive(f map[string]any) error {
 		s.mu.Lock()
 		version := s.hello.Capabilities[loadedContextCapability]
 		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, LoadedContextVersion); err != nil {
+		if version != LoadedContextVersion && version != LoadedContextAgentsVersion {
+			return ErrProtocol
+		}
+		if err := optionalEnvelope(f, version, version); err != nil {
 			return err
 		}
 	} else if ok && (method == workspaceSkillsList || method == workspaceSkillsSubmit) {

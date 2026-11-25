@@ -31,9 +31,10 @@ func builtins(workspaceTrust bool) x.Registration {
 		local("copy", "Copy last answer", "", "y", "copy", x.CopyLastAnswer),
 		local("code", "Copy last code block", "", "c", "", x.CopyLastCode),
 		local("queue", "Recall queued messages", "alt+up", "q", "", x.RecallQueued),
-		{ID: coreID + ".close", Title: "Close tab", Binding: x.Binding{Direct: "ctrl+w", Leader: "w"}, Run: func(_ x.Context, v x.Invocation) x.Outcome {
-			return x.Outcome{x.Local{Op: x.CloseTab, ThreadID: sdk.ID(v.Target)}}
-		}},
+		{ID: coreID + ".close", Title: "Close tab", Binding: x.Binding{Direct: "ctrl+w", Leader: "w"},
+			Slash: &x.Slash{Name: "close"}, Run: func(_ x.Context, v x.Invocation) x.Outcome {
+				return x.Outcome{x.Local{Op: x.CloseTab, ThreadID: sdk.ID(v.Target)}}
+			}},
 		local("quit", "Quit", "", "d", "quit", x.Quit),
 	}}
 	if workspaceTrust {

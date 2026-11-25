@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -60,6 +61,56 @@ func TestWorkspaceMetadataNegotiationAndValidation(t *testing.T) {
 	}
 	if _, err := c.LoadedContext(ctx, "7"); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("malformed context accepted: %v", err)
+	}
+}
+
+func TestLoadedContextSourceVersions(t *testing.T) {
+	appendFile := InstructionSource{Kind: "personal", Path: "/home/.hush/APPEND_SYSTEM.md"}
+	hush := InstructionSource{Kind: "personal", Path: "/home/.hush/AGENTS.md"}
+	shared := InstructionSource{Kind: "personal", Path: "/home/.agents/AGENTS.md"}
+	workspace := InstructionSource{Kind: "workspace", Path: "/work/AGENTS.md"}
+	hidden := InstructionSource{Kind: "workspace", Path: "/work/.agents/AGENTS.md"}
+	for _, tc := range []struct {
+		name    string
+		version uint64
+		sources []InstructionSource
+		valid   bool
+	}{
+		{"v1 fallback", LoadedContextVersion, []InstructionSource{appendFile, workspace}, true},
+		{"v1 cannot report personal AGENTS", LoadedContextVersion, []InstructionSource{hush, workspace}, false},
+		{"v2 all locations", LoadedContextAgentsVersion, []InstructionSource{appendFile, hush, shared, workspace, hidden}, true},
+		{"v2 no addendum", LoadedContextAgentsVersion, []InstructionSource{hush, shared, workspace}, true},
+		{"v2 personal after workspace", LoadedContextAgentsVersion, []InstructionSource{workspace, shared}, false},
+		{"v2 late addendum", LoadedContextAgentsVersion, []InstructionSource{hush, appendFile, workspace}, false},
+		{"v2 duplicate path", LoadedContextAgentsVersion, []InstructionSource{workspace, hidden, hidden}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, socket := runContext(t)
+			listener(t, socket, func(c net.Conn, r *bufio.Reader) {
+				q, err := readReq(r)
+				if err != nil || q.Method != "hello" {
+					return
+				}
+				reply(c, q, Hello{Version: 1, Epoch: "loaded-context-fixture", Capabilities: map[string]uint64{loadedContextCapability: tc.version}})
+				q, err = readReq(r)
+				if err != nil || q.Method != loadedContextGet || q.Params["threadId"] != "7" {
+					t.Errorf("unexpected loaded context request: %+v (%v)", q, err)
+					return
+				}
+				reply(c, q, map[string]any{"sources": tc.sources})
+				_, _ = r.ReadByte()
+			})
+			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{loadedContextCapability: {LoadedContextAgentsVersion, LoadedContextVersion}}})
+			defer c.Close()
+			got, err := c.LoadedContext(ctx, "7")
+			if tc.valid {
+				if err != nil || !slices.Equal(got, tc.sources) {
+					t.Fatalf("context=%+v; %v", got, err)
+				}
+			} else if !errors.Is(err, ErrProtocol) {
+				t.Fatalf("malformed context accepted: %+v; %v", got, err)
+			}
+		})
 	}
 }
 
