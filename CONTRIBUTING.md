@@ -60,6 +60,26 @@ that count, the machine, filesystem and Node version when comparing results.
 Run without other tests competing for CPU or disk. The Go cases measure
 `Update` + `View` separately and enforce the 2.08 ms p99 budget.
 
+## Measure the fast path
+
+The performance contract has a case for each clause. They run in `mise run test`, which
+enforces their targets on a quiet native host by default; hosted CI sets
+`HUSH_PERF_MODE=report` and only reports them. A case that misses its target today logs
+`performance target missed (known, until <step>)` instead of failing, naming the plan step that
+fixes it. After the development build:
+
+```sh
+go test -count=1 -v ./sdk -run TestReplicaApplyBudget                # replica patch cost
+go test ./sdk -run '^$' -bench ReplicaApply                          # ns/op, B/op, allocs/op
+go test -count=1 -v ./tui -run '^TestFrameBudget/(replica-streaming|typing-(1|4|16)k|image-typing|linked-streaming)$'
+HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs" go test -count=1 -v ./tui -run TestThreadSwitchLatency
+npm run server:bench:feed                                            # server Feed flush
+HUSH_BENCH_SAMPLES=30 node app/test/cold-start.test.mjs              # spawn to compatible hello
+```
+
+Thread switching and cold start have no target yet and only report. Record the machine, OS, and
+Go and Node versions with any numbers you compare.
+
 ## Setting up the GitHub repository
 
 1. **Review what will be pushed.** Keep runtime data, session logs and provider credentials out of
