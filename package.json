@@ -17,6 +17,7 @@
     "protocol:check": "node --test protocol/v1/*.test.mjs",
     "server:check": "npm run build && node --test server/test/*.test.mjs",
     "server:bench": "npm run build && node --expose-gc server/test/memory.mjs",
+    "server:bench:feed": "npm run build && HUSH_BENCH_SAMPLES=5000 node server/test/feed-flush.test.mjs",
     "backend:bundle": "node backend/bundle.mjs",
     "backend:check": "npm run build && npm run backend:bundle && node --test backend/test/*.test.mjs",
     "headless:check": "npm run build && npm run backend:bundle && node --test app/test/*.test.mjs"

@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -25,11 +28,97 @@ func longTranscript(t testing.TB, m *Model, s *threadState) {
 	s.merge(rows)
 }
 
+// The performance contract: every keystroke (drafts up to 16 KB) and every
+// streaming patch (answers up to 64 KB, with links and 16 KB tool outputs)
+// costs at most 1 ms p99 in Update + View, inside the 2.08 ms frame budget.
+const frameBudget, contractBudget = 2080 * time.Microsecond, time.Millisecond
+
+// frameTargets overrides the frame budget. A case that misses its target
+// today names the plan step that fixes it, and reports until that step lands.
+var frameTargets = map[string]struct {
+	limit     time.Duration
+	knownMiss string
+}{
+	"typing-1k":         {contractBudget, "prompt-editor"},
+	"typing-4k":         {contractBudget, "prompt-editor"},
+	"typing-16k":        {contractBudget, "prompt-editor"},
+	"replica-streaming": {contractBudget, ""},
+	"image-typing":      {contractBudget, ""},
+}
+
+var typingDrafts = map[string]int{"typing-1k": 1 << 10, "typing-4k": 4 << 10, "typing-16k": 16 << 10}
+
+// multilineDraft is prose with wrapped paragraphs, list lines and blank lines.
+func multilineDraft(size int) string {
+	const unit = "Check the cached value before the request, then update the handler so the retry keeps its " +
+		"original deadline and reports the failure. Keep the existing tests.\n- list the changed files\n- rerun the suite\n\n"
+	return strings.Repeat(unit, size/len(unit)+1)[:size]
+}
+
+// replicaWindow is a subscribe result for thread 1 after entries 1 and 2: its
+// window cycles through a user prompt (200 B), an assistant answer (800 B)
+// with a tool call and a tool result of toolBytes, while a run streams.
+func replicaWindow(entries, toolBytes int) json.RawMessage {
+	text := func(s string) map[string]any { return map[string]any{"type": "text", "text": s} }
+	prompt := strings.Repeat("Please review the cached handler. ", 7)[:200]
+	answer := strings.Repeat("The handler reads the cached value before the request. ", 15)[:800]
+	result := strings.Repeat("ok  github.com/javiermolinar/hush/sdk  0.7s\n", toolBytes/44+1)[:toolBytes]
+	window := make([]any, entries)
+	for i := range window {
+		id := i + 3
+		var message map[string]any
+		switch i % 3 {
+		case 0:
+			message = map[string]any{"role": "user", "timestampMs": 1795435568245, "blocks": []any{text(prompt)}}
+		case 1:
+			message = map[string]any{"role": "assistant", "timestampMs": 1795435568245, "stopReason": "toolUse", "blocks": []any{text(answer),
+				map[string]any{"type": "toolCall", "id": fmt.Sprint("call-", id), "name": "bash", "arguments": map[string]any{"command": "go test ./..."}}}}
+		default:
+			message = map[string]any{"role": "toolResult", "timestampMs": 1795435568245, "callId": fmt.Sprint("call-", id-1), "name": "bash",
+				"isError": false, "blocks": []any{text(result)}}
+		}
+		window[i] = map[string]any{"id": fmt.Sprint(id), "threadId": "1", "kind": "model", "messages": []any{message}}
+	}
+	state := map[string]any{
+		"thread": map[string]any{"id": "1"}, "agent": map[string]any{},
+		"usage":  map[string]any{"inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0, "totalTokens": 0, "costUsd": 0},
+		"window": map[string]any{"beforeEntryId": "2", "lastEntryId": fmt.Sprint(entries + 2), "entries": window},
+		"tools":  []any{}, "queue": []any{}, "compactions": []any{},
+		"run":       map[string]any{"taskId": "900", "submissionIds": []any{"901"}},
+		"streaming": map[string]any{"attempt": 1, "blocks": []any{text("")}},
+	}
+	raw, err := json.Marshal(map[string]any{"subscriptionId": "bench-sub", "epoch": "bench-epoch", "rev": 0, "state": state})
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+// replicaToken applies one streamed token, as Durable commits a partial
+// answer, and returns the snapshot the SDK's watch would deliver.
+func replicaToken(t testing.TB, r *sdk.Replica) sdk.Snapshot {
+	t.Helper()
+	s, _ := r.Current()
+	patch := fmt.Sprintf(`{"type":"patch","epoch":"bench-epoch","subscriptionId":"bench-sub","baseRev":%d,"nextRev":%d,`+
+		`"ops":[["a",["streaming","blocks",0,"text"]," token"]]}`, s.Rev, s.Rev+1)
+	if changed, err := r.Apply(json.RawMessage(patch)); !changed || err != nil {
+		t.Fatalf("patch not applied: %v", err)
+	}
+	s, _ = r.Current()
+	return s
+}
+
+func feedUpdate(m *Model, s sdk.Snapshot) feedMsg {
+	return feedMsg{token: m.feed.token, owner: m.active, update: sdk.StateUpdate{Snapshot: s}, ok: true}
+}
+
 func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning"} {
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning",
+		// Contract cases; they run after the others so their garbage can't skew them.
+		"replica-streaming", "typing-1k", "typing-4k", "typing-16k", "image-typing"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -91,7 +180,21 @@ func TestFrameBudget(t *testing.T) {
 					s.queue[i] = sdk.QueueItem{Mode: "steer", Text: text}
 				}
 			}
-			if which == "image-preview" {
+			if size, ok := typingDrafts[which]; ok {
+				m.Update(tea.PasteMsg{Content: multilineDraft(size)})
+				if len(m.editor.value()) != size {
+					t.Fatalf("draft has %d bytes, want %d", len(m.editor.value()), size)
+				}
+			}
+			var replica sdk.Replica
+			if which == "replica-streaming" {
+				if err := replica.Install(replicaWindow(100, 16<<10), "bench-epoch", m.active); err != nil {
+					t.Fatal(err)
+				}
+				snapshot, _ := replica.Current()
+				m.Update(feedUpdate(m, snapshot))
+			}
+			if which == "image-preview" || which == "image-typing" {
 				longTranscript(t, m, s)
 				m.images.mode, m.images.capable, s.expanded = ImageBlocks, true, true
 				s.merge([]sdk.Entry{imageEntry(2003)})
@@ -216,11 +319,17 @@ func TestFrameBudget(t *testing.T) {
 			}
 			var ds []time.Duration
 			var stream strings.Builder
+			var passes int
 			stream.WriteString("## Streaming\n\n```go\n")
+			if _, ok := frameTargets[which]; ok {
+				runtime.GC() // start contract cases without an earlier case's garbage
+			}
 			m.View()
 			for i := range 220 {
 				var msg tea.Msg
 				switch which {
+				case "replica-streaming":
+					msg = feedUpdate(m, replicaToken(t, &replica)) // applied off the clock, like the SDK's reader
 				case "streaming":
 					stream.WriteString("func next() { println(42) }\n")
 					s.stream = detachStream(&sdk.Streaming{Blocks: []sdk.Block{{Type: "text", Text: stream.String()}}})
@@ -229,7 +338,7 @@ func TestFrameBudget(t *testing.T) {
 					stream.WriteString("Check the next implementation detail.\n")
 					s.stream = detachStream(&sdk.Streaming{Blocks: []sdk.Block{{Type: "thinking", Text: stream.String()}}})
 					s.streamRevision++
-				case "typing":
+				case "typing", "typing-1k", "typing-4k", "typing-16k", "image-typing":
 					msg = tea.KeyPressMsg{Code: 'a', Text: "a"}
 				case "motion":
 					msg = tea.MouseMotionMsg(tea.Mouse{X: 2 + i%10, Y: m.frame.transcriptHeight - 4})
@@ -294,17 +403,90 @@ func TestFrameBudget(t *testing.T) {
 					m.Update(msg)
 				}
 				m.View()
+				if which == "image-typing" {
+					// Bubble Tea delivers the scan the key scheduled in a second pass.
+					for n := 0; m.images.scanning && n < 4; n++ {
+						m.Update(imageScan{})
+						m.View()
+						if i >= 20 {
+							passes++
+						}
+					}
+				}
 				if i >= 20 {
 					ds = append(ds, time.Since(start))
+					passes++
 				}
 			}
 			slices.Sort(ds)
 			p99 := ds[len(ds)*99/100-1]
 			t.Logf("p50 %s, p95 %s, p99 %s", ds[len(ds)/2-1], ds[len(ds)*95/100-1], p99)
-			if p99 > 2080*time.Microsecond {
-				reportFrameOverrun(t, p99, 2080*time.Microsecond)
+			if which == "image-typing" {
+				t.Logf("%.2f Update + View passes per key", float64(passes)/float64(len(ds)))
 			}
+			target := frameTargets[which]
+			checkFrameTarget(t, p99, cmp.Or(target.limit, frameBudget), target.knownMiss)
 		})
+	}
+	t.Run("linked-streaming", testLinkedStreamingBudget)
+}
+
+// linkedAnswer is prose with inline links, task boxes, bracketed inline code
+// and lists, like most real answers.
+func linkedAnswer(size int) string {
+	var b strings.Builder
+	for i := 0; b.Len() < size; i++ {
+		fmt.Fprintf(&b, "### Step %d\n\nRead `items[%d]` before the request; [the guide](https://example.org/guide/%d) covers the retry rules.\n\n"+
+			"- [ ] Check `cache[key]` after the change\n- [x] Keep [the notes](https://example.org/notes/%d) current\n"+
+			"- Run the suite with `go test ./...` and compare the output.\n\n", i, i, i, i)
+	}
+	return b.String()[:size]
+}
+
+// testLinkedStreamingBudget grows one linked answer to 64 KB by about 40
+// bytes per patch and times View per patch near 4, 16 and 64 KB. The target
+// is stream-markdown's: at most 0.5 ms p99 per patch at every size.
+func testLinkedStreamingBudget(t *testing.T) {
+	const step, limit = 40, 500 * time.Microsecond
+	m, s := demo(t, Options{ReducedMotion: true})
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 42})
+	answer := linkedAnswer(64 << 10)
+	sizes := []int{4 << 10, 16 << 10, 64 << 10}
+	samples := make([][]time.Duration, len(sizes))
+	runtime.GC()
+	m.View()
+	for n := step; n <= len(answer); n += step {
+		s.stream = detachStream(&sdk.Streaming{Blocks: []sdk.Block{{Type: "text", Text: answer[:n]}}})
+		s.streamRevision++
+		start := time.Now()
+		m.View()
+		d := time.Since(start)
+		for i, size := range sizes {
+			if n > size/2 && n <= size {
+				samples[i] = append(samples[i], d)
+			}
+		}
+	}
+	for i, ds := range samples {
+		slices.Sort(ds)
+		p99 := ds[len(ds)*99/100-1]
+		t.Logf("View per patch at %d KB (%d patches): p50 %s, p99 %s", sizes[i]>>10, len(ds), ds[len(ds)/2-1], p99)
+		checkFrameTarget(t, p99, limit, "stream-markdown")
+	}
+}
+
+// checkFrameTarget reports a known miss without failing. Other misses fail
+// unless HUSH_PERF_MODE=report.
+func checkFrameTarget(t *testing.T, p99, limit time.Duration, knownMiss string) {
+	t.Helper()
+	switch {
+	case p99 <= limit && knownMiss != "":
+		t.Logf("known miss now meets its target (p99 %s, limit %s); enforce it when %s lands", p99, limit, knownMiss)
+	case p99 <= limit:
+	case knownMiss != "":
+		t.Logf("performance target missed (known, until %s): p99 %s, limit %s", knownMiss, p99, limit)
+	default:
+		reportFrameOverrun(t, p99, limit)
 	}
 }
 

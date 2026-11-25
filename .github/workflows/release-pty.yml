@@ -35,7 +35,24 @@ jobs:
                    .head_repository.full_name == .repository.full_name and .event == "workflow_dispatch" and
                    .status == "completed" and .conclusion == "success") | .head_sha')
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-          printf 'run_id=%s\nsha=%s\n' "$RUN_ID" "$sha" >> "$GITHUB_OUTPUT"
+          # Download one artifact by its exact name: a pattern that matches a single
+          # artifact extracts it without the per-artifact directory that several
+          # matches get. A rerun can reuse a passing job's artifact from an earlier
+          # attempt, so take the newest unexpired attempt.
+          prefix="hush-linux-amd64-$sha-"
+          names=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired | not) | .name')
+          artifact=
+          latest=0
+          while IFS= read -r name; do
+            attempt=${name#"$prefix"}
+            if [[ "$name" == "$prefix"* && "$attempt" =~ ^[1-9][0-9]{0,6}$ ]] && (( attempt > latest )); then
+              artifact=$name
+              latest=$attempt
+            fi
+          done <<< "$names"
+          [[ -n "$artifact" ]]
+          printf 'run_id=%s\nsha=%s\nartifact=%s\n' "$RUN_ID" "$sha" "$artifact" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.candidate.outputs.sha }}
@@ -48,26 +65,14 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: ${{ steps.candidate.outputs.run_id }}
-          pattern: hush-linux-amd64-${{ steps.candidate.outputs.sha }}-*
-          path: ${{ runner.temp }}/hush-release-artifacts
+          name: ${{ steps.candidate.outputs.artifact }}
+          path: ${{ runner.temp }}/hush-release-artifact
       - name: Run the TUI walkthrough on the verified archive
         env:
           SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
           HUSH_PERF_MODE: report
         run: |
-          prefix="hush-linux-amd64-$SOURCE_SHA-"
-          archive_dir=
-          latest=0
-          # A rerun can reuse a passing job's artifact from an earlier attempt.
-          for path in "$RUNNER_TEMP"/hush-release-artifacts/"$prefix"*; do
-            [[ -d "$path" ]] || continue
-            attempt=${path##*"$prefix"}
-            if [[ "$attempt" =~ ^[1-9][0-9]{0,6}$ ]] && (( attempt > latest )); then
-              archive_dir=$path
-              latest=$attempt
-            fi
-          done
-          test -n "$archive_dir"
+          archive_dir="$RUNNER_TEMP/hush-release-artifact"
           evidence="$archive_dir/evidence/candidate.txt"
           grep -Fx "commit: $SOURCE_SHA" "$evidence"
           grep -Fx 'target: linux-amd64' "$evidence"

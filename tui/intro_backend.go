@@ -92,12 +92,10 @@ func (m *Model) receiveBackendReport(v backendReportMsg) tea.Cmd {
 	}
 	var probe tea.Cmd
 	if v.update.Err == nil {
+		probe = m.retryMenuProbe() // the initial short probe may have missed a cold start
 		t.footer = metadataFromReport(v.update.Report)
 		m.applyPresentation(t, v.update.Report.Thread)
 		if len(v.update.Report.Skills) != 0 || v.update.Report.MoreSkills > 0 {
-			if !m.menuFeaturesFromBackend.Has(x.Skills) {
-				probe = m.menuProbe() // the initial short probe may have timed out during a cold start
-			}
 			m.menuFeaturesFromBackend |= x.Skills
 		}
 	}

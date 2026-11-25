@@ -10,7 +10,7 @@ The TUI uses Bubble Tea v2, Lip Gloss v2, and x/ansi. See [TUI design](tui-desig
 
 ## Frame cost
 
-`View` runs after every message, even with draws capped at 120 fps. `TestFrameBudget` enforces p99 `Update` + `View` under 2.08 ms per message. Profile before changing the budget (`go test ./tui -run '^$' -bench Frame -cpuprofile /tmp/cpu.prof`). Add new hot paths and lists to `perf_test.go`.
+`View` runs after every message, even with draws capped at 120 fps. `TestFrameBudget` enforces p99 `Update` + `View` under 2.08 ms per message. Its contract cases hold keystrokes and streaming patches to 1 ms: typing into 1, 4 and 16 KB drafts, streaming through a real `sdk.Replica` (`replica-streaming`) and typing in an image thread. `linked-streaming` holds `View` to 0.5 ms per patch as a linked answer grows to 64 KB. A case that misses today names its fixing step in `frameTargets`, and reports rather than fails until that step lands. Profile before changing the budget (`go test ./tui -run '^$' -bench Frame -cpuprofile /tmp/cpu.prof`). Add new hot paths and lists to `perf_test.go`.
 
 - Render the transcript lazily from newest block back, stopping at the viewport (`cache.go`). Never compute total heights or re-wrap the whole list per frame.
 - Cache blocks by all render inputs, including width, palette revision, expansion, image mode, and speaker breaks. Invalidate a burst's summary when a result arrives. Only live blocks render each frame.
