@@ -74,11 +74,15 @@ go test ./sdk -run '^$' -bench ReplicaApply                          # ns/op, B/
 go test -count=1 -v ./tui -run '^TestFrameBudget/(replica-streaming|typing-(1|4|16)k|image-typing|linked-streaming)$'
 HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs" go test -count=1 -v ./tui -run TestThreadSwitchLatency
 npm run server:bench:feed                                            # server Feed flush
-HUSH_BENCH_SAMPLES=30 node app/test/cold-start.test.mjs              # spawn to compatible hello
+HUSH_BENCH_SAMPLES=30 node app/test/cold-start.test.mjs              # Go launcher using the development bundle
 ```
 
-Thread switching and cold start have no target yet and only report. Record the machine, OS, and
-Go and Node versions with any numbers you compare.
+Thread switching only reports. The cold-start test times `hush restart` on a stopped backend
+with an existing store and warm Node compile cache, through command exit after the compatible
+`hello`: p50 ≤ 315 ms, p95 ≤ 333 ms. It reports the first start separately.
+`mise run release` also runs this test with the installed binary on Node 22.19.0, including
+hashing and writing the embedded backend and WASM pack. Record the binary type, machine, OS,
+and Go and Node versions with any numbers you compare.
 
 For a 60-second idle TUI request count and an external worktree edit latency
 measurement, run after the development build:
@@ -149,8 +153,8 @@ go test -count=1 -v ./sdk -run '^TestMetadataPoolRoundTrips$'
 Run [Release candidate](.github/workflows/release-candidate.yml) manually from green `main`. It runs
 `mise run release` natively for Linux and macOS on amd64 and arm64. Each successful job attaches
 its tested install tarball, checksum, source and build identity, and evidence from Node.js 22.19.0.
-The offline slices separate the default no-Pi install, native recovery, the bundled opt-in Pi profile,
-and optional commands. The blocking installed test covers CLI OAuth, confirms model and thinking
+The archive verification covers the no-Pi install, native recovery, and optional standalone
+commands. The blocking installed test covers CLI OAuth, confirms model and thinking
 selection over the native protocol after restart, and records warm attach from process start
 through `status` exit (20 samples). The evidence includes light and dark production-model frames
 (`evidence/frames/*.ansi`); view each in its matching Catppuccin Latte or Mocha palette. These

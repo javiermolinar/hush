@@ -1,6 +1,6 @@
 # Client environment (`clientEnvironment:1`)
 
-The standalone Hush host may select `clientEnvironment:1` in `hello`. This extension is not offered by the opt-in Pi profile. It does not change the core `submit`, `continue`, state, history or image frames.
+The standalone Hush host may select `clientEnvironment:1` in `hello`. It does not change the core `submit`, `continue`, state, history or image frames.
 
 With the capability selected, send `ext.clientEnvironment.submit` with exactly `{input, environment}`. `input` is the unchanged core `submit` parameters, or the unchanged `ext.images.submit` parameters if `images:1` is also selected. A successful reply returns the same `{submissionId}` as `submit`. The submission key, busy policy, and validation/admission rules are unchanged. The first admitted input owns its environment as well as its user content. SDK fallback uses the original method before the first write if the extension is not selected. A retry after a lost reply does not change the method or payload, even if a subsequent hello lacks this capability.
 

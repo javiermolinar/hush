@@ -2,7 +2,8 @@
 
 The installable `hush` binary [embeds the backend](../README.md#build-and-verify-the-installable-binary).
 For development or a manually managed backend, build with `npm ci --ignore-scripts` and
-`npm run backend:bundle`. Run the resulting single file with Node.js 22.19.0 or later:
+`npm run backend:bundle`. Run the entry with Node.js 22.19.0 or later. Keep the generated
+`hush-backend.mjs.wasm-pack` beside the entry; the installable Hush binary embeds both:
 
 ```sh
 node dist/hush-backend.mjs --data-dir /path/to/private/hush --cwd /path/to/project
@@ -11,11 +12,19 @@ node dist/hush-backend.mjs --data-dir /path/to/private/hush --cwd /path/to/proje
 The resulting Unix socket is `<data-dir>/hush.sock` (mode 0600). The directory must belong to the caller and have mode
 0700; a missing directory is created with that mode. The default Hush profile is `~/.hush/` on
 the backend host; `--data-dir` defaults to `~/.hush/runtime/`. The profile may hold
-`credential-store`, `auth.json` and `models.json`; the files must be private and owned by the user. The default
-does not load Pi resources or project-local `.hush/` settings. It does not require Pi installed.
-Existing databases are not moved, and a Hush store and a Pi store cannot be opened interchangeably.
+`credential-store`, `auth.json` and `models.json`; the files must be private and owned by the user.
+Hush uses Pi AI's built-in model catalog and OAuth flows with its own credential files.
+It does not install Pi, read Pi resources or load project-local `.hush/` settings.
+Hush does not read or migrate Pi stores or session files.
 A manually started process prints one JSON ready record to stdout. The Go CLI can instead start a detached backend for
 its default socket, with an internal startup pipe and no stdout/stderr inheritance. It waits for a compatible `hello`.
+Managed Hush launches use a private Node compile cache under `~/.hush/backend-cache/`, separate
+from the store. With the cache available, the launcher extracts fresh embedded bytes to a
+stable path keyed by the bundle and Node version, then removes the extracted files after startup.
+A successful managed start keeps the current cache generation and the two most recently used prior
+generations. Older recognized entries are removed in bounded batches; unrelated files are left alone.
+Hush falls back to temporary extraction if the cache is unavailable. Set `NODE_DISABLE_COMPILE_CACHE=1`
+to disable caching.
 Normal storage is `history.sqlite`; the separate kernel-owned SQLite lock prevents simultaneous writers. A competing
 launcher waits for the lock holder's socket, and a restart can recover work and remove a verified stale socket under the lock.
 The app stays up while clients, runnable work, or deadlines exist. Once all three are absent for `--idle-ms`
@@ -25,7 +34,7 @@ managed CLI command can start the replacement. `hush restart` does both for the 
 `hello` from the replacement. Use `hush service restart` if the login supervisor owns the backend. `hush.log` records
 fixed lifecycle/error labels, not prompts, provider errors or credential material.
 
-Flags include `--cwd`, `--profile hush|pi`, `--data-dir`, `--model provider/id`,
+Flags include `--cwd`, `--data-dir`, `--model provider/id`,
 `--idle-ms`, and `--faux` (local scripted test model). `--config <file>` reads a JSON
 object with the same option names without leading dashes; explicit flags win.
 The Hush profile uses a pinned model default, the built-in coding tools, and no
@@ -116,8 +125,22 @@ still targets `openai-codex` for all three commands.
 | `radius` | Radius public gateway: browser or device code |
 | `xai` | xAI (Grok): device code |
 
-These are the built-in OAuth flows from Pi 1.6.0. Configure API keys and other
-credentials separately on the backend host. The equivalent bundle commands are
+These are the built-in OAuth flows from Pi AI 1.6.0. Configure API keys and other
+credentials separately on the backend host. Standalone `models.json` supports
+`providers` with a built-in provider ID, or custom chat models using a Pi AI API
+and an HTTP(S) endpoint. A provider-level `api` applies only to entries in `models`;
+it does not change the API of built-in models. `modelOverrides` adjusts individual entries
+without dropping untouched thinking levels, image limits, cache lifetimes, or sampling settings.
+Use literal values or `$VAR` / `${VAR}` for configured API keys and headers.
+
+The private UTF-8 file accepts `//` and `/* ... */` comments. Token limits must be positive integers.
+Hush does not allow executable `!command` values, Pi extension providers, or custom `oauth` entries
+(including `"radius"`); the built-in Radius login is unaffected. If the file is invalid, Hush reports
+the field where possible without logging values. An existing store opens read-only: browse history
+and receipts, but fix the file and restart to resume work. Hush never sends requests to a fallback
+endpoint in that state. On a new profile, startup refuses to create a store until the file is fixed.
+
+The equivalent bundle commands are
 `node dist/hush-backend.mjs auth login|status|logout [PROVIDER]`.
 There is no socket auth method. Login requires a TTY and writes to the selected
 Hush credential store. It shows browser or device instructions only on the login
@@ -144,7 +167,7 @@ hush auth login
 Use `file` in the same selector to switch back, with the same stop/logout steps.
 There is no migration, mixing, or automatic fallback. A running backend
 refuses new credential reads if the selection changes; restart it to adopt
-the new setting. The Pi profile does not use this selector.
+the new setting.
 
 Keyring mode keeps one complete OAuth record per provider and Hush profile on
 the backend host. Existing Codex records remain readable without migration.
@@ -155,10 +178,11 @@ the OS and retry `hush auth status`. A manually started Node backend in
 keyring mode needs `HUSH_KEYRING_HELPER` set to the trusted absolute path of
 the installed `hush` binary. Managed starts and `hush auth` set this themselves.
 
-A private SQLite lock coordinates sign-in, refresh and logout across processes
-in the same profile. It contains no credentials. The keyring avoids plaintext
-Hush token files and their backups; it is not a sandbox for tools running as
-the backend user.
+A private SQLite lock coordinates credential changes across processes in the same profile.
+File-backed writers also take the legacy `auth.json.lock` used by older Hush builds, so an in-flight
+refresh can finish before a newer writer reads or changes the record. Neither lock contains credentials.
+The keyring avoids plaintext Hush token files and their backups; it is not a sandbox for tools
+running as the backend user.
 
 For standalone input admission, the active daemon checks the selected model against current
 credentials, after checking for an existing keyed receipt. Missing auth returns a static
@@ -215,8 +239,7 @@ Codemode is off by default. To enable it, add `"codemode": true` to the JSON obj
 (`chmod 600 ~/.hush/settings.json`). Restart the backend (`hush restart --open` for a local
 backend, or `hush service restart` for a supervised backend). Set the key to `false` or remove it
 and restart to turn it off. The installable binary includes QuickJS; it does not need Pi or
-adjacent Node packages. Project settings and prompts cannot enable Codemode. The Pi compatibility
-profile and `--no-session` runs do not get it.
+adjacent Node packages. Project settings, prompts, and `--no-session` runs cannot enable Codemode.
 
 Direct tools remain available. A `codemode` script can only call `tools.inspect_file({ path })`,
 a read-only tool for regular, single-link UTF-8 files up to 32 KiB. Paths are relative to the thread's
@@ -295,29 +318,6 @@ Personal skills can be listed without workspace trust. Hush requires that trust
 to submit and rechecks the selected source at admission. If a selection changes,
 use the picker again instead of resending its stale token.
 
-## Opt-in Pi profile
-
-Select `--profile pi`, `HUSH_PROFILE=pi`, or the legacy explicit `--agent-dir` or
-`--pi-events` flags. Without `--agent-dir`, the Pi profile uses the effective Pi agent
-directory (`PI_CODING_AGENT_DIR` or `~/.pi/agent`); its runtime data defaults to the
-`hush/` subdirectory. Pi settings determine model, thinking, compaction, retry,
-transport, and queue defaults for that profile only.
-
-The Pi profile uses Pi 1.6's SettingsManager, ModelRuntime/ModelRegistry, resource loader and trust store. Models and
-auth share the configured Pi files, and provider auth is resolved at request time. It reads available, installed Pi
-resources/packages; it does not install or update packages, run Pi extension factories, or present a trust prompt.
-Use Pi to make or revoke trust decisions. Untrusted project `.pi` settings, prompts, skills and MCP servers are
-not loaded; the ancestor AGENTS.md context still follows Pi. Project resources and selected prompt sections are
-cached per directory and invalidated by the environment watcher. Text starting with a prompt template name is expanded
-before admission. The already-admitted key wins even if the template later changes. Pi's shipped documentation paths
-can be selected with `PI_PACKAGE_DIR`; documentation files are not shipped in this JS artifact.
-
-Configured MCP tools use Pi's config and transport/auth implementation backed by pi-mcp. The reference backend
-exposes enabled non-hidden MCP tools directly to the model (no Pi codemode tool or MCP sign-in UI). Durable treats
-these calls as replay-unsafe. A trusted local tool, model, or MCP service may deliberately return sensitive project
-data. The raw core does not include provider auth/configuration or exception details; the local socket and coding
-tools are **not** a sandbox from other processes running as the same user.
-
 ## Thread titles and worktrees
 
 The backend derives a short topic from the first completed exchange, using the
@@ -373,8 +373,7 @@ commands return a diagnostic instead of prompting. Previously admitted model
 work may still finish without tools; revocation does not kill a command that
 already started. Scheduled work without trust parks for an explicit retry.
 Trust is consent to run with your user's permissions, **not a filesystem sandbox**.
-The opt-in Pi profile retains Pi's behavior, and standalone `--no-session` runs
-remain tool-free. If upgrading a managed Hush backend, run `hush stop` before
+Invocation-private `--no-session` runs remain tool-free. If upgrading a managed Hush backend, run `hush stop` before
 opening the new client (or `hush service restart` for a supervised backend)
 so the running host uses the new trust policy.
 
@@ -404,33 +403,15 @@ See [the checkpoint contract](../protocol/v1/checkpoints.md).
 
 Run with `--no-session --socket /private/one-invocation/hush.sock`, in a fresh caller-owned directory with mode 0700.
 Do not supply a data directory or reuse a socket path. It serves a new MemoryStorage and exits after the last client
-disconnects. Coding and MCP tools are disabled in this mode so there is no tool spool, image cache, or independent
+disconnects. Coding tools are disabled in this mode so there is no tool spool, image cache, or independent
 tool process to leave behind. No transcript database, backup, or backend log is opened. A hard kill can leave the
 empty socket file; the invoking client owns the private directory. Hush credentials are read without changes to the profile.
 A private invocation requires a current OAuth token: it does not rotate and discard single-use
-refresh tokens. Use a normal Hush run or sign in again if the token needs refresh. Explicit
-Pi mode keeps the Pi profile's existing credential handling. With `--faux`, auth is always in memory.
+refresh tokens. Use a normal Hush run or sign in again if the token needs refresh. With `--faux`, auth is always in memory.
 
 The Go CLI starts its own bundle with `--parent-stdin`. This internal flag is valid only with `--no-session`.
 The child holds the read end of a lifetime pipe; EOF shuts it down even if the CLI died before connecting.
 The pipe never carries prompts or replies. The CLI reaps the child and removes the directory on normal exit.
 
-## Ordered Pi events
-
-With `--pi-events`, the reference host provides [`piEvents:1`](../protocol/v1/pi-1.6/pi-events.md)
-for both SQLite and MemoryStorage. Without that flag, it serves the native protocol and its native capabilities. No changes
-are required to upstream Pi Durable: the backend observes its public commit and task-hook
-interfaces, wraps provider streams and tool output, and forwards these boundaries over the
-socket. The Go client handles standard input/output and exit behavior.
-
-A Pi binding exclusively owns a profile-created thread while attached and through its last
-run's drain. Native state and history remain readable; native mutations of profile threads and
-attachment to an already-active run are refused. After loss, a durable run can still finish;
-reopening an idle profile thread starts a new event epoch and never replays the previous one.
-Automatic compaction for these threads belongs to the profile, not the Durable background
-compactor. The host deliberately projects only physical chat models and excludes private
-headers and endpoint paths from model records. Images, Pi session import/tree operations,
-and approvals are not advertised.
-
-Run `npm run backend:check` under Node 22.19.0. It uses temporary Pi data, a loopback provider and stdio MCP fixture.
+Run `npm run backend:check` under Node 22.19.0. It uses temporary Hush profiles and local provider fixtures.
 The backend also boots without node_modules under the official Node 22.19.0 Linux image with the network disabled.

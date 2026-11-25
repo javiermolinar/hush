@@ -14,17 +14,16 @@ import (
 func TestProviderLoginOnlyOnManagedHushHost(t *testing.T) {
 	t.Setenv("HUSH_SOCKET", "")
 	local := true
-	if localProviderLogin(headless.InteractiveOptions{Profile: "pi"}) != nil ||
-		localProviderLogin(headless.InteractiveOptions{Profile: "hush", Socket: "/remote.sock", Local: &local}) != nil {
-		t.Fatal("provider login available in the Pi profile or attach-only mode")
+	if localProviderLogin(headless.InteractiveOptions{Socket: "/remote.sock", Local: &local}) != nil {
+		t.Fatal("provider login available in attach-only mode")
 	}
-	o := headless.InteractiveOptions{Profile: "hush", Bundle: "/trusted/backend.mjs"}
+	o := headless.InteractiveOptions{Bundle: "/trusted/backend.mjs"}
 	login := localProviderLogin(o)
 	if login == nil || len(login.Providers) != 9 || login.Providers[0].ID != "openai-codex" {
 		t.Fatal("the managed Hush profile did not offer the OAuth providers with Codex first")
 	}
 	for _, provider := range login.Providers {
-		want := []string{"auth", "login", "--profile", "hush"}
+		want := []string{"auth", "login"}
 		if provider.ID != "openai-codex" {
 			want = append(want, provider.ID)
 		}
@@ -46,18 +45,15 @@ func TestProviderLoginOnlyOnManagedHushHost(t *testing.T) {
 func TestLocalWorkspaceTrustOnlyOnManagedHushHost(t *testing.T) {
 	t.Setenv("HUSH_SOCKET", "")
 	local, remote := true, false
-	if workspaceTrustOptions(headless.InteractiveOptions{Profile: "pi"}) != nil {
-		t.Fatal("native trust advertised for the Pi profile")
-	}
 	for _, o := range []headless.InteractiveOptions{
-		{Profile: "hush", Socket: "/remote.sock", Local: &local},
-		{Profile: "hush", Local: &remote},
+		{Socket: "/remote.sock", Local: &local},
+		{Local: &remote},
 	} {
 		if opt := workspaceTrustOptions(o); opt == nil || opt.Review != nil {
 			t.Fatal("attached client should get instructions, not a trust helper")
 		}
 	}
-	o := headless.InteractiveOptions{Profile: "hush"}
+	o := headless.InteractiveOptions{}
 	if opt := workspaceTrustOptions(o); opt == nil || opt.Review == nil {
 		t.Fatal("no host-local trust helper")
 	}
@@ -75,12 +71,12 @@ func TestLocalWorkspaceTrustHelper(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("HUSH_SOCKET", "")
-	t.Setenv("HUSH_PROFILE", "pi") // the explicit Hush profile takes precedence
+	t.Setenv("HUSH_PROFILE", "pi") // the local helper isolates the Hush environment
 	cwd := filepath.Join(home, "plain folder 'with quotes'")
 	if err := os.Mkdir(cwd, 0700); err != nil {
 		t.Fatal(err)
 	}
-	prepare := workspaceTrustOptions(headless.InteractiveOptions{Profile: "hush", Bundle: bundle}).Review
+	prepare := workspaceTrustOptions(headless.InteractiveOptions{Bundle: bundle}).Review
 	review, err := prepare(t.Context(), cwd)
 	want, _ := filepath.EvalSymlinks(cwd)
 	if err != nil || review.Decide == nil || review.Path != want || review.Trusted || review.Dismissed {

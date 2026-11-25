@@ -27,12 +27,7 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		if ctx.Err() != nil {
 			return 1
 		}
-		var outcome *piAnswerError
-		if errors.As(err, &outcome) {
-			fmt.Fprintln(stderr, outcome)
-		} else {
-			fmt.Fprintln(stderr, "hush:", err)
-		}
+		fmt.Fprintln(stderr, "hush:", err)
 		return 1
 	}
 	o, err := parse(args)
@@ -44,9 +39,8 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		return report(err)
 	}
 	if o.command == localService {
-		profile, err := backendstart.SelectProfile(o.ui.Profile, false)
-		if err != nil || profile != backendstart.Hush || os.Getenv("HUSH_SOCKET") != "" {
-			return report(errors.New("service controls the local Hush profile; unset HUSH_SOCKET and select the Hush profile"))
+		if os.Getenv("HUSH_SOCKET") != "" {
+			return report(errors.New("service controls the local Hush profile; unset HUSH_SOCKET"))
 		}
 		if o.serviceAction == "status" && o.json {
 			return report(backendstart.ServiceStatusJSON(ctx, out))
@@ -69,31 +63,21 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		}
 		return report(err)
 	}
-	needPi := o.profile || o.command == piJSON || o.command == piRPC || o.command == piModels
-	profile, err := backendstart.SelectProfile(o.ui.Profile, needPi)
-	if err != nil {
-		return report(err)
-	}
-	// Only the opt-in Pi profile accepts implicit positional prompts.
-	if profile == backendstart.Hush && o.implicitPrompt {
+	if o.implicitPrompt {
 		return report(fmt.Errorf("unknown command %q; run 'hush --help' for commands or use 'hush --print' for a prompt", o.prompt[0]))
 	}
-	o.ui.Profile = string(profile)
-	inputTTY := (o.command == printAnswer || o.command == piJSON) && term.IsTerminal(int(in.Fd()))
+	inputTTY := o.command == printAnswer && term.IsTerminal(int(in.Fd()))
 	if o.interactive(inputTTY, term.IsTerminal(int(out.Fd()))) {
 		return report(openUI(ctx, o.ui))
 	}
 	if o.uiFlags {
 		return report(errors.New("--local, --fills, --images and --motion require the interactive TUI"))
 	}
-	if o.command == printAnswer || o.command == piJSON {
+	if o.command == printAnswer {
 		stop := context.AfterFunc(ctx, func() { _ = in.Close() })
 		defer stop()
 	}
-	// Keep explicitly native options on the original submission/receipt path.
-	plain := o.command == printAnswer && !o.noWait && o.key == "" && o.thread == ""
-	preferPi := profile == backendstart.Pi && plain && (!o.ephemeral || o.textMode || o.forcePrint || len(o.prompt) > 1)
-	target := backendstart.Options{Socket: o.socket, Bundle: o.bundle, Profile: profile,
+	target := backendstart.Options{Socket: o.socket, Bundle: o.bundle,
 		RequireWorkTrust: o.command == printAnswer || o.command == scheduleCommand}
 	if o.command == rawProtocol {
 		target.AttachOnly = true
@@ -136,9 +120,6 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		return report(err)
 	}
 	var sdkOpts sdk.ClientOptions
-	if preferPi && !needPi {
-		sdkOpts.Capabilities = map[string][]uint64{"piEvents": {sdk.PiEventsVersion}}
-	}
 	if o.command >= listThreads && o.command < localAuth {
 		sdkOpts.Capabilities = map[string][]uint64{"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}}
 	}
@@ -154,7 +135,7 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		if err != nil {
 			return report(err)
 		}
-		host, err := startPrivate(ctx, node, entry, profile, needPi || preferPi)
+		host, err := startPrivate(ctx, node, entry)
 		// Readiness follows evaluation of the embedded module. Unlink it
 		// before accepting a prompt; a subsequent SIGKILL skips Go defers.
 		cleanupErr := cleanup()
@@ -169,9 +150,7 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		if cleanupErr != nil {
 			return report(cleanupErr)
 		}
-		if profile == backendstart.Hush {
-			sdkOpts.RequiredCapabilities = map[string]uint64{"hushProfile": 1}
-		}
+		sdkOpts.RequiredCapabilities = map[string]uint64{"hushProfile": 1}
 		client = sdk.NewClient(host.socket, sdkOpts)
 	} else {
 		client, err = backendstart.NewClient(ctx, target, sdkOpts)
@@ -180,17 +159,6 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		}
 	}
 	defer client.Close()
-
-	if preferPi && !needPi {
-		hello, err := client.Hello(ctx)
-		if err != nil {
-			return report(err)
-		}
-		needPi = hello.Capabilities["piEvents"] == sdk.PiEventsVersion
-	}
-	if needPi {
-		return report(runPi(ctx, client, o, in, out, inputTTY))
-	}
 
 	switch o.command {
 	case printAnswer:

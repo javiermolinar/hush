@@ -19,7 +19,7 @@ async function fixture(t) {
   let app, peer;
   t.after(async () => { peer?.close(); await app?.close(); await rm(home, { recursive: true, force: true }); });
   await mkdir(cwd);
-  app = await startBackend({ profile: "hush", cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
+  app = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
   peer = await dial(socket);
   const hello = ok(await peer.send("hello", { versions: [1], capabilities: { threadDirectory: [2], images: [1], workspaceWorkTrust: [1] } }));
   assert.equal(hello.capabilities.workspaceWorkTrust, 1);

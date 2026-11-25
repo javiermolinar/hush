@@ -415,6 +415,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.copied.token == v.token {
 			m.copied = copyLabel{}
 		}
+	case copySweepTick:
+		cmd = m.advanceCopySweep(v)
 	case noticeExpired:
 		scanImages = true
 		if m.notice.token == v.token {
@@ -481,13 +483,13 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 		return nil
 	}
 	previous := m.active
-	m.threads[previous].draft = m.editor.value()
+	m.threads[previous].draft = m.editor.promptDraft
 	m.editor.resetHistory()
 	m.active, m.previous = id, previous
 	m.openedTab(id)
 	m.navigation++
 	t := m.ensureThread(id)
-	m.editor.set(t.draft)
+	m.editor.setDraft(t.draft)
 	m.leader, m.escapeAt, m.stopAt, m.slashHidden, m.slashIndex = "", time.Time{}, time.Time{}, false, 0
 	m.notice, m.selection, m.hover = noticeState{}, selection{}, ""
 	// Old dialogs cannot stay focused on a different transcript. Dismissals
@@ -941,13 +943,13 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 			m.editor.set(e.Text)
 			m.slashHidden = false
 		} else if r.owner != m.active {
-			t.draft = cleanPrompt(e.Text)
+			t.draft = promptDraft{text: cleanPrompt(e.Text)}
 		}
 	case extension.EditPrompt:
 		if !m.foreground(r) {
 			return nil
 		}
-		hook, text, rev := m.options.EditPrompt, m.editor.value(), m.editor.revision
+		hook, text, rev := m.options.EditPrompt, m.editor.expanded(), m.editor.revision
 		if hook == nil {
 			return m.editPrompt(r, text, rev, budget)
 		}
@@ -956,7 +958,7 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 				return m.notifyRoute(r, err.Error(), extension.Danger)
 			}
 			if m.foreground(r) && m.editor.revision == rev {
-				if edited, ok := v.(string); ok {
+				if edited, ok := v.(string); ok && edited != text {
 					m.editor.set(edited)
 					m.slashHidden = false
 				}
@@ -986,19 +988,28 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 }
 
 func (m *Model) copyText(r ownerRoute, text string, budget *int) tea.Cmd {
-	hook := m.options.CopyText
+	return m.copyTextWithFeedback(r, text, budget, func() tea.Cmd {
+		return m.notifyRoute(r, "Copied", extension.Good)
+	})
+}
+
+func (m *Model) copyTextWithFeedback(r ownerRoute, text string, budget *int, copied func() tea.Cmd) tea.Cmd {
 	if !m.foreground(r) || text == "" {
 		return nil
 	}
 	text = limitText(text, 128<<10)
+	hook := m.options.CopyText
 	if hook == nil {
-		return tea.Batch(tea.SetClipboard(text), m.notifyRoute(r, "Copied", extension.Good))
+		return tea.Batch(tea.SetClipboard(text), copied())
 	}
 	return m.startWork(r, func(ctx context.Context) (any, error) { return nil, hook(ctx, text) }, func(_ any, err error, _ *int) tea.Cmd {
 		if err != nil {
 			return m.notifyRoute(r, err.Error(), extension.Danger)
 		}
-		return m.notifyRoute(r, "Copied", extension.Good)
+		if !m.foreground(r) {
+			return nil
+		}
+		return copied()
 	}, budget)
 }
 

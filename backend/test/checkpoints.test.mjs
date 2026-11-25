@@ -65,7 +65,7 @@ const files = async (f, cwd) => Promise.all([readFile(join(cwd, "main")), readFi
 test("checkpoint restore forks two shared dirty threads into an isolated committed snapshot; bookmark fallbacks are explicit",
   { timeout: 25_000 }, async t => {
   const f = await fixture(t);
-  const app = await startBackend({ ...f, profile: "hush", idleMs: 30_000, ephemeral: false, faux: true });
+  const app = await startBackend({ ...f, idleMs: 30_000, ephemeral: false, faux: true });
   t.after(() => app.close());
   const w = await view(f);
   try {

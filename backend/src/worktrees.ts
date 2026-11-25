@@ -25,10 +25,7 @@ export async function existingDirectory(path: string): Promise<string> {
 export class ThreadWorktrees {
   #active = 0;
 
-  // Supply Hush trust only for the standalone profile. It replaces, rather
-  // than augments, the legacy Pi predicate in that profile.
-  constructor(private readonly dataDir: string, private readonly trusted: (root: string) => boolean,
-    private readonly workspaceTrust?: WorkspaceTrust) {}
+  constructor(private readonly dataDir: string, private readonly workspaceTrust: WorkspaceTrust) {}
 
   async create(workspace: string, signal: AbortSignal): Promise<ManagedCheckout> {
     if (this.#active >= 4) throw new WireError("limit");
@@ -44,16 +41,11 @@ export class ThreadWorktrees {
       };
       // Bind discovery and all checkout commands to the same authorized
       // source. The workspace can be a directory within the checkout.
-      const identity = await this.workspaceTrust?.withGit(workspace, signal, value => value);
-      const root = identity?.root.path ?? await existingDirectory(line(await git(workspace, "rev-parse", "--show-toplevel")));
-      const source = identity?.cwd.path ?? root;
-      const common = identity?.path ?? await existingDirectory(line(await git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")));
+      const identity = await this.workspaceTrust.withGit(workspace, signal, value => value);
+      const { root: { path: root }, cwd: { path: source }, path: common } = identity;
       const first = (await git(source, "worktree", "list", "--porcelain", "-z")).split("\0", 1)[0];
       if (!first?.startsWith("worktree ")) throw new WireError("invalid_request");
       const primary = await existingDirectory(first.slice("worktree ".length));
-      // A trusted checkout can have repo-local filter drivers. Do not check
-      // out an untrusted repository or silently change its trust setting.
-      if (!this.workspaceTrust && !this.trusted(root)) throw new WireError("invalid_request");
       const base = join(await existingDirectory(this.dataDir), "worktrees");
       if ([primary, root, common].some(parent => within(parent, base))) throw new WireError("invalid_request");
       await mkdir(base, { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => { if (e.code !== "EEXIST") throw e; });
@@ -65,10 +57,7 @@ export class ThreadWorktrees {
       const cwd = join(base, nonce), branch = "hush/" + nonce;
       if (Array.from(cwd).length > 4096) throw new WireError("invalid_request");
       const checkout = () => git(source, "worktree", "add", "-b", branch, "--", cwd, head);
-      if (this.workspaceTrust) {
-        if (!identity) throw new WireError("invalid_request");
-        await this.workspaceTrust.withGit(workspace, signal, checkout, identity);
-      } else await checkout();
+      await this.workspaceTrust.withGit(workspace, signal, checkout, identity);
       return { cwd, branch, repository: primary };
     } catch (error) {
       signal.throwIfAborted();

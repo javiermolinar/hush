@@ -2,7 +2,7 @@
 
 Offer `gitDiff: [1]` in `hello`. The persistent standalone Hush backend can
 select it. It does not change the native state subscription, headless output,
-or Pi compatibility. A peer without the selected capability cannot call it.
+or other capabilities. A peer without the selected capability cannot call it.
 
 | Request | Fields | Result |
 | --- | --- | --- |

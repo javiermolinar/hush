@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Cursors } from "../../server/src/cursor.js";
 import { object, WireError } from "../../server/src/wire.js";
@@ -94,8 +93,14 @@ export class StandaloneSkills implements WorkspaceSkillsHost {
     const relative = `${root.directory}/${name}/SKILL.md`;
     try {
       const file = await readScopedText(root.cwd, relative, sourceLimit, signal);
-      const { frontmatter: data, body } = parseFrontmatter(file.text);
-      if (data.name !== name || typeof data.description !== "string" || !body.trim()) return;
+      const front = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(file.text);
+      if (!front) return;
+      const body = file.text.slice(front[0].length);
+      const { parseDocument } = await import("yaml");
+      const doc = parseDocument(front[1]!);
+      if (doc.errors.length) return;
+      const data = doc.toJS({ maxAliasCount: 0 });
+      if (data?.name !== name || typeof data.description !== "string" || !body.trim()) return;
       const description = data.description.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").trim().slice(0, 160).toWellFormed();
       if (!description) return;
       return { name, description, source: root.source, path: join(base, "SKILL.md"), base, body: body.trim(),

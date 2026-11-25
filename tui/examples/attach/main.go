@@ -44,7 +44,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	client := sdk.NewClient(*path, sdk.ClientOptions{Capabilities: map[string][]uint64{"modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion}, "piEvents": {sdk.PiEventsVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion}, "threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "images": {sdk.ImagesVersion}}})
+	client := sdk.NewClient(*path, sdk.ClientOptions{Capabilities: map[string][]uint64{"modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion}, "threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "images": {sdk.ImagesVersion}}})
 	defer client.Close()
 	cwd, err := os.Getwd()
 	if err == nil {

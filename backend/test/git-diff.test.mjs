@@ -33,7 +33,7 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     await git("add", ".");
     await commit("seed");
     const initial = await git("rev-parse", "HEAD");
-    app = await startBackend({ profile: "hush", cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
+    app = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
     peer = await dial(socket);
     const call = async (method, params) => ok(await peer.send(method, params));
     assert.equal((await call("hello", { versions: [1], capabilities: { gitDiff: [1], checkpoints: [1], threadDirectory: [2] } })).capabilities.gitDiff, 1);
@@ -152,7 +152,7 @@ test("Git watches share one linked-worktree scan and observe tool writes, index 
   await trust("grant", cwd);
   await trust("grant", sub);
   process.env.PATH = bin + delimiter + originalPath;
-  app = await startBackend({ profile: "hush", cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
+  app = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
 
   a = await dial(socket);
   b = await dial(socket);

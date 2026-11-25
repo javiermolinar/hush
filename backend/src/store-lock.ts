@@ -14,16 +14,24 @@ export async function dataLock(dir: string) {
   await file?.close();
   if (!await privateFile(path)) throw new BackendError("data_locked");
   for (const suffix of ["-wal", "-shm", "-journal"]) await privateFile(path + suffix);
-  const db = new DatabaseSync(path);
-  try {
-    // Check the mode rather than assuming an arbitrary existing lock file
-    // hasn't been opened in WAL mode. BEGIN EXCLUSIVE then excludes other owners.
-    const mode = db.prepare("PRAGMA journal_mode").get()?.journal_mode;
-    if (mode !== "delete") throw new Error("unexpected lock database mode");
-    db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE");
-    return () => db.close();
-  } catch {
-    db.close();
-    throw new BackendError("data_locked");
+  // On an empty lock database, simultaneous journal_mode reads can all
+  // briefly hold a shared lock, then all lose their exclusive upgrade. Give
+  // that transient contention a bounded retry; a live owner still wins.
+  const attempts = 3;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const db = new DatabaseSync(path);
+    try {
+      // Check the mode before taking the lock; WAL cannot exclude readers.
+      const mode = db.prepare("PRAGMA journal_mode").get()?.journal_mode;
+      if (mode !== "delete") throw new BackendError("data_locked");
+      db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE");
+      return () => db.close();
+    } catch (error) {
+      db.close();
+      const code = (error as { errcode?: number }).errcode ?? 0;
+      if (attempt + 1 === attempts || (code & 0xff) !== 5 && (code & 0xff) !== 6) break;
+      await new Promise(resolve => setTimeout(resolve, 5 + (process.pid + 7 * attempt) % 23));
+    }
   }
+  throw new BackendError("data_locked");
 }

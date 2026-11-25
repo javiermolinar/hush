@@ -384,12 +384,14 @@ func (d *document) frameCode(lang string, width, index int, copyable bool) (stri
 	}
 	action := ""
 	if copyable && width >= 12 {
-		id := codeID(d.key, index)
-		label := "copy"
-		action = " " + hyperlink(label, "", "hush-copy:"+id) + "     "
+		action = codeCopyAction
 	}
-	title = ansiCut(title, max(0, width-stringWidth(action)-1))
-	top := paint(x.Muted, title) + action + paint(x.Muted, strings.Repeat("─", max(0, width-stringWidth(title)-stringWidth(action))))
+	actionWidth := stringWidth(action)
+	title = ansiCut(title, max(0, width-actionWidth-1))
+	top := paint(x.Muted, title) + action + paint(x.Muted, strings.Repeat("─", max(0, width-stringWidth(title)-actionWidth)))
+	if action != "" {
+		top = codeCopyLink(codeID(d.key, index)) + top + oscLinkEnd
+	}
 	return top, paint(x.Muted, strings.Repeat("─", width))
 }
 
@@ -632,12 +634,83 @@ func (d *document) liveFence(st *markdownStream, s string) ([]string, bool) {
 	return joinRows(append([]string(nil), f.before...), append(rows, bottom)), false
 }
 
+const (
+	codeCopyScheme   = "hush-copy:"
+	copySweepFrames  = 8
+	copySweepStep    = 50 * time.Millisecond
+	copyLabelTimeout = 1400 * time.Millisecond
+)
+
+// Reserve the same cells for the action and its confirmation.
+var codeCopyAction = " " + paint(x.Accent, "\x1b[4mcopy\x1b[24m") + "     "
+
+func codeCopyLink(id string) string { return oscLink + ";" + codeCopyScheme + id + oscEnd }
+
 type copyLabel struct {
 	owner sdk.ID
 	id    string
 	token uint64
+	sweep int // -1 when still or finished
 }
 type copyLabelExpired struct{ token uint64 }
+type copySweepTick struct{ token uint64 }
+
+func nextCopySweep(token uint64) tea.Cmd {
+	return tea.Tick(copySweepStep, func(time.Time) tea.Msg { return copySweepTick{token} })
+}
+
+func (m *Model) showCodeCopied(owner sdk.ID, id string) tea.Cmd {
+	token := m.token()
+	m.copied = copyLabel{owner: owner, id: id, token: token, sweep: -1}
+	var sweep tea.Cmd
+	if !m.options.ReducedMotion && m.focusedDialog() == nil {
+		m.copied.sweep = 0
+		sweep = nextCopySweep(token)
+	}
+	return tea.Batch(sweep, tea.Tick(copyLabelTimeout, func(time.Time) tea.Msg { return copyLabelExpired{token} }))
+}
+
+func (m *Model) advanceCopySweep(tick copySweepTick) tea.Cmd {
+	c := &m.copied
+	if c.token != tick.token || c.sweep < 0 {
+		return nil
+	}
+	if !m.currentFrame() || m.frame.copyToken != c.token || m.focusedDialog() != nil || c.sweep+1 >= copySweepFrames {
+		c.sweep = -1
+		return nil
+	}
+	c.sweep++
+	return nextCopySweep(c.token)
+}
+
+// Decorate only the matching header in the frame, not the cached Markdown layout.
+func paintCopiedCode(line, link string, sweep int) (string, bool) {
+	before, rest, ok := strings.Cut(line, link)
+	if !ok {
+		return line, false
+	}
+	header, after, closed := strings.Cut(rest, oscLinkEnd)
+	title, rule, button := strings.Cut(header, codeCopyAction)
+	if !closed || !button {
+		return line, false
+	}
+	if sweep >= 0 {
+		rule = paintCopySweep(rule, sweep)
+	}
+	return before + link + title + " " + paint(x.Good, "✓ copied") + " " + rule + oscLinkEnd + after, true
+}
+
+func paintCopySweep(rule string, sweep int) string {
+	strokes := ansi.Strip(rule)
+	const cellBytes = len("─") // The generated rule contains only one-cell strokes.
+	n := len(strokes) / cellBytes
+	if n == 0 {
+		return rule
+	}
+	center := sweep * (n - 1) / (copySweepFrames - 1)
+	a, b := max(0, center-1)*cellBytes, min(n, center+2)*cellBytes
+	return paint(x.Muted, strokes[:a]) + paint(x.Good, strokes[a:b]) + paint(x.Muted, strokes[b:])
+}
 
 func codeBlocks(source string) []string {
 	b := []byte(source)
@@ -687,10 +760,7 @@ func (m *Model) copyCode(r ownerRoute, id string, budget *int) tea.Cmd {
 	if index >= len(codes) {
 		return nil
 	}
-	token := m.token()
-	m.copied = copyLabel{r.owner, id, token}
-	// Layout cache remains valid; the last frame substitutes the label.
-	return tea.Batch(m.copyText(r, codes[index], budget), tea.Tick(1400*time.Millisecond, func(time.Time) tea.Msg { return copyLabelExpired{token} }))
+	return m.copyTextWithFeedback(r, codes[index], budget, func() tea.Cmd { return m.showCodeCopied(r.owner, id) })
 }
 
 func (m *Model) copyLastCode(r ownerRoute, budget *int) tea.Cmd {

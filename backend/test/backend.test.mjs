@@ -9,19 +9,17 @@ import { test } from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, ProjectTrustStore, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getSystemMessageText } from "@earendil-works/pi-ai";
 import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
 import { assertFrame } from "../../protocol/v1/replay.mjs";
 import { dial } from "../../server/test/client.mjs";
 import { loadModels, startBackend } from "../../dist/hush-backend.mjs";
-import { parseConfig } from "../../dist/backend/src/config.js";
 import { displayTitle, topicTitle } from "../../dist/backend/src/thread-presentation.js";
 
 import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
 
 const bundle = new URL("../../dist/hush-backend.mjs", import.meta.url);
-const piDir = fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent", import.meta.url));
+const grant = ({ agentDir, cwd }) => new WorkspaceTrust(agentDir).change(cwd, "grant", AbortSignal.timeout(5000));
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
 const code = (f, expected) => { assert.equal(f.ok, false); assert.equal(f.error.code, expected); };
 const fixtureToken = "this-test-api-key-is-not-a-credential";
@@ -57,10 +55,15 @@ async function wait(connection, threadId, submissionId) {
 async function boot(t, dir, config, launched = {}) {
   const entry = join(dir, "only-backend.mjs");
   await copyFile(bundle, entry);
+  await copyFile(new URL(bundle.href + ".wasm-pack"), entry + ".wasm-pack");
+  if (!config.ephemeral && config.faux) {
+    const agentDir = join(dir, ".hush");
+    await mkdir(agentDir, { mode: 0o700, recursive: true });
+    await grant({ agentDir, cwd: config.cwd });
+  }
   const storage = config.ephemeral ? ["--no-session", "--socket", config.socket]
     : config.dataDir ? ["--data-dir", config.dataDir] : [];
-  const profile = config.profile === "hush" ? ["--profile", "hush"] : ["--agent-dir", config.agentDir];
-  const args = [entry, "--cwd", config.cwd, ...profile, ...(config.faux ? ["--faux"] : []), "--idle-ms", String(config.idleMs), ...storage];
+  const args = [entry, "--cwd", config.cwd, ...(config.faux ? ["--faux"] : []), "--idle-ms", String(config.idleMs), ...storage];
   const child = spawn(process.execPath, args, {
     cwd: dir, env: { HOME: dir, PATH: "/usr/bin:/bin", NODE_NO_WARNINGS: "1", LANG: "C", ...launched.env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -86,7 +89,7 @@ async function boot(t, dir, config, launched = {}) {
 
 test("runtime stop closes the host and permits a replacement over retained history", async t => {
   const { config } = await layout(t, { idleMs: 10_000 });
-  let app = await startBackend({ ...config, profile: "hush" });
+  let app = await startBackend({ ...config });
   t.after(() => app.close());
   let wire = await dial(config.socket);
   t.after(() => wire.close());
@@ -97,7 +100,7 @@ test("runtime stop closes the host and permits a replacement over retained histo
   await app.closed;
   await assert.rejects(dial(config.socket));
 
-  app = await startBackend({ ...config, profile: "hush" });
+  app = await startBackend({ ...config });
   wire = await dial(config.socket);
   t.after(() => wire.close());
   const second = ok(await wire.send("hello", { versions: [1], capabilities: { runtime: [1] } }));
@@ -109,7 +112,7 @@ test("runtime stop closes the host and permits a replacement over retained histo
 test("managed format-1 compatibility is opt-in and preserves identity and history", { timeout: 15_000 }, async t => {
   const { dir, config } = await layout(t, { idleMs: 10_000 });
   const agentDir = join(dir, ".hush"), dataDir = join(agentDir, "runtime"), socket = join(dataDir, "hush.sock");
-  const options = { ...config, profile: "hush", agentDir, dataDir, socket };
+  const options = { ...config, agentDir, dataDir, socket };
   await new WorkspaceTrust(agentDir).change(config.cwd, "grant", AbortSignal.timeout(5000));
   let app = await startBackend(options);
   t.after(() => app.close());
@@ -161,7 +164,7 @@ test("managed format-1 compatibility is opt-in and preserves identity and histor
 
 test("native catalog search finds OpenRouter beyond the first 64 models with only an env key", { timeout: 10_000 }, async t => {
   const { dir, config } = await layout(t);
-  await boot(t, dir, { ...config, profile: "hush", faux: false }, { env: {
+  await boot(t, dir, { ...config, faux: false }, { env: {
     ANTHROPIC_API_KEY: fixtureToken, OPENAI_API_KEY: fixtureToken, OPENROUTER_API_KEY: fixtureToken,
   } });
   const connection = await dial(config.socket);
@@ -234,88 +237,7 @@ test("standalone backend resolves stored OpenAI Codex OAuth without adjacent mod
   assert.equal(stdout + stderr, "");
 });
 
-test("isolated Pi loader, default system prompt parity, trust transition, MCP and a one-section edit", { timeout: 16000 }, async t => {
-  const oldPackage = process.env.PI_PACKAGE_DIR;
-  process.env.PI_PACKAGE_DIR = piDir;
-  t.after(() => { if (oldPackage) process.env.PI_PACKAGE_DIR = oldPackage; else delete process.env.PI_PACKAGE_DIR; });
-  const { config } = await layout(t);
-  const { cwd, agentDir } = config;
-  await mkdir(join(cwd, ".pi", "skills", "hidden-skill"), { recursive: true, mode: 0o700 });
-  await mkdir(join(cwd, ".pi", "prompts"));
-  await Promise.all([
-    json(join(agentDir, "settings.json"), { defaultThinkingLevel: "low", retry: { enabled: false }, compaction: { enabled: false } }),
-    doc(join(agentDir, "AGENTS.md"), "global context fixture"),
-    doc(join(cwd, "AGENTS.md"), "project context v1"),
-    doc(join(cwd, ".pi", "SYSTEM.md"), "TRUSTED ROLE"),
-    doc(join(cwd, ".pi", "APPEND_SYSTEM.md"), "TRUSTED ADDENDUM"),
-    doc(join(cwd, ".pi", "skills", "hidden-skill", "SKILL.md"), "---\nname: hidden-skill\ndescription: Trust fixture skill\n---\nSkill data"),
-    doc(join(cwd, ".pi", "prompts", "fixture.md"), "---\ndescription: Trust fixture prompt\n---\nexpanded for $1"),
-    json(join(cwd, ".pi", "mcp.json"), { mcpServers: { project: {
-      command: process.execPath, args: [fileURLToPath(new URL("./mcp-fixture.mjs", import.meta.url))], exposure: "direct",
-    } } }),
-  ]);
-  const app = await startBackend(config);
-  t.after(() => app.close());
-  const { connection } = await peer(t, config.socket);
-  const threadId = String(app.root.id);
-  const snap = ok(await connection.send("subscribe", { threadId }));
-  assert.equal(snap.state.agent.thinkingLevel, "low");
-  code(await connection.send("ext.piEvents.subscribe", { threadId }), "unsupported_capability");
-  const opts = { cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir, { projectTrusted: false }),
-    noExtensions: true, noThemes: true };
-  const referenceLoader = new DefaultResourceLoader(opts);
-  await referenceLoader.reload();
-  const referenceRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"),
-    refreshOnCreate: false });
-  const { session } = await createAgentSession({ ...opts, modelRuntime: referenceRuntime,
-    resourceLoader: referenceLoader, sessionManager: SessionManager.inMemory() });
-  t.after(() => session.dispose());
-  const getSystems = async () => ((await app.root.entries({}, 100, undefined, context)).items)
-    .filter(e => e.kind === "pi.system").reverse().map(e => e.model[0]);
-  const untrusted = await submit(connection, threadId, "/fixture Tester", "untrusted");
-  assert.equal((await wait(connection, threadId, untrusted.submissionId)).status, "done");
-  const [first] = await getSystems();
-  assert.equal(getSystemMessageText(first), session.systemPrompt);
-  assert.match(getSystemMessageText(first), /project context v1/);
-  assert.doesNotMatch(getSystemMessageText(first), /TRUSTED ROLE|TRUSTED ADDENDUM|hidden-skill/);
-  assert.ok(!(first.toolsAdded ?? []).some(t => t.name === "mcp__project__hello"));
-  let all = (await app.root.entries({}, 100, undefined, context)).items;
-  assert.equal(all.find(e => e.kind === "pi.user").model[0].content, "/fixture Tester");
-
-  new ProjectTrustStore(agentDir).set(cwd, true);
-  const trusted = await submit(connection, threadId, "/fixture Tester", "trusted");
-  assert.equal((await wait(connection, threadId, trusted.submissionId)).status, "done");
-  all = (await app.root.entries({}, 100, undefined, context)).items;
-  assert.equal(all.find(e => e.kind === "pi.user").model[0].content, "expanded for Tester");
-  const systems = await getSystems();
-  const text = getSystemMessageText(systems.at(-1));
-  assert.match(text, /TRUSTED ROLE/);
-  assert.match(text, /TRUSTED ADDENDUM/);
-  assert.match(text, /hidden-skill/);
-  const mcpName = systems.flatMap(s => s.toolsAdded ?? []).map(t => t.name).find(n => /project.*hello/.test(n));
-  assert.ok(mcpName);
-  const mcp = (await app.root.agent(context)).tools.find(t => t.name === mcpName);
-  assert.ok(mcp);
-
-  const before = systems.length;
-  await doc(join(cwd, "AGENTS.md"), "project context v2");
-  // The environment watcher has at most two seconds to deliver the change.
-  await setTimeout(2150);
-  const edit = await submit(connection, threadId, "after the file edit", "edit");
-  assert.equal((await wait(connection, threadId, edit.submissionId)).status, "done");
-  const after = await getSystems();
-  assert.equal(after.length, before + 1);
-  assert.deepEqual(Object.keys(after.at(-1).sections), ["project_context"]);
-  assert.match(after.at(-1).sections.project_context, /project context v2/);
-  const duplicate = await submit(connection, threadId, "/fixture Tester", "trusted");
-  assert.equal(duplicate.submissionId, trusted.submissionId);
-  const mcpCall = await submit(connection, threadId, "!mcp", "invoke-mcp");
-  assert.equal((await wait(connection, threadId, mcpCall.submissionId)).status, "done");
-  const mcpHistory = ok(await connection.send("history", { threadId, range: { kind: "before", beforeEntryId: null }, limit: 10 }));
-  assert.match(JSON.stringify(mcpHistory), /mcp fixture ran/);
-});
-
-test("custom models and live auth lookup use the same Pi stores without exporting metadata secrets", { timeout: 10000 }, async t => {
+test("custom models resolve live Hush credentials without exposing them on the wire", { timeout: 10000 }, async t => {
   const { config } = await layout(t);
   const fixtureModel = "hush-model-test";
   let seenAuth;
@@ -333,16 +255,11 @@ test("custom models and live auth lookup use the same Pi stores without exportin
       models: [{ id: fixtureModel, name: "Fixture model", reasoning: true, contextWindow: 20000, maxTokens: 500 }] },
   } });
   await json(join(config.agentDir, "auth.json"), { "hush-fixture": { type: "api_key", key: fixtureToken } });
-  const real = { ...config, faux: false, ephemeral: true };
-  const ours = await loadModels(real);
-  const upstream = new ModelRegistry(await ModelRuntime.create({ authPath: join(config.agentDir, "auth.json"),
-    modelsPath: join(config.agentDir, "models.json"), refreshOnCreate: false }));
-  const pi = upstream.find("hush-fixture", fixtureModel);
-  const backend = ours.models.find("hush-fixture", fixtureModel);
-  assert.ok(backend);
-  assert.deepEqual(backend, pi);
-  assert.deepEqual(await ours.models.getApiKeyAndHeaders(backend), await upstream.getApiKeyAndHeaders(pi));
-  assert.equal(await ours.models.getApiKeyForProvider("hush-fixture"), fixtureToken);
+  const { runtime } = await loadModels({ ...config, faux: false, ephemeral: true });
+  const model = runtime.getModel("hush-fixture", fixtureModel);
+  assert.ok(model);
+  assert.equal((await runtime.getAuth(model)).auth.apiKey, fixtureToken);
+  await grant(config);
   const app = await startBackend({ ...config, faux: false, model: { provider: "hush-fixture", modelId: fixtureModel } });
   t.after(() => app.close());
   const { connection } = await peer(t, config.socket);
@@ -354,7 +271,6 @@ test("custom models and live auth lookup use the same Pi stores without exportin
   assert.equal(seenAuth, "Bearer " + fixtureToken);
   ok(await connection.send("history", { threadId, range: { kind: "before", beforeEntryId: null }, limit: 100 }));
   assert.doesNotMatch(JSON.stringify(connection.frames) + await readFile(join(config.dataDir, "hush.log"), "utf8"), new RegExp(fixtureToken));
-  await ours.runtime.settleCredentialWrites();
 });
 
 test("local titles use the topic of the first exchange, not generic opening words", () => {
@@ -368,11 +284,12 @@ test("local titles use the topic of the first exchange, not generic opening word
 
 test("thread directory keeps friendly titles and pages by last committed message", { timeout: 15_000 }, async t => {
   const { config } = await layout(t, { idleMs: 10_000 });
-  const app = await startBackend({ ...config, piEvents: true });
+  await grant(config);
+  const app = await startBackend(config);
   t.after(() => app.close());
   const c = await dial(config.socket);
   t.after(() => c.close());
-  const hello = ok(await c.send("hello", { versions: [1], capabilities: { threadDirectory: [1], piEvents: [1] } }));
+  const hello = ok(await c.send("hello", { versions: [1], capabilities: { threadDirectory: [1] } }));
   assert.equal(hello.capabilities.threadDirectory, 1);
   const method = "ext.threadDirectory.list";
   const basic = await dial(config.socket);
@@ -409,23 +326,10 @@ test("thread directory keeps friendly titles and pages by last committed message
   assert.deepEqual(second.threads.find(row => row.id === quiet), { id: quiet });
   assert.equal(second.nextCursor, null);
 
-  const pi = await dial(config.socket);
-  t.after(() => pi.close());
-  ok(await pi.send("hello", { versions: [1], capabilities: { piEvents: [1] } }));
-  const named = ok(await pi.send("ext.piEvents.open", { cwd: config.cwd, name: "Saved project title" })).threadId;
-  let page;
-  for (let i = 0; i < 50; i++) {
-    page = ok(await c.send(method, { limit: 20 }));
-    if (page.threads.some(row => row.id === named && row.title === "Saved project title")) break;
-    await setTimeout(20);
-  }
-  assert.deepEqual(page.threads.find(row => row.id === named), { id: named, title: "Saved project title" });
-
-  pi.close();
   c.close();
   basic.close();
   await app.close();
-  const restarted = await startBackend({ ...config, piEvents: true });
+  const restarted = await startBackend(config);
   t.after(() => restarted.close());
   const reopened = await dial(config.socket);
   t.after(() => reopened.close());
@@ -446,6 +350,7 @@ test("thread directory keeps friendly titles and pages by last committed message
 
 test("directory v2 observes running and parked work and restores it after reopen", { timeout: 15_000 }, async t => {
   const { config } = await layout(t, { idleMs: 10_000 });
+  await grant(config);
   let backend = await startBackend(config);
   t.after(() => backend.close());
   const connect = async version => {
@@ -528,6 +433,7 @@ test("opted-in title model sees a bounded first exchange once, outside native tu
   await json(join(config.agentDir, "auth.json"), { fixture: { type: "api_key", key: fixtureToken } });
   await json(join(config.agentDir, "settings.json"), { compaction: { enabled: false }, retry: { enabled: false } });
   const options = { ...config, faux: false, model: { provider: "fixture", modelId: "chat" }, threadTitleModel: { provider: "fixture", modelId: "small" } };
+  await grant(config);
   let server = await startBackend(options);
   t.after(() => server.close());
   const peer = async () => {
@@ -573,104 +479,9 @@ test("opted-in title model sees a bounded first exchange once, outside native tu
   assert.equal(chats, 2);
 });
 
-test("intro negotiation is read-only and reports trusted skills, context, run failures and parking", { timeout: 15000 }, async t => {
-  const { config } = await layout(t);
-  const makeSkill = async (dir, name) => {
-    const path = join(dir, "skills", name);
-    await mkdir(path, { recursive: true });
-    await doc(join(path, "SKILL.md"), `---\nname: ${name}\ndescription: Report fixture\n---\nprivate-body-${name}\n`);
-  };
-  await makeSkill(config.agentDir, "global-review");
-  await makeSkill(join(config.cwd, ".pi"), "project-review");
-  await doc(join(config.cwd, "AGENTS.md"), "private project instructions " + "repeat ".repeat(300));
-  const app = await startBackend(config);
-  t.after(() => app.close());
-  let watches = 0;
-  const openGraph = app.harness.watchTaskGraph.bind(app.harness);
-  app.harness.watchTaskGraph = (...args) => { watches++; return openGraph(...args); };
-  const root = String(app.root.id), scope = { threadId: root };
-  const { connection: base } = await peer(t, config.socket);
-  code(await base.send("ext.intro.get", scope), "unsupported_capability");
-  const connectIntro = async () => {
-    const c = await dial(config.socket);
-    t.after(() => c.close());
-    const hello = ok(await c.send("hello", { versions: [1], capabilities: { intro: [1] } }));
-    assert.equal(hello.capabilities.intro, 1);
-    return c;
-  };
-  const report = await connectIntro(), another = await connectIntro();
-  const before = ok(await report.send("ext.intro.get", scope));
-  assert.deepEqual(before.sessions, { open: 1, running: 0, quiet: 1, partial: false });
-  assert.equal(before.model.modelId, "faux-1");
-  assert.ok(before.startedAtMs > 0);
-  assert.ok(before.skills.includes("global-review"));
-  assert.ok(!before.skills.includes("project-review"));
-  assert.ok(before.context.window > 0 && before.context.renderedBytes > 2100);
-  assert.equal(before.context.reportedTokens, undefined);
-  assert.doesNotMatch(JSON.stringify(before), /private-body|private project instructions/);
-  assert.deepEqual(ok(await another.send("ext.intro.get", scope)).skills, before.skills);
-  assert.equal(watches, 1);
-  assert.equal((await app.root.entries({}, 10, undefined, context)).items.length, 0, "report wrote durable history");
-  code(await report.send("ext.intro.get", { threadId: "9007199254740992" }), "invalid_request");
-  code(await report.send("ext.intro.get", { threadId: "123456789012" }), "not_found");
-  code(await report.send("ext.intro.get", { ...scope, cwd: config.cwd }), "invalid_request");
-  code(await report.send("ext.intro.get", { cwd: "." }), "invalid_request");
-  code(await report.send("ext.intro.get", { cwd: join(config.cwd, "missing") }), "not_found");
-  const otherWorkspace = join(config.cwd, "workspace");
-  await makeSkill(join(otherWorkspace, ".pi"), "other-review");
-  new ProjectTrustStore(config.agentDir).set(otherWorkspace, true);
-  const planned = ok(await another.send("ext.intro.get", { cwd: otherWorkspace }));
-  assert.equal(planned.cwd, otherWorkspace);
-  assert.ok(planned.skills.includes("other-review"));
-  assert.ok(!planned.skills.includes("project-review"));
-  assert.equal(planned.context.window, before.context.window);
-  assert.equal(planned.sessions.open, 1, "workspace preview created a conversation");
-  code(await report.send("ext.intro.get", { ...scope, after: Number.MAX_SAFE_INTEGER }), "invalid_request");
-
-  async function changedUntil(current, predicate, conn = report) {
-    while (!predicate(current)) {
-      const next = ok(await conn.send("ext.intro.get", { ...scope, after: current.revision }));
-      assert.ok(next.revision > current.revision);
-      current = next;
-    }
-    return current;
-  }
-  // A waiting report leaves the peer able to process EOF and other requests.
-  const pending = changedUntil(before, r => r.skills.includes("project-review"));
-  pending.catch(() => {});
-  const trust = new ProjectTrustStore(config.agentDir);
-  trust.set(config.cwd, true);
-  const trusted = await pending;
-  assert.ok(trusted.skills.includes("global-review"));
-  assert.ok(trusted.context.renderedBytes > before.context.renderedBytes);
-
-  code(await base.send("submit", { ...scope, text: "/skill:no-such-skill", requestId: "unknown-skill", whenBusy: "reject" }), "invalid_request");
-  const good = await submit(base, root, "/skill:project-review with arguments", "intro-good");
-  assert.equal((await wait(base, root, good.submissionId)).status, "done");
-  const used = await changedUntil(trusted, r => r.context.reportedTokens > 0);
-  assert.ok(used.context.reportedTokens > 0);
-  assert.match(JSON.stringify((await app.root.entries({}, 10, undefined, context)).items), /private-body-project-review.*with arguments/);
-  const bad = await submit(base, root, "!error", "intro-error");
-  assert.equal((await wait(base, root, bad.submissionId)).status, "unanswered");
-  const failed = await changedUntil(used, r => r.attention.some(a => a.status === "stopped"));
-  assert.deepEqual(failed.attention, [{ title: "main", status: "stopped", reason: "model error" }]);
-  assert.equal(failed.context.reportedTokens, undefined);
-  const sleep = await submit(base, root, "!sleep 3500", "intro-sleep");
-  const parked = await changedUntil(failed, r => r.attention.some(a => a.status === "parked"));
-  assert.ok(parked.attention[0].untilMs > Date.now());
-  assert.equal(parked.sessions.quiet, 0);
-  assert.equal(watches, 1);
-  const current = ok(await another.send("ext.intro.get", scope));
-  const waiting = another.send("ext.intro.get", { ...scope, after: current.revision });
-  waiting.catch(() => {});
-  another.close();
-  await another.ended;
-  await base.send("thread.abort", scope);
-  await wait(base, root, sleep.submissionId);
-});
-
 test("intro v2 names threads and scopes recovery to a settled failure", { timeout: 10_000 }, async t => {
   const { config } = await layout(t, { idleMs: 10_000 });
+  await grant(config);
   let app = await startBackend(config);
   t.after(() => app.close());
   const attach = async versions => {
@@ -779,36 +590,31 @@ test("intro v2 names threads and scopes recovery to a settled failure", { timeou
   }
 });
 
-test("config defaults follow the effective agent directory and explicit storage still wins", async t => {
+test("config keeps Hush runtime defaults and lets --data-dir override the file", async t => {
   const { config, dir } = await layout(t);
   const path = join(dir, "backend.json");
-  const other = join(dir, "other-agent");
-  const explicit = join(dir, "explicit-data");
-  await json(path, { "agent-dir": config.agentDir });
-  const fromFile = await parseConfig(["--config", path]);
-  assert.equal(fromFile.dataDir, join(config.agentDir, "hush"));
-  const fromFlag = await parseConfig(["--config", path, "--agent-dir", other]);
-  assert.equal(fromFlag.dataDir, join(other, "hush"));
-  assert.equal(fromFlag.socket, join(other, "hush", "hush.sock"));
-  await json(path, { "agent-dir": config.agentDir, "data-dir": explicit });
-  const pinned = await parseConfig(["--config", path, "--agent-dir", other]);
-  assert.equal(pinned.dataDir, explicit);
-  const flag = await parseConfig(["--config", path, "--data-dir", config.dataDir]);
-  assert.equal(flag.dataDir, config.dataDir);
-  const ephemeral = await parseConfig(["--agent-dir", other, "--no-session", "--socket", config.socket]);
+  const { parseConfig } = await import("../../dist/backend/src/config.js");
+  await json(path, { "data-dir": config.dataDir });
+  assert.equal((await parseConfig(["--config", path])).socket, config.socket);
+  const other = join(dir, "other-data");
+  assert.equal((await parseConfig(["--config", path, "--data-dir", other])).socket, join(other, "hush.sock"));
+  const ephemeral = await parseConfig(["--no-session", "--socket", config.socket]);
   assert.equal(ephemeral.dataDir, undefined);
   assert.equal(ephemeral.socket, config.socket);
+  for (const args of [["--profile", "pi"], ["--pi-events"], ["--agent-dir", dir]]) {
+    await assert.rejects(parseConfig(args));
+  }
 });
 
-test("distinct agent directories without --data-dir get independent live backends and histories", { timeout: 14000 }, async t => {
+test("distinct --data-dir paths get independent live backends and histories", { timeout: 14000 }, async t => {
   const { config, dir } = await layout(t, { idleMs: 6000 });
   const envAgent = join(dir, "env-agent");
   const variant = suffix => {
-    const agentDir = join(dir, "agent-" + suffix);
-    return { ...config, agentDir, dataDir: undefined, socket: join(agentDir, "hush", "hush.sock") };
+    const dataDir = join(dir, "data-" + suffix);
+    return { ...config, dataDir, socket: join(dataDir, "hush.sock") };
   };
   const a = variant("a"), b = variant("b");
-  await Promise.all([envAgent, a.agentDir, b.agentDir].map(path => mkdir(path, { mode: 0o700 })));
+  await Promise.all([envAgent].map(path => mkdir(path, { mode: 0o700 })));
   async function open(profile) {
     const host = await boot(t, dir, profile, { env: { PI_CODING_AGENT_DIR: envAgent } });
     const { connection } = await peer(t, profile.socket);
@@ -918,7 +724,7 @@ test("standalone settings persist model defaults and reasoning display without r
   await json(join(config.agentDir, "settings.json"), {
     defaultProvider: "fixture", defaultModel: "fixture-one", defaultThinkingLevel: "high", codemode: true,
   });
-  const real = { ...config, profile: "hush", faux: false };
+  const real = { ...config, faux: false };
   let app = await startBackend(real);
   let wire = await dial(config.socket);
   t.after(async () => { wire.close(); await app.close(); });

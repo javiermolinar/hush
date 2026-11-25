@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -45,17 +46,12 @@ const usage = `Usage:
   hush rewind confirm OPERATION --thread ID --restore files|transcript [--json]
   hush rewind status OPERATION --thread ID [--json]
   hush --mode protocol [--socket PATH]
-  hush --mode json [--no-session] [--model MODEL] [MESSAGE...]
-  hush --mode rpc [--no-session] [--model MODEL]
-  hush --list-models [PATTERN]
 
 With terminal stdin and stdout, plain hush opens the TUI. Use --print (or -p)
 or -- before a prompt, or pipe it to hush on stdin. Persistent commands
 reuse or start the default local backend (use --backend or HUSH_BACKEND to
 select a bundle). --socket and HUSH_SOCKET are attach-only; --mode protocol
 just relays bytes. --no-session starts a private backend.
-Use --profile pi (or HUSH_PROFILE=pi) to select the legacy Pi profile.
-Pi modes and options select it explicitly and require a backend with piEvents.
 Auth commands default to openai-codex; use /login to see the local OAuth providers.
 `
 
@@ -68,9 +64,6 @@ const (
 	getSubmission
 	waitSubmission
 	rawProtocol
-	piJSON
-	piRPC
-	piModels
 	listThreads
 	newThread
 	forkThread
@@ -89,7 +82,6 @@ const (
 // InteractiveOptions are passed to the terminal frontend only after routing.
 type InteractiveOptions struct {
 	Socket, Bundle, Fills, Images string
-	Profile                       string
 	Thread                        sdk.ID
 	Local                         *bool // nil: infer from socket selection
 	Motion                        bool
@@ -104,11 +96,7 @@ type options struct {
 	implicitPrompt          bool
 	quiet, restartOpen      bool
 	noWait, ephemeral       bool
-	pi                      sdk.PiOptions
-	profile, textMode       bool
-	appendPrompt            []string
-	fileArgs                []string
-	modelFilter             string
+	textMode                bool
 	authAction, trustAction string
 	authProvider            string
 	trustScope              string
@@ -125,13 +113,13 @@ type options struct {
 
 func (o options) interactive(inTTY, outTTY bool) bool {
 	return inTTY && outTTY && o.command == printAnswer && !o.help && !o.forcePrint && !o.textMode &&
-		!o.noWait && !o.ephemeral && !o.profile && o.key == "" && len(o.prompt) == 0
+		!o.noWait && !o.ephemeral && o.key == "" && len(o.prompt) == 0
 }
 
 func parse(args []string) (options, error) {
 	var o options
-	var mode, thread, submission, fork, sessionDir, systemPrompt, atEntry string
-	var resume, local bool
+	var mode, thread, submission, profile, atEntry string
+	var local bool
 	f := pflag.NewFlagSet("hush", pflag.ContinueOnError)
 	f.SetOutput(io.Discard)
 	f.StringVar(&mode, "mode", "", "")
@@ -140,7 +128,8 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.socket, "socket", "", "")
 	f.StringVar(&o.bundle, "backend", "", "")
 	f.StringVar(&o.storeFrom, "from", "", "")
-	f.StringVar(&o.ui.Profile, "profile", "", "")
+	// Retain the old standalone spelling, not a profile selector.
+	f.StringVar(&profile, "profile", "", "")
 	f.StringVar(&thread, "thread", "", "")
 	f.StringVar(&o.create.CWD, "cwd", "", "")
 	f.StringVar(&o.trustScope, "scope", "", "")
@@ -161,27 +150,19 @@ func parse(args []string) (options, error) {
 	f.BoolVar(&o.restartOpen, "open", false, "")
 	f.BoolVar(&o.noWait, "no-wait", false, "")
 	f.BoolVar(&o.ephemeral, "no-session", false, "")
-	f.StringVar(&o.pi.Model, "model", "", "")
-	f.StringVar(&o.pi.Provider, "provider", "", "")
-	f.StringVar(&o.pi.Thinking, "thinking", "", "")
-	f.StringSliceVar(&o.pi.Models, "models", nil, "")
-	f.StringVarP(&o.pi.Name, "name", "n", "", "")
-	f.BoolVarP(&o.pi.Continue, "continue", "c", false, "")
-	f.BoolVarP(&resume, "resume", "r", false, "")
-	f.StringVar(&o.pi.Session, "session", "", "")
-	f.StringVar(&sessionDir, "session-dir", "", "")
-	f.StringVar(&fork, "fork", "", "")
-	f.StringVar(&systemPrompt, "system-prompt", "", "")
-	f.StringArrayVar(&o.appendPrompt, "append-system-prompt", nil, "")
-	f.StringVar(&o.modelFilter, "list-models", "", "")
-	f.Lookup("list-models").NoOptDefVal = "*"
 	o.schedule.flags(f)
 	o.checkpoint.flags(f)
-	if err := f.Parse(listModelArgs(args)); err != nil {
+	if err := f.Parse(args); err != nil {
 		return o, err
 	}
 	if o.help {
 		return o, nil
+	}
+	if !f.Changed("profile") {
+		profile = os.Getenv("HUSH_PROFILE")
+	}
+	if profile != "" && profile != "hush" || f.Changed("profile") && profile == "" {
+		return o, errors.New("only the Hush backend is supported")
 	}
 	rest := f.Args()
 	// Reserve unescaped auth syntax even in an explicit generation mode. An
@@ -200,7 +181,7 @@ func parse(args []string) (options, error) {
 		f.Visit(func(v *pflag.Flag) {
 			invalid = invalid || v.Name != "backend" && v.Name != "profile"
 		})
-		if invalid || f.Changed("backend") && o.bundle == "" || f.Changed("profile") && o.ui.Profile != "hush" {
+		if invalid || f.Changed("backend") && o.bundle == "" {
 			return o, errors.New("auth requires the local Hush profile and accepts only --backend and --profile hush")
 		}
 		o.command, o.authAction = localAuth, rest[1]
@@ -215,7 +196,7 @@ func parse(args []string) (options, error) {
 			invalid = invalid || !slices.Contains([]string{"backend", "profile", "cwd", "json", "scope"}, v.Name)
 		})
 		if invalid || f.Changed("backend") && o.bundle == "" ||
-			f.Changed("profile") && o.ui.Profile != "hush" || f.Changed("cwd") && o.create.CWD == "" {
+			f.Changed("cwd") && o.create.CWD == "" {
 			return o, errors.New("trust is local to the Hush backend host and accepts only --backend, --profile hush, --cwd, --json and --scope")
 		}
 		// Keep --scope work as an alias; never broaden a command asking for
@@ -239,7 +220,7 @@ func parse(args []string) (options, error) {
 			invalid = invalid || v.Name != "profile" && !(v.Name == "backend" && rest[1] == "install") &&
 				!(v.Name == "json" && rest[1] == "status")
 		})
-		if invalid || f.Changed("backend") && o.bundle == "" || f.Changed("profile") && o.ui.Profile != "hush" {
+		if invalid || f.Changed("backend") && o.bundle == "" {
 			return o, errors.New("service requires the local Hush profile; only install accepts --backend and only status accepts --json")
 		}
 		o.command, o.serviceAction = localService, rest[1]
@@ -253,8 +234,8 @@ func parse(args []string) (options, error) {
 		f.Visit(func(v *pflag.Flag) {
 			invalid = invalid || !slices.Contains([]string{"backend", "profile", "from", "json"}, v.Name)
 		})
-		if invalid || f.Changed("backend") && o.bundle == "" || f.Changed("profile") && o.ui.Profile != "hush" {
-			return o, errors.New("store operations are local to the managed Hush backend host and do not accept a socket or Pi profile")
+		if invalid || f.Changed("backend") && o.bundle == "" {
+			return o, errors.New("store operations are local to the managed Hush backend host and do not accept a socket")
 		}
 		if f.Changed("from") != (rest[1] == "prepare") || f.Changed("from") && o.storeFrom == "" {
 			return o, errors.New("store prepare requires --from PINNED-HUSH; other store operations do not accept it")
@@ -297,34 +278,12 @@ func parse(args []string) (options, error) {
 		o.textMode = true
 	case "protocol":
 		o.command = rawProtocol
-	case "json":
-		o.command = piJSON
-	case "rpc":
-		o.command = piRPC
 	default:
-		return o, fmt.Errorf("unknown mode %q", mode)
+		return o, fmt.Errorf("unknown mode %q; use --json on native commands for JSON output", mode)
 	}
 
-	for _, name := range []string{"model", "provider", "thinking", "models", "name", "continue", "resume", "session", "session-dir", "fork", "system-prompt", "append-system-prompt"} {
-		o.profile = o.profile || f.Changed(name)
-	}
-	if f.Changed("system-prompt") {
-		o.pi.SystemPrompt = &systemPrompt
-	}
-	if f.Changed("list-models") {
-		if o.command != printAnswer || o.profile || o.forcePrint || o.ephemeral || o.textMode || o.noWait || o.json || thread != "" || submission != "" || o.key != "" {
-			return o, errors.New("--list-models only accepts a filter and backend selection")
-		}
-		o.command = piModels
-	}
-	if fork != "" {
-		if o.pi.Session != "" || o.pi.Continue {
-			return o, errors.New("--fork cannot be combined with --session or --continue")
-		}
-		o.pi.Session, o.pi.Fork = fork, true
-	}
 	escaped := f.ArgsLenAtDash() == 0
-	if o.command == printAnswer && !escaped && !o.forcePrint && !o.textMode && !o.profile && len(rest) > 0 {
+	if o.command == printAnswer && !escaped && !o.forcePrint && !o.textMode && len(rest) > 0 {
 		switch rest[0] {
 		case "status":
 			o.command, rest = backendStatus, rest[1:]
@@ -381,7 +340,7 @@ func parse(args []string) (options, error) {
 
 	var emptyFlag string
 	f.Visit(func(v *pflag.Flag) {
-		if emptyFlag == "" && v.Value.String() == "" && v.Name != "system-prompt" && v.Name != "list-models" {
+		if emptyFlag == "" && v.Value.String() == "" {
 			emptyFlag = v.Name
 		}
 	})
@@ -403,63 +362,22 @@ func parse(args []string) (options, error) {
 	if !utf8.ValidString(o.key) || utf8.RuneCountInString(o.key) > 200 {
 		return o, errors.New("--request-id must be valid UTF-8 with at most 200 characters")
 	}
-	if o.command == printAnswer || o.command == piJSON {
+	if o.command == printAnswer {
 		o.prompt = rest
-		var text []string
-		for _, arg := range rest {
-			if strings.HasPrefix(arg, "@") {
-				o.fileArgs = append(o.fileArgs, strings.TrimPrefix(arg, "@"))
-				o.profile = true
-			} else {
-				text = append(text, arg)
-			}
-		}
-		o.prompt = text
 	} else if len(rest) != 0 {
-		if o.command == piRPC {
-			return o, errors.New("startup messages and @file arguments are not supported in RPC mode")
-		}
 		return o, errors.New("unexpected positional arguments")
 	}
 	if !o.ephemeral && o.bundle != "" && o.socket != "" {
 		return o, errors.New("--backend selects a local bundle; it cannot be combined with --socket")
 	}
-	if o.ephemeral && ((o.command != printAnswer && o.command != piJSON && o.command != piRPC) || o.noWait || o.thread != "" || o.socket != "" || o.key != "" || o.submission != "" || o.pi.Continue || o.pi.Session != "" || resume || sessionDir != "") {
-		return o, errors.New("--no-session requires a new, attached invocation; no durable socket, continuation, IDs, or --no-wait")
-	}
-	if resume || sessionDir != "" {
-		return o, errors.New("--resume and --session-dir require Pi session import; no interactive picker in headless mode")
-	}
-	if o.pi.Continue && (o.pi.Session != "" || o.thread != "") || o.pi.Session != "" && o.thread != "" {
-		return o, errors.New("use exactly one of --thread, --session, --fork, or --continue")
-	}
-	if o.pi.Thinking != "" && !slices.Contains([]string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}, o.pi.Thinking) {
-		return o, errors.New("invalid --thinking level")
-	}
-	if f.Changed("models") {
-		var scope []string
-		for _, m := range o.pi.Models {
-			if m = strings.TrimSpace(m); m != "" {
-				scope = append(scope, m)
-			}
-		}
-		if len(scope) == 0 {
-			return o, errors.New("--models needs at least one name or pattern")
-		}
-		o.pi.Models = scope
-	}
-	if o.profile && (o.noWait || o.key != "" || o.command != printAnswer && o.command != piJSON && o.command != piRPC) {
-		return o, errors.New("Pi profile options cannot be used with native durable commands")
+	if o.ephemeral && (o.command != printAnswer || o.noWait || o.thread != "" || o.socket != "" || o.key != "" || o.submission != "") {
+		return o, errors.New("--no-session requires a new, attached invocation; no durable socket, IDs, or --no-wait")
 	}
 
 	switch o.command {
 	case printAnswer:
 		if o.submission != "" || o.json && !o.noWait {
 			return o, errors.New("--submission-id is for submission commands; --json requires a durable command or --no-wait")
-		}
-	case piJSON, piRPC:
-		if o.submission != "" || o.key != "" || o.json {
-			return o, errors.New("Pi JSON/RPC do not accept native admission flags")
 		}
 	case rawProtocol:
 		if o.thread != "" || o.submission != "" || o.key != "" || o.json || o.forcePrint || o.bundle != "" {
@@ -521,20 +439,6 @@ func parse(args []string) (options, error) {
 		return o, errors.New("--quiet is for stop")
 	}
 	return o, nil
-}
-
-func listModelArgs(args []string) []string {
-	for i, arg := range args {
-		if arg == "--" {
-			break
-		}
-		if arg == "--list-models" && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-			out := append([]string(nil), args[:i]...)
-			out = append(out, arg+"="+args[i+1])
-			return append(out, args[i+2:]...)
-		}
-	}
-	return args
 }
 
 func readPrompt(args []string, in io.Reader, inputTTY bool) (string, error) {

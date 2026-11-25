@@ -1,6 +1,7 @@
 import type { JsonValue } from "@earendil-works/chord/delta";
-import AjvModule from "ajv/dist/2020.js";
 import schema from "../../protocol/v1/core.schema.json" with { type: "json" };
+import { requestShape } from "./validators.js";
+export { entryShape, patchShape, stateEnvelopeShape, stateShape, successShape } from "./validators.js";
 
 export const MAX_RECORD = 8 * 1024 * 1024;
 export const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -34,28 +35,7 @@ export type Method = keyof Params;
 export type CoreRequest = { [M in Method]: { type: "request"; id: string; method: M; params: Params[M] } }[Method];
 export type Envelope = { type: "request"; id: string; method: string; params?: unknown };
 
-const definitions = schema.$defs;
-const ajv = new AjvModule.Ajv2020({ strict: false, ownProperties: true }).addSchema(schema);
-const def = (name: keyof typeof definitions) => ajv.compile({ $ref: schema.$id + "#/$defs/" + name });
-export const stateShape = def("state");
-export const entryShape = def("entry");
-// Feed projections validate entries when they are created. Keep every
-// requirement of the state schema except the repeated item validation.
-const { window: stateWindow } = definitions.state.properties;
-export const stateEnvelopeShape = ajv.compile({
-  ...definitions.state, $defs: definitions,
-  properties: {
-    ...definitions.state.properties,
-    window: {
-      ...stateWindow,
-      properties: { ...stateWindow.properties, entries: { ...stateWindow.properties.entries, items: true } },
-    },
-  },
-});
-export const patchShape = def("patch");
-export const successShape = def("success");
-const allowedMethods = new Set(definitions.request.oneOf.flatMap((arm) => arm.properties.method.const ?? []));
-const requestShape = def("request");
+const allowedMethods = new Set(schema.$defs.request.oneOf.flatMap((arm) => arm.properties.method.const ?? []));
 
 export const isCoreMethod = (method: string): method is Method => allowedMethods.has(method);
 // Some cross-field restrictions are defined in the protocol prose, not the schema.

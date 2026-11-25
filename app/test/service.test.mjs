@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createConnection } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -52,6 +52,7 @@ async function fixtureBundle(home) {
   // not use product scheduling, a provider API, or real credentials.
   const source = await readFile(bundle, 'utf8');
   await writeFile(entry, `if (process.argv.includes('--supervisor')) process.argv.push('--faux', '--idle-ms', '50');\n${source}`, { mode: 0o600 });
+  await copyFile(bundle + '.wasm-pack', entry + '.wasm-pack');
   return entry;
 }
 

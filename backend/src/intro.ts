@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
-import { calculateContextTokens, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { Models } from "@earendil-works/pi-ai";
+import { calculateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
 import { AgentDoc, LiveDoc, configure, type CommitChange, type Conversation, type ConversationId, type Cursor,
   type Agent, type AgentChange, type Harness, type LiveState, type RunFailure, type TaskGraph } from "@earendil-works/pi-durable";
@@ -8,8 +9,7 @@ import type { IntroAction, IntroAttention, IntroHost, IntroQuery, IntroReport, I
   IntroVersion, NativeHost } from "../../server/src/index.js";
 import { checkPreparedModel } from "../../server/src/durable.js";
 import { WireError } from "../../server/src/wire.js";
-import { ProfileDoc } from "./pi/projection.js";
-import type { ProjectResources } from "./resources.js";
+import type { StandaloneResources } from "./resources.js";
 import { actionableFailure, displayTitle, failureDetail, ThreadPresentationDoc, threadLabel } from "./thread-presentation.js";
 
 const MAX_SESSIONS = 256;
@@ -51,7 +51,6 @@ function activity(graph: TaskGraph) {
   return byThread;
 }
 
-type ReadProject = Awaited<ReturnType<ProjectResources["read"]>>;
 type PreviewAgent = Pick<Agent, "model" | "thinkingLevel" | "tools" | "instructions">;
 
 type Inventory = Pick<IntroReport, "sessions" | "moreAttention"> & {
@@ -78,15 +77,14 @@ export class IntroReports implements IntroHost {
   #watch?: Promise<void>;
   #failure = false;
   #detach?: () => void;
-  #unlisten?: () => void;
   #revision = 1;
   #rosterRevision = 1;
   #roster?: { revision: number; value: Promise<Roster> };
   #inventory?: { revision: number; value: Promise<Inventory> };
 
   constructor(private readonly harness: Harness, private readonly root: Conversation,
-      private readonly resources: ProjectResources, private readonly runtime: ModelRuntime, private readonly startedAtMs: number,
-      private readonly previewAgent: (project: ReadProject) => Promise<PreviewAgent>,
+      private readonly resources: StandaloneResources, private readonly runtime: Models, private readonly startedAtMs: number,
+      private readonly previewAgent: () => PreviewAgent,
       private readonly prepare: NonNullable<NativeHost["prepare"]>,
       private readonly requireModel?: NativeHost["requireModel"]) {}
 
@@ -104,14 +102,13 @@ export class IntroReports implements IntroHost {
         if (roster) this.#rosterRevision++;
         if (roster || event.changes.some(change => change.type === "entry" ||
             (change.type === "document" || change.type === "document.copy") &&
-            (change.record.kind === AgentDoc.definition.kind || change.record.kind === ProfileDoc.definition.kind ||
+            (change.record.kind === AgentDoc.definition.kind ||
              change.record.kind === ThreadPresentationDoc.definition.kind))) {
           this.#advance();
         }
       },
       end: () => { this.#failure = true; this.#advance(); },
     }).detach;
-    this.#unlisten = this.resources.onChange(this.#advance);
     const graph = await this.harness.watchTaskGraph(withAbortSignal(signal, BACKGROUND_CONTEXT));
     this.#graph = graph.value;
     graph.start(async call => {
@@ -126,7 +123,6 @@ export class IntroReports implements IntroHost {
   close() {
     this.#lifetime.abort();
     this.#detach?.();
-    this.#unlisten?.();
     this.#advance();
   }
 
@@ -177,12 +173,11 @@ export class IntroReports implements IntroHost {
     let verify: Awaited<ReturnType<typeof checkPreparedModel>>;
     if (action.kind === "retry") {
       check(await this.harness.snapshot(LiveDoc, id, ctx));
-      const [doc, profile, current] = await Promise.all([
-        this.harness.snapshot(ThreadPresentationDoc, id, ctx), this.harness.snapshot(ProfileDoc, id, ctx),
+      const [doc, current] = await Promise.all([
+        this.harness.snapshot(ThreadPresentationDoc, id, ctx),
         this.harness.snapshot(AgentDoc, id, ctx),
       ]);
       if (doc?.dismissedFailure === taskId) throw new WireError("not_found");
-      if (profile?.id) throw new WireError("unsupported_capability", "intro");
       if (!this.requireModel && !this.#modelAvailable(current?.model)) throw new WireError("invalid_request");
       agent = (await this.prepare({ cwd: current?.cwd }, ctx)).agent;
       verify = await checkPreparedModel(this.requireModel, current?.model, agent);
@@ -197,7 +192,6 @@ export class IntroReports implements IntroHost {
         doc.dismissedFailure = taskId;
         return undefined;
       }
-      if ((await tx.doc(ProfileDoc, id)).id) throw new WireError("unsupported_capability", "intro");
       const current = (await tx.doc(AgentDoc, id)).model;
       if (verify) verify(current);
       else if (!this.#modelAvailable(current)) throw new WireError("invalid_request");
@@ -213,14 +207,14 @@ export class IntroReports implements IntroHost {
     return !!(model && this.runtime.getModel(model.provider, model.modelId));
   }
 
-  async #issue(failure: Readonly<RunFailure>, native: boolean, model: Agent["model"], ctx: Context): Promise<IntroRunIssue> {
+  async #issue(failure: Readonly<RunFailure>, model: Agent["model"], ctx: Context): Promise<IntroRunIssue> {
     const detail = failureDetail(failure, model?.provider === "faux");
     const endedAtMs = (await this.harness.commit(tx => tx.task(failure.taskId), ctx))?.endedAt;
     return { taskId: String(failure.taskId), reason: failure.reason, ...(detail && { detail }),
       // Keep the recovery affordance for a known model; auth can change on
       // disk without a report revision. The retry action checks it afresh.
-      retry: native && this.#modelAvailable(model),
-      switchModel: native && (failure.reason === "no_model" || failure.reason === "model_error"),
+      retry: this.#modelAvailable(model),
+      switchModel: failure.reason === "no_model" || failure.reason === "model_error",
       ...(endedAtMs !== undefined && uint(endedAtMs) && { endedAtMs }) };
   }
 
@@ -281,48 +275,43 @@ export class IntroReports implements IntroHost {
       const presentation = await this.harness.snapshot(ThreadPresentationDoc, id, ctx);
       if (!state?.parked && presentation?.dismissedFailure === failure?.taskId) { quiet++; continue; }
       if (attention.length === 3) { moreAttention++; continue; }
-      const profile = await this.harness.snapshot(ProfileDoc, id, ctx);
       const fallback = id === this.root.id ? "main" : `thread #${id}`;
-      const common = { threadId: String(id), title: displayTitle(presentation, profile?.name) || fallback,
-        legacyTitle: presentation?.title || (profile?.name && threadLabel(profile.name, 96)) || fallback };
+      const common = { threadId: String(id), title: displayTitle(presentation) || fallback,
+        legacyTitle: presentation?.title || fallback };
       if (state?.parked) attention.push({ ...common, status: "parked", ...state.parked });
       else if (failure) {
         const model = (await this.harness.snapshot(AgentDoc, id, ctx))?.model;
-        attention.push({ ...common, status: "stopped", issue: await this.#issue(failure, !profile?.id, model, ctx) });
+        attention.push({ ...common, status: "stopped", issue: await this.#issue(failure, model, ctx) });
       }
     }
     return { sessions: { open: rows.length, running, quiet, partial }, attention, moreAttention };
   }
 
-  async #thread(conv: Conversation, profile: { id?: string; name?: string } | undefined, model: Agent["model"], ctx: Context): Promise<IntroThread> {
+  async #thread(conv: Conversation, model: Agent["model"], ctx: Context): Promise<IntroThread> {
     const id = String(conv.id);
     const [doc, live, record] = await Promise.all([
       this.harness.snapshot(ThreadPresentationDoc, conv.id, ctx), this.harness.snapshot(LiveDoc, conv.id, ctx),
       this.harness.commit(tx => tx.conversation(conv.id), ctx),
     ]);
-    const title = displayTitle(doc, profile?.name);
+    const title = displayTitle(doc);
     const failure = runIssue(live);
     const presentation: IntroThread = { id, ...(title && { title }) };
     if (!record || record.owner || !failure || busy(live)) return presentation;
     if (doc?.dismissedFailure === failure.taskId) presentation.dismissedFailureId = String(failure.taskId);
-    else presentation.issue = await this.#issue(failure, !profile?.id, model, ctx);
+    else presentation.issue = await this.#issue(failure, model, ctx);
     return presentation;
   }
 
   async #project(conv: Conversation, query: IntroQuery, ctx: Context, version: IntroVersion) {
     const bound = query.threadId !== undefined;
-    const [current, profile] = await Promise.all([query.cwd === undefined ? conv.agent(ctx) : undefined,
-      bound ? this.harness.snapshot(ProfileDoc, conv.id, ctx) : undefined]);
+    const current = query.cwd === undefined ? await conv.agent(ctx) : undefined;
     const cwd = this.resources.directory(query.cwd ?? current?.cwd);
-    const resources = await this.resources.read(cwd);
-    const agent = current ?? await this.previewAgent(resources);
-    const names = this.resources.skillNames(resources);
-    const skills = names.slice(0, 512).map(name => bounded(name, 160));
+    const agent = current ?? this.previewAgent();
     const ref = agent.model;
     const model = ref && this.runtime.getModel(ref.provider, ref.modelId);
     let context: IntroReport["context"];
     if (model?.contextWindow && uint(model.contextWindow)) {
-      const sections = await this.resources.promptSections(resources, cwd, agent.tools.map(tool => tool.name), profile);
+      const sections = await this.resources.promptSections(cwd, true, ctx.abortSignal);
       const prompt = Object.values(sections).filter(text => text !== undefined).join("\n\n");
       const instructions = agent.instructions ? `\n\n<instructions>\n${agent.instructions}\n</instructions>` : "";
       const tools = JSON.stringify(agent.tools.map(toToolDeclaration));
@@ -339,9 +328,9 @@ export class IntroReports implements IntroHost {
         }
       }
     }
-    const thread = bound && version === 2 ? await this.#thread(conv, profile, ref, ctx) : undefined;
+    const thread = bound && version === 2 ? await this.#thread(conv, ref, ctx) : undefined;
     return { cwd: bounded(cwd, 4096), ...(ref && { model: { provider: bounded(ref.provider, 160), modelId: bounded(ref.modelId, 160) } }),
-      thinking: agent.thinkingLevel, skills, ...(thread && { thread }), ...(names.length > skills.length && { moreSkills: names.length - skills.length }),
+      thinking: agent.thinkingLevel, skills: [], ...(thread && { thread }),
       ...(context && { context }) };
   }
 }

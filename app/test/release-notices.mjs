@@ -36,8 +36,10 @@ for (const row of rows) {
 assert.deepEqual(readdirSync(join(notices, 'texts')).sort(), [...texts].sort().map(h => `${h}.txt`));
 const indexed = new Set(rows.map(([name, version]) => `${name}@${version}`));
 const lock = read('package-lock.json');
-assert.equal(sha(lock), '8371854dd34377e20c81ca41830abb99260c5008af6b8310db063418dc8ad566', 'refresh attribution for a changed npm lock');
+assert.equal(sha(lock), '746712bf2300b2b900201c5dfd3132517cca4489e48d9d42ddc7f0ecd3160f66', 'refresh attribution for a changed npm lock');
 const pkgs = JSON.parse(lock).packages;
+const piOnly = /(?:^|\/)node_modules\/(?:@earendil-works\/pi-(?:coding-agent|tui|mcp)|@modelcontextprotocol\/sdk)(?:\/|$)/;
+assert.ok(!Object.keys(pkgs).some(path => piOnly.test(path)), 'Pi CLI dependencies present in the lockfile');
 const audited = new Set();
 for (const [name, version, terms, , path, integrity] of table(read(join(root, 'embedded-npm-lock.tsv')))) {
   assert.equal(pkgs[path]?.integrity, integrity, path);
@@ -48,7 +50,9 @@ for (const [name, version, terms, , path, integrity] of table(read(join(root, 'e
 }
 const input = JSON.parse(read('dist/hush-backend-inputs.json'));
 const contributing = new Set(['node_modules/quickjs-wasi']); // embedded explicitly
-for (const meta of Object.values(input)) {
+for (const meta of [input.main, input.image, input.codemode]) {
+  assert.ok(!Object.keys(meta.inputs).some(path => piOnly.test(path) || path.startsWith('backend/compat/')),
+    'Pi compatibility inputs present in the bundle');
   for (const output of Object.values(meta.outputs)) {
     for (const [path, { bytesInOutput }] of Object.entries(output.inputs)) {
       const m = /^(.*node_modules\/(?:@[^/]+\/)?[^/]+)\//.exec(path);
@@ -59,8 +63,10 @@ for (const meta of Object.values(input)) {
 assert.deepEqual([...contributing].sort(), [...audited].sort(), 'npm byte contributors changed');
 
 const bundle = read('dist/hush-backend.mjs');
+const pack = read('dist/hush-backend.mjs.wasm-pack');
 const bytes = read(join(install, 'hush'));
 assert.ok(bytes.includes(bundle), 'archive executable does not contain measured backend');
+assert.ok(bytes.includes(pack), 'archive executable does not contain measured WASM pack');
 const workerSources = Array.from(bundle.toString('utf8').matchAll(/data:text\/javascript;base64,([A-Za-z0-9+/=]{100,})/g),
   ([, url]) => Buffer.from(url, 'base64').toString('utf8'));
 assert.equal(workerSources.length, 2);
@@ -70,6 +76,18 @@ for (const src of [bundle.toString('utf8'), ...workerSources]) {
     embeddedWasm.add(sha(Buffer.from(payload, 'base64')));
   }
 }
+let packEnd = 0;
+for (const name of ['photon', 'quickjs']) {
+  const { offset, length, sha256 } = input.wasm[name];
+  assert.equal(offset, packEnd);
+  assert.ok(length > 0 && Number.isSafeInteger(length) && offset + length <= pack.length);
+  packEnd += length;
+  assert.equal(sha(pack.subarray(offset, packEnd)), sha256);
+  assert.ok(bundle.includes(sha256), 'backend identity must bind each WASM asset');
+  assert.ok(!embeddedWasm.has(sha256), 'lazy WASM must not be inlined');
+  embeddedWasm.add(sha256);
+}
+assert.equal(packEnd, pack.length);
 assert.deepEqual([...embeddedWasm].sort(), table(read(join(root, 'wasm.tsv'))).map(row => row[1]).sort(), 'WASM bytes changed');
 
 const go = execFileSync('go', ['version', '-m', join(install, 'hush')], { encoding: 'utf8' });
@@ -81,4 +99,4 @@ const expected = table(read(join(root, 'go-linked.tsv'))).filter(([name]) =>
 for (const [name, version] of expected) assert.ok(indexed.has(`${name}@${version}`), `missing license: ${name}@${version}`);
 assert.deepEqual(linked.sort(), expected.map(fields => fields.join('\t')).sort(), 'linked Go modules changed');
 console.log(JSON.stringify({ noticeIndexSha256: sha(index), entries: rows.length, texts: texts.size,
-  npmContributors: audited.size, wasmPayloads: embeddedWasm.size, goDependencies: linked.length }));
+  npmContributors: audited.size, wasmPayloads: embeddedWasm.size, wasmPackSha256: sha(pack), goDependencies: linked.length }));

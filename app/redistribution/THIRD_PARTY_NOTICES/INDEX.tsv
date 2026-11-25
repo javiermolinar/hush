@@ -1,20 +1,13 @@
 component	version	terms for this text	source	verbatim text (or identified excerpt)
 @anthropic-ai/sdk	0.129.0	MIT	node_modules/@anthropic-ai/sdk/LICENSE	texts/8bf96984ff8bcfae7e48cae76a529e8a25317ba9e02abf7fd3cc64fdf95657a6.txt
 @earendil-works/chord	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
-@earendil-works/pi-agent-core	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
 @earendil-works/pi-ai	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
 @earendil-works/pi-codemode	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
-@earendil-works/pi-coding-agent	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
 @earendil-works/pi-durable	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
-@earendil-works/pi-mcp	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
-@earendil-works/pi-mcp upstream third-party material	1.6.0	MIT	node_modules/@earendil-works/pi-mcp/THIRD_PARTY_NOTICES/modelcontextprotocol-typescript-sdk.txt	texts/5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d.txt
 @earendil-works/pi-schema	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
 @earendil-works/pi-schema upstream third-party material	1.6.0	MIT	node_modules/@earendil-works/pi-schema/THIRD_PARTY_NOTICES/typebox-LICENSE	texts/e8a7cc256941a26ba8234f04390165243a4d42f74fd6491934140605bf7eae2d.txt
 @earendil-works/pi-telemetry	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
-@earendil-works/pi-tui	1.6.0	MIT	https://raw.githubusercontent.com/earendil-works/pi/v1.6.0/LICENSE	texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt
 @google/genai	2.32.0	Apache-2.0	node_modules/@google/genai/LICENSE	texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt
-@isaacs/nonrecursive-glob-match	1.1.0	BlueOak-1.0.0	node_modules/@isaacs/nonrecursive-glob-match/LICENSE.md	texts/8a1af140fdfbf5afd3df27f7e662f989c5b963a300020dfafce42033cae9e004.txt
-@silvia-odwyer/photon-node	0.3.4	Apache-2.0	node_modules/@silvia-odwyer/photon-node/LICENSE.md	texts/c984c291167af70cc5fb7c7f4cec9b4560565110b766a718b3e12aba650327a7.txt
 @stablelib/base64	1.0.1	MIT	node_modules/@stablelib/base64/LICENSE	texts/1605b77bebe018db1fc27bd22fbcdeed1335c617937a124299a8b042b42b0fb6.txt
 Emscripten emmalloc dual-license text (MIT selection)	3.1.51 reference	MIT	https://raw.githubusercontent.com/emscripten-core/emscripten/3.1.51/LICENSE	texts/620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86.txt
 Go stdlib vendor golang.org/x/crypto	1.27.4	BSD-3-Clause	src/vendor/golang.org/x/crypto/LICENSE	texts/911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad.txt
@@ -29,7 +22,6 @@ Go toolchain	1.27.4	BSD-3-Clause	LICENSE	texts/911f8f5782931320f5b8d1160a76365b8
 Go toolchain	1.27.4	Go patent grant	PATENTS	texts/96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc.txt
 Google Roboto Regular (embedded Photon font)	2.137 (2017)	Apache-2.0	copyright lines in embedded font name table	texts/33b00e11afcdd449f7ebd95683a4cc3b9a809187127862df6243863fb9ed9762.txt
 Google Roboto Regular (embedded Photon font)	2.137 (2017)	Apache-2.0	photon-rs-0.3.3/fonts/Apache License.txt	texts/3e8480e2679854dffdd0c4f162d9941fd5b9231be881859fcb419544cd7b6c99.txt
-Milo (Undici WASM, both variants)	0.9.0	ISC	undici/lib/milo/LICENSE.md	texts/ca5cc852fbcbe4598fe1f8b04c103c8073a64fa9cbb14b358bfdd87232ae8bd9.txt
 QuickJS-NG generated Unicode tables	6d46d07d	Unicode-3.0	https://raw.githubusercontent.com/quickjs-ng/quickjs/6d46d07d04041b40f4f49eaa7fdebe44c314c699/libunicode-table.h	texts/e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96.txt
 QuickJS-NG runtime	6d46d07d	MIT	https://raw.githubusercontent.com/quickjs-ng/quickjs/6d46d07d04041b40f4f49eaa7fdebe44c314c699/LICENSE	texts/96f73f9d2a16c21a36b418f06073be26e7d6d5e7c1bc99756b21a4f2c74ef171.txt
 QuickJS-NG source notices	6d46d07d	MIT	https://raw.githubusercontent.com/quickjs-ng/quickjs/6d46d07d04041b40f4f49eaa7fdebe44c314c699/cutils.h	texts/7e0fe4067b295134b10ce8dcd90cb982d5b7cb41bbdab365e5fe20bdf1ad6586.txt
@@ -40,20 +32,7 @@ QuickJS-NG source notices	6d46d07d	MIT	https://raw.githubusercontent.com/quickjs
 Rust runtime copyright and archive terms	1.86 nightly / Photon	Apache-2.0	https://raw.githubusercontent.com/rust-lang/rust/3f43b1a636738f41c48df073c5bcb97a97bf8459/LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
 Rust runtime copyright and archive terms	1.86 nightly / Photon	MIT	https://raw.githubusercontent.com/rust-lang/rust/3f43b1a636738f41c48df073c5bcb97a97bf8459/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
 Rust runtime copyright and archive terms	1.86 nightly / Photon	MIT AND Apache-2.0	https://raw.githubusercontent.com/rust-lang/rust/3f43b1a636738f41c48df073c5bcb97a97bf8459/COPYRIGHT	texts/252b04f034f7383e09401dc700c8b933e3e38818eaa8b2f09dd247542be92292.txt
-Rust runtime copyright and archive terms	2026-07-29 nightly / Milo	Apache-2.0	https://raw.githubusercontent.com/rust-lang/rust/26ae60a9eeb20b4935be49d7a931a650fa1d2923/LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
-Rust runtime copyright and archive terms	2026-07-29 nightly / Milo	MIT	https://raw.githubusercontent.com/rust-lang/rust/26ae60a9eeb20b4935be49d7a931a650fa1d2923/LICENSE-MIT	texts/b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1.txt
-Rust runtime copyright and archive terms	2026-07-29 nightly / Milo	MIT AND Apache-2.0	https://raw.githubusercontent.com/rust-lang/rust/26ae60a9eeb20b4935be49d7a931a650fa1d2923/COPYRIGHT	texts/172020dbfd5b53a226dfde77616190a48dcff519b0bc0e6deb91a8450782c4af.txt
-Rust standard library in-source and vendored attribution (Milo)	2026-07-29	Upstream standard library notices (HTML)	https://static.rust-lang.org/dist/2026-07-29/rustc-nightly-aarch64-apple-darwin.tar.xz :: COPYRIGHT-library.html	texts/e566cc47cde2529b6ae2a71d92c3b153bf124b9455e5850dca791c4a018cfef4.txt
-Undici vendored fetch implementation	8.12.4	MIT	undici/lib/web/fetch/LICENSE	texts/a21d6c8d3fc631198b97e57584697f7f9c37805c71c6cf9a12e4442b40394b88.txt
 Unicode data (terminal width, Go text, IDNA and related tables)	attributed upstream data	Unicode-3.0	https://www.unicode.org/license.txt	texts/e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	Apache-2.0	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	Apache-2.0 WITH LLVM-exception	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/LICENSE-APACHE-LLVM	texts/268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	Apache-2.0 WITH LLVM-exception AND Apache-2.0 AND MIT	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/LICENSE	texts/673f577e363e80e0058bd78214683f045d1d0c63930969a87f01a1d87d7cf1d6.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	BSD-2-Clause	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/libc-bottom-half/cloudlibc/LICENSE	texts/c8b789cf5a746611e6300a0cc7750dbf92b61912a709d04e639245f7290656d0.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	CC0-1.0	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/dlmalloc/src/malloc.c	texts/7f73e46c38cb017ba631d6640b6c916d6da42b1b7df11b5777006e983c58369d.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	MIT	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	MIT	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/emmalloc/emmalloc.c	texts/7183e99e2e38682c7c602c86ada92c686a84eb99aea346fc8ba8a44f3b3684f6.txt
-WASI libc and third-party notices	0.20231215-r0 (llhttp)	MIT	https://raw.githubusercontent.com/WebAssembly/wasi-libc/c5264e2bbe532994d06b039005f2af91bedcc1a6/libc-top-half/musl/COPYRIGHT	texts/f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af.txt
 WASI libc and third-party notices	32 (QuickJS-WASI)	Apache-2.0	https://raw.githubusercontent.com/WebAssembly/wasi-libc/2fc32bc81b9f07f8d9525edea59bfbaf760c06d6/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 WASI libc and third-party notices	32 (QuickJS-WASI)	Apache-2.0 WITH LLVM-exception	https://raw.githubusercontent.com/WebAssembly/wasi-libc/2fc32bc81b9f07f8d9525edea59bfbaf760c06d6/LICENSE-APACHE-LLVM	texts/268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5.txt
 WASI libc and third-party notices	32 (QuickJS-WASI)	Apache-2.0 WITH LLVM-exception AND Apache-2.0 AND MIT	https://raw.githubusercontent.com/WebAssembly/wasi-libc/2fc32bc81b9f07f8d9525edea59bfbaf760c06d6/LICENSE	texts/2711a8b5a5cdfef0e639f96c1aca12ae23d7d64a02d0507f1bdf14d2b27bbc3a.txt
@@ -66,27 +45,20 @@ WASI libc musl-fts	32 (QuickJS-WASI)	BSD-3-Clause	https://raw.githubusercontent.
 ab_glyph_rasterizer	0.1.5	Apache-2.0	Crates.io ab_glyph_rasterizer-0.1.5/LICENSE	texts/15c517f38838988aa9f990a1e6bdfc0f20fd1aa1dcb710bb994669d098d73e70.txt
 addr2line	0.22.0	Apache-2.0	https://static.crates.io/crates/addr2line/addr2line-0.22.0.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 addr2line	0.22.0	MIT	https://static.crates.io/crates/addr2line/addr2line-0.22.0.crate :: LICENSE-MIT	texts/e99d88d232bf57d70f0fb87f6b496d44b6653f99f8a63d250a54c61ea4bcde40.txt
-addr2line	0.27.0	Apache-2.0	https://static.crates.io/crates/addr2line/addr2line-0.27.0.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-addr2line	0.27.0	MIT	https://static.crates.io/crates/addr2line/addr2line-0.27.0.crate :: LICENSE-MIT	texts/e99d88d232bf57d70f0fb87f6b496d44b6653f99f8a63d250a54c61ea4bcde40.txt
 adler	1.0.2	Apache-2.0	https://static.crates.io/crates/adler/adler-1.0.2.crate :: LICENSE-APACHE	texts/8ada45cd9f843acf64e4722ae262c622a2b3b3007c7310ef36ac1061a30f6adb.txt
 adler	1.0.2	BSD Zero Clause (alternative)	https://static.crates.io/crates/adler/adler-1.0.2.crate :: LICENSE-0BSD	texts/861399f8c21c042b110517e76dc6b63a2b334276c8cf17412fc3c8908ca8dc17.txt
 adler	1.0.2	MIT	https://static.crates.io/crates/adler/adler-1.0.2.crate :: LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
 adler2	2.0.0	Apache-2.0	Crates.io adler2-2.0.0/LICENSE-APACHE	texts/8ada45cd9f843acf64e4722ae262c622a2b3b3007c7310ef36ac1061a30f6adb.txt
 adler2	2.0.0	MIT	Crates.io adler2-2.0.0/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
-adler2	2.0.1	Apache-2.0	https://static.crates.io/crates/adler2/adler2-2.0.1.crate :: LICENSE-APACHE	texts/8ada45cd9f843acf64e4722ae262c622a2b3b3007c7310ef36ac1061a30f6adb.txt
-adler2	2.0.1	BSD Zero Clause (alternative)	https://static.crates.io/crates/adler2/adler2-2.0.1.crate :: LICENSE-0BSD	texts/861399f8c21c042b110517e76dc6b63a2b334276c8cf17412fc3c8908ca8dc17.txt
-adler2	2.0.1	MIT	https://static.crates.io/crates/adler2/adler2-2.0.1.crate :: LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
 agent-base	7.1.4	MIT	node_modules/gaxios/node_modules/agent-base/LICENSE	texts/8d8c55319c7729d57be811c747452636688d54f19701ee0752b6b15ad3771d9a.txt
 ajv	8.18.0	MIT	node_modules/ajv/LICENSE	texts/a05350a88e318e4f5f2c2a1ff1e2e88daa4dd38e6e78b71cccae422bdc762cc3.txt
 approx	0.5.1	Apache-2.0	Crates.io approx-0.5.1/LICENSE	texts/3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5.txt
-balanced-match	4.0.4	MIT	node_modules/balanced-match/LICENSE.md	texts/d408f38ffa3355c5faec517153295338892eb0f1ea43f57874bb23c6075979b5.txt
 base64	0.13.0	Apache-2.0	Crates.io base64-0.13.0/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 base64	0.13.0	MIT	Crates.io base64-0.13.0/LICENSE-MIT	texts/0dd882e53de11566d50f8e8e2d5a651bcf3fabee4987d70f306233cf39094ba7.txt
 base64-js	1.5.1	MIT	node_modules/base64-js/LICENSE	texts/5b37224c080cdcc97c871ada971c224e9926370fe74f11b539aa1cf9f3b1aca1.txt
 bignumber.js	9.3.1	MIT	node_modules/bignumber.js/LICENCE.md	texts/def75ba75d6426f1c3f02addf8e175fbe6e0d8a82e541cbdffc16d2bd8fd7d6a.txt
 bitflags	1.3.2	Apache-2.0	Crates.io bitflags-1.3.2/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 bitflags	1.3.2	MIT	Crates.io bitflags-1.3.2/LICENSE-MIT	texts/6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb.txt
-brace-expansion	5.0.12	MIT	node_modules/brace-expansion/LICENSE	texts/9c63a23124d68cd30cd316a94a1a0bca34f032786df6df69fc4b5f136bac8d2e.txt
 buffer-equal-constant-time	1.0.1	BSD-3-Clause	node_modules/buffer-equal-constant-time/LICENSE.txt	texts/751d0e80fb5c828f8c3de198cc760e1e05377e47c8263ab6ee2f10cdc19ba658.txt
 bumpalo	3.10.0	Apache-2.0	Crates.io bumpalo-3.10.0/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 bumpalo	3.10.0	MIT	Crates.io bumpalo-3.10.0/LICENSE-MIT	texts/65f94e99ddaf4f5d1782a6dae23f35d4293a9a01444a13135a6887017d353cee.txt
@@ -99,9 +71,6 @@ cfg-if	0.1.10	Apache-2.0	Crates.io cfg-if-0.1.10/LICENSE-APACHE	texts/a60eea8175
 cfg-if	0.1.10	MIT	Crates.io cfg-if-0.1.10/LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
 cfg-if	1.0.0	Apache-2.0	Crates.io cfg-if-1.0.0/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 cfg-if	1.0.0	MIT	Crates.io cfg-if-1.0.0/LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
-cfg-if	1.0.4	Apache-2.0	https://static.crates.io/crates/cfg-if/cfg-if-1.0.4.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-cfg-if	1.0.4	MIT	https://static.crates.io/crates/cfg-if/cfg-if-1.0.4.crate :: LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
-chalk	6.0.0	MIT	node_modules/chalk/license	texts/5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3.txt
 charm.land/bubbles/v2	v2.2.2	MIT	charm.land/bubbles/v2@v2.2.2/LICENSE (h1:lXTAX9eRzW4t92r+pG4qTzkV1vU6rIO6TaIoETFf7v4=)	texts/373b3931e66627aadcfebd7771df93f3439203147e587a924508c63e20184d7f.txt
 charm.land/bubbletea/v2	v2.1.2	MIT	charm.land/bubbletea/v2@v2.1.2/LICENSE (h1:vB3XAcHhLB2gR3HOHpwO3lHB3nbvaowIgL3e5x/DUZo=)	texts/373b3931e66627aadcfebd7771df93f3439203147e587a924508c63e20184d7f.txt
 charm.land/lipgloss/v2	v2.1.1	MIT	charm.land/lipgloss/v2@v2.1.1/LICENSE (h1:F+vKWis9Kz3MFRsbICSDFtT1ZwVL+8f+36Dtg+OpKwc=)	texts/3f531fb89f23b218fbe16b24fb5950418fa1f0046db5cfddb2c1e0d6d39bfcc0.txt
@@ -109,7 +78,6 @@ color_quant	1.1.0	MIT	Crates.io color_quant-1.1.0/LICENSE	texts/592dc80f1a865d20
 compiler-rt for WASM	17 toolchain family	Apache-2.0 WITH LLVM-exception	https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-17.0.6/compiler-rt/LICENSE.TXT	texts/1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d.txt
 compiler-rt for WASM	32 toolchain family	Apache-2.0 WITH LLVM-exception	https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/compiler-rt/LICENSE.TXT	texts/1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d.txt
 compiler_builtins	0.1.140	MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)	https://static.crates.io/crates/compiler_builtins/compiler_builtins-0.1.140.crate :: LICENSE.txt	texts/789f172b2ebcfdd6ce9f0ef16763615c07d04fd1e0d352f7ce39c927d308de64.txt
-compiler_builtins	0.1.160	MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)	https://github.com/rust-lang/rust/tree/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/compiler-builtins/LICENSE.txt	texts/ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b.txt
 compiler_builtins vendored libm	0.1.140	File-level notices and terms (see text)	https://static.crates.io/crates/compiler_builtins/compiler_builtins-0.1.140.crate :: libm/src comment notices throughout files	texts/64ce18a440195d3aa4db3713c5b29499abb4a7c176afd8d9a448722030e14c62.txt
 compiler_builtins vendored libm	0.1.160	File-level notices and terms (see text)	https://github.com/rust-lang/rust/tree/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/compiler-builtins/libm/src comment notices throughout files	texts/5d294b26168ec835293d7ae60e81ab10bd33f0d0ae06873f4de01e45bed29369.txt
 compiler_builtins vendored libm	0.1.160	See libm terms	https://github.com/rust-lang/rust/tree/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/compiler-builtins/libm/LICENSE.txt	texts/3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7.txt
@@ -118,15 +86,12 @@ console_error_panic_hook	0.1.7	MIT	Crates.io console_error_panic_hook-0.1.7/LICE
 conv	0.3.3	MIT	Crates.io conv-0.3.3/LICENSE	texts/b2507383f9c3de7b2067c5af0fbe8ab5f24bb5fc0f606525201f2890d51c3400.txt
 crc32fast	1.3.2	Apache-2.0	Crates.io crc32fast-1.3.2/LICENSE-APACHE	texts/c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08.txt
 crc32fast	1.3.2	MIT	Crates.io crc32fast-1.3.2/LICENSE-MIT	texts/61d383b05b87d78f94d2937e2580cce47226d17823c0430fbcad09596537efcf.txt
-cross-spawn	7.0.6	MIT	node_modules/cross-spawn/LICENSE	texts/aaa78451b6fecd1b9c4594c796c133c0e90cad100372ff8bc6de615e9ef9adf1.txt
 custom_derive	0.1.7	MIT	Crates.io custom_derive-0.1.7/LICENSE	texts/9f95cbf09c33a40ca7e540d5adb58e8da482392af761d4785e43f0f8c3f62332.txt
 data-uri-to-buffer	4.0.1	MIT	node_modules/data-uri-to-buffer/README.md license section	texts/3072ef4a004c4f92b37eae61cdc3e27225c0a7d2f5e144700e40b9c5a5a7a9b9.txt
 debug	4.4.3	MIT	node_modules/debug/LICENSE	texts/3a61c6c96caf5c1d9b623fb9b04c822b783dfcb78aa7e49c76a3f643e6ed7f95.txt
 deranged	0.3.8	Apache-2.0	Crates.io deranged-0.3.8/LICENSE-Apache	texts/b8929fea28678da67251fb2daf9438f67503814211051861612441806d8edb05.txt
 deranged	0.3.8	MIT	Crates.io deranged-0.3.8/LICENSE-MIT	texts/04620bf27e4a643dd47bf27652320c205acdb776c1f9f24bb8c3bfaba10804c5.txt
 diff	8.0.4	BSD-3-Clause	node_modules/diff/LICENSE	texts/eda81a415869e67809f6a9f3fd6056062cb83a462118e07eec5e92b2e0c40ce9.txt
-dlmalloc	0.2.13	Apache-2.0	https://static.crates.io/crates/dlmalloc/dlmalloc-0.2.13.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-dlmalloc	0.2.13	MIT	https://static.crates.io/crates/dlmalloc/dlmalloc-0.2.13.crate :: LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
 dlmalloc	0.2.7	Apache-2.0	https://static.crates.io/crates/dlmalloc/dlmalloc-0.2.7.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 dlmalloc	0.2.7	MIT	https://static.crates.io/crates/dlmalloc/dlmalloc-0.2.7.crate :: LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
 dlmalloc dedication (WASI libc)	2.8.6	CC0-1.0	https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt	texts/a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499.txt
@@ -136,7 +101,6 @@ either	1.7.0	MIT	Crates.io either-1.7.0/LICENSE-MIT	texts/7576269ea71f767b992979
 extend	3.0.2	MIT	node_modules/extend/LICENSE	texts/97af7428f93afbab9bf79cd09254da1357161794f4255eb1b4599f04dd2d2e7c.txt
 fast-deep-equal	3.1.3	MIT	node_modules/fast-deep-equal/LICENSE	texts/7bf9b2de73a6b356761c948d0e9eeb4be6c1270bd04c79cd489c1e400ffdfc1a.txt
 fast-sha256	1.3.0	Unlicense	node_modules/fast-sha256/LICENSE	texts/88d9b4eb60579c191ec391ca04c16130572d7eedc4a86daa58bf28c6e14c9bcd.txt
-fast-uri	3.1.9	BSD-3-Clause	node_modules/fast-uri/LICENSE	texts/b010b0dfdfdb23d7396e03b82cd4621fc9bb8f95d6b0aea70b9c24e12074c786.txt
 fdeflate	0.3.6	Apache-2.0	Crates.io fdeflate-0.3.6/LICENSE-APACHE	texts/0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.txt
 fdeflate	0.3.6	MIT	Crates.io fdeflate-0.3.6/LICENSE-MIT	texts/c77a4cf9da729987d0fe7ccd811e3bd27393914ddf3d23467c18cc22954513b3.txt
 fetch-blob	3.2.0	MIT	node_modules/fetch-blob/LICENSE	texts/a5edccac92c3aa845694dcfaa72a0c098c1ae40d5ca6a37e4e59d778cf8e29bd.txt
@@ -147,7 +111,6 @@ flate2	1.0.34	MIT	Crates.io flate2-1.0.34/LICENSE-MIT	texts/378f5840b258e2779c39
 formdata-polyfill	4.0.10	MIT	node_modules/formdata-polyfill/LICENSE	texts/435a6437e47e5e479942255680e7fbe5f333d55234ada1c35f6115ca641d5bb4.txt
 gaxios	7.3.1	Apache-2.0	node_modules/gaxios/LICENSE	texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt
 gcp-metadata	8.1.2	Apache-2.0	node_modules/gcp-metadata/LICENSE	texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt
-get-east-asian-width	1.6.0	MIT	node_modules/get-east-asian-width/license	texts/5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3.txt
 getrandom	0.1.16	Apache-2.0	Crates.io getrandom-0.1.16/LICENSE-APACHE	texts/aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf.txt
 getrandom	0.1.16	MIT	Crates.io getrandom-0.1.16/LICENSE-MIT	texts/209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b.txt
 getrandom	0.2.7	Apache-2.0	Crates.io getrandom-0.2.7/LICENSE-APACHE	texts/aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf.txt
@@ -156,8 +119,6 @@ gif	0.13.1	Apache-2.0	Crates.io gif-0.13.1/LICENSE-APACHE	texts/769f80b5bcb42ed0
 gif	0.13.1	MIT	Crates.io gif-0.13.1/LICENSE-MIT	texts/77257f3d2181236b1aee78920238062ae64efe13c5d858b2db126e79c9e1b14f.txt
 gimli	0.29.0	Apache-2.0	https://static.crates.io/crates/gimli/gimli-0.29.0.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 gimli	0.29.0	MIT	https://static.crates.io/crates/gimli/gimli-0.29.0.crate :: LICENSE-MIT	texts/7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0.txt
-gimli	0.34.0	Apache-2.0	https://static.crates.io/crates/gimli/gimli-0.34.0.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-gimli	0.34.0	MIT	https://static.crates.io/crates/gimli/gimli-0.34.0.crate :: LICENSE-MIT	texts/7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0.txt
 github.com/atotto/clipboard	v0.1.4	BSD-3-Clause	github.com/atotto/clipboard@v0.1.4/LICENSE (h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=)	texts/2c4bac8e2a97180d6e7758c37de85d1cda1859aaf85b56da15d935d2d9a5564f.txt
 github.com/charmbracelet/colorprofile	v0.4.3	MIT	github.com/charmbracelet/colorprofile@v0.4.3/LICENSE (h1:QPa1IWkYI+AOB+fE+mg/5/4HRMZcaXex9t5KX76i20Q=)	texts/57d6eeeb336030b89c0e0d12cf869f84b97a481cd00b350ef21fca995da5a39a.txt
 github.com/charmbracelet/ultraviolet	v0.0.0-20261008173134-6b8d4baf91b4	MIT	github.com/charmbracelet/ultraviolet@v0.0.0-20261008173134-6b8d4baf91b4/LICENSE (h1:hISLzUbwcvJbGoNR6A3L/TpguRRnACBmZOee8LcHLJw=)	texts/8a77c755a1d1fbdc932e86f0449549121820b6f4cc1234b12fcfc8d38013c1de.txt
@@ -192,55 +153,31 @@ google-logging-utils	1.1.3	Apache-2.0	node_modules/google-logging-utils/LICENSE	
 graceful-fs	4.2.12	BlueOak-1.0.0	node_modules/graceful-fs/LICENSE.md	texts/8a1af140fdfbf5afd3df27f7e662f989c5b963a300020dfafce42033cae9e004.txt
 hashbrown	0.15.2	Apache-2.0	https://static.crates.io/crates/hashbrown/hashbrown-0.15.2.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 hashbrown	0.15.2	MIT	https://static.crates.io/crates/hashbrown/hashbrown-0.15.2.crate :: LICENSE-MIT	texts/ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2.txt
-hashbrown	0.17.1	Apache-2.0	https://static.crates.io/crates/hashbrown/hashbrown-0.17.1.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-hashbrown	0.17.1	MIT	https://static.crates.io/crates/hashbrown/hashbrown-0.17.1.crate :: LICENSE-MIT	texts/ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2.txt
-highlight.js	10.7.3	BSD-3-Clause	node_modules/highlight.js/LICENSE	texts/6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490.txt
-hosted-git-info	9.0.3	ISC	node_modules/hosted-git-info/LICENSE	texts/c1476ec53119cd4c8370f91f5152ac76312a29b4fae2d49b5e0e0970fe0fa5ee.txt
 https-proxy-agent	7.0.6	MIT	node_modules/gaxios/node_modules/https-proxy-agent/LICENSE	texts/8d8c55319c7729d57be811c747452636688d54f19701ee0752b6b15ad3771d9a.txt
-ignore	7.0.8	MIT	node_modules/ignore/LICENSE-MIT	texts/9c94db23dc4b1e9aaee5d195668b916afc71efed54af226b66cf0ccc4389c1c0.txt
 image	0.24.9	Apache-2.0	Crates.io image-0.24.9/LICENSE-APACHE	texts/0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.txt
 image	0.24.9	MIT	Crates.io image-0.24.9/LICENSE-MIT	texts/c77a4cf9da729987d0fe7ccd811e3bd27393914ddf3d23467c18cc22954513b3.txt
 imageproc	0.23.0	MIT	Crates.io imageproc-0.23.0/LICENSE	texts/5bffc7c9c5b2b2d31391f9022d5b744c17eedb8ef983aac5a5b72c0d9aeca6b5.txt
 instant	0.1.13	BSD-3-Clause	Crates.io instant-0.1.13/LICENSE	texts/2510d4cde8c4e13d8c54b9fe2a9d144daf567ec8d02832f1454e7ca2d58cdda6.txt
-isexe	2.0.0	ISC	node_modules/isexe/LICENSE	texts/4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b.txt
 itertools	0.10.3	Apache-2.0	Crates.io itertools-0.10.3/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 itertools	0.10.3	MIT	Crates.io itertools-0.10.3/LICENSE-MIT	texts/7576269ea71f767b99297934c0b2367532690f8c4badc695edf8e04ab6a1e545.txt
-jiti	2.7.0	MIT	node_modules/jiti/LICENSE	texts/46231df5a7733c3f52f11b71f3df61813007745b62b09031acfb45fb42d75082.txt
 jpeg-decoder	0.3.1	Apache-2.0	Crates.io jpeg-decoder-0.3.1/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 jpeg-decoder	0.3.1	MIT	Crates.io jpeg-decoder-0.3.1/LICENSE-MIT	texts/22b83fb92a50418c7df9564b9c179fa2a0e74f293bc58b72dd7e218fc0902143.txt
 js-sys	0.3.62	Apache-2.0	Crates.io js-sys-0.3.62/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 js-sys	0.3.62	MIT	Crates.io js-sys-0.3.62/LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
 json-bigint	1.0.0	MIT	node_modules/json-bigint/LICENSE	texts/def82c085d05e795fe6a9cb5b70c48e022212355afc0e91d4de047cade28df06.txt
-json-schema-traverse	1.0.0	MIT	node_modules/json-schema-traverse/LICENSE	texts/7bf9b2de73a6b356761c948d0e9eeb4be6c1270bd04c79cd489c1e400ffdfc1a.txt
 jwa	2.0.1	MIT	node_modules/jwa/LICENSE	texts/3320319f8a5f42bc4254e65471eca7a5ea4dc8c883c4c24b4868e36b14890bcf.txt
 jws	4.0.1	MIT	node_modules/jws/LICENSE	texts/3320319f8a5f42bc4254e65471eca7a5ea4dc8c883c4c24b4868e36b14890bcf.txt
 libc	0.2.126	Apache-2.0	Crates.io libc-0.2.126/LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
 libc	0.2.126	MIT	Crates.io libc-0.2.126/LICENSE-MIT	texts/a8d47ff51ca256f56a8932dba07660672dbfe3004257ca8de708aac1415937a1.txt
 libc	0.2.169	Apache-2.0	https://static.crates.io/crates/libc/libc-0.2.169.crate :: LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
 libc	0.2.169	MIT	https://static.crates.io/crates/libc/libc-0.2.169.crate :: LICENSE-MIT	texts/a8d47ff51ca256f56a8932dba07660672dbfe3004257ca8de708aac1415937a1.txt
-libc	0.2.189	Apache-2.0	https://static.crates.io/crates/libc/libc-0.2.189.crate :: LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
-libc	0.2.189	MIT	https://static.crates.io/crates/libc/libc-0.2.189.crate :: LICENSE-MIT	texts/123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e.txt
-llhttp (Undici WASM, both variants)	9.3.1	MIT	https://raw.githubusercontent.com/nodejs/llhttp/4fce8cac9433aa4728428bb3b26880d32ad05c88/LICENSE-MIT	texts/ebca854e0134cd256d673627c20499f42577eb74bacf08b9f25b626a73c91277.txt
 log	0.4.17	Apache-2.0	Crates.io log-0.4.17/LICENSE-APACHE	texts/7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c.txt
 log	0.4.17	MIT	Crates.io log-0.4.17/LICENSE-MIT	texts/705aaaaecefa087c187bd2eacdb01b8ac1c5ee95b1d5d04d8d7efe0363207df8.txt
-lovely-mermaid	0.3.3	Apache-2.0	node_modules/lovely-mermaid/LICENSE	texts/d7aefc12620699f8cebff08097f5ec76b984d1ab19d4f5f10608b916fa62ba2f.txt
-lru-cache	11.5.3	BlueOak-1.0.0	node_modules/lru-cache/LICENSE.md	texts/8a1af140fdfbf5afd3df27f7e662f989c5b963a300020dfafce42033cae9e004.txt
-marked	18.0.11	MIT	node_modules/marked/LICENSE	texts/8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c.txt
-marked-cjk-friendly	0.1.2	MIT	node_modules/marked-cjk-friendly/LICENSE	texts/e10f2bca78e49ccdad88766032efcb50d16f7ac898a975e20c8cbbe3e81e8599.txt
 matrixmultiply	0.3.9	Apache-2.0	Crates.io matrixmultiply-0.3.9/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 matrixmultiply	0.3.9	MIT	Crates.io matrixmultiply-0.3.9/LICENSE-MIT	texts/792d075c7bad6dac258a44e799eb64cbf465e24d9932d27669be08c5ec957e27.txt
 memchr	2.7.4	MIT	https://static.crates.io/crates/memchr/memchr-2.7.4.crate :: LICENSE-MIT	texts/0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f.txt
 memchr	2.7.4	Unlicense (alternative)	https://static.crates.io/crates/memchr/memchr-2.7.4.crate :: UNLICENSE	texts/7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c.txt
 memchr	2.7.4	Upstream attribution or license selection (see text)	https://static.crates.io/crates/memchr/memchr-2.7.4.crate :: COPYING	texts/01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f.txt
-memchr	2.7.6	MIT	https://static.crates.io/crates/memchr/memchr-2.7.6.crate :: LICENSE-MIT	texts/0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f.txt
-memchr	2.7.6	Unlicense (alternative)	https://static.crates.io/crates/memchr/memchr-2.7.6.crate :: UNLICENSE	texts/7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c.txt
-memchr	2.7.6	Upstream attribution or license selection (see text)	https://static.crates.io/crates/memchr/memchr-2.7.6.crate :: COPYING	texts/01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f.txt
-memchr	2.8.3	MIT	https://static.crates.io/crates/memchr/memchr-2.8.3.crate :: LICENSE-MIT	texts/0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f.txt
-memchr	2.8.3	Unlicense (alternative)	https://static.crates.io/crates/memchr/memchr-2.8.3.crate :: UNLICENSE	texts/7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c.txt
-memchr	2.8.3	Upstream attribution or license selection (see text)	https://static.crates.io/crates/memchr/memchr-2.8.3.crate :: COPYING	texts/01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f.txt
-memchr (Milo locked Rust dependency)	2.8.3	MIT	memchr-2.8.3/LICENSE-MIT (Crates.io lock checksum cf8baf1c...)	texts/0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f.txt
-memchr (Milo locked Rust dependency)	2.8.3	Unlicense	memchr-2.8.3/UNLICENSE (Crates.io lock checksum cf8baf1c...)	texts/7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c.txt
-minimatch	11.0.3	BlueOak-1.0.0	node_modules/minimatch/LICENSE.md	texts/2c7c5d22ed5a8ee968c64757710979afcd77438c48b4a265b94e615babd8a901.txt
 miniz_oxide	0.7.4	Apache-2.0	https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.7.4.crate :: LICENSE-APACHE.md	texts/0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.txt
 miniz_oxide	0.7.4	MIT	https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.7.4.crate :: LICENSE-MIT.md	texts/e190940e8ad3cdd4fca962a6508ed6865d589d314b1cb055f86000e124b88d8d.txt
 miniz_oxide	0.7.4	Upstream attribution or license selection (see text)	https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.7.4.crate :: LICENSE	texts/e190940e8ad3cdd4fca962a6508ed6865d589d314b1cb055f86000e124b88d8d.txt
@@ -248,10 +185,6 @@ miniz_oxide	0.7.4	Zlib (alternative)	https://static.crates.io/crates/miniz_oxide
 miniz_oxide	0.8.0	Apache-2.0	Crates.io miniz_oxide-0.8.0/LICENSE-APACHE.md	texts/0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.txt
 miniz_oxide	0.8.0	MIT	Crates.io miniz_oxide-0.8.0/LICENSE	texts/e190940e8ad3cdd4fca962a6508ed6865d589d314b1cb055f86000e124b88d8d.txt
 miniz_oxide	0.8.0	MIT	Crates.io miniz_oxide-0.8.0/LICENSE-MIT.md	texts/e190940e8ad3cdd4fca962a6508ed6865d589d314b1cb055f86000e124b88d8d.txt
-miniz_oxide	0.9.1	Apache-2.0	https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.9.1.crate :: LICENSE-APACHE.md	texts/0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.txt
-miniz_oxide	0.9.1	MIT	https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.9.1.crate :: LICENSE-MIT.md	texts/799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d.txt
-miniz_oxide	0.9.1	Upstream attribution or license selection (see text)	https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.9.1.crate :: LICENSE	texts/4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b.txt
-miniz_oxide	0.9.1	Zlib (alternative)	https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.9.1.crate :: LICENSE-ZLIB.md	texts/0a54e647fe54104658b5e563c04c6f9edf251710e47bce692e0bd990a4ddaa39.txt
 models.dev catalog data (via Pi AI)	Pi 1.6.0	MIT	https://raw.githubusercontent.com/anomalyco/models.dev/b1cd59dd94d68f5caaaad01ae8b74bdc8a5044ed/LICENSE	texts/dc2dc41c9fea2fd3c41c21c6f484844cab367800b88ff24781f980ad3a9d160a.txt
 ms	2.1.3	MIT	node_modules/ms/license.md	texts/1662fae9b5314d11cf51284e2dcd1f006a354f7343f08712a730fcff9a359801.txt
 nalgebra	0.30.1	BSD-3-Clause	Crates.io nalgebra-0.30.1/LICENSE	texts/86ae51c591e742d80ce56823d35e2e176b53e38a99bd8499c85dae31ef4fe1f7.txt
@@ -275,8 +208,6 @@ num-traits	0.2.19	Apache-2.0	Crates.io num-traits-0.2.19/LICENSE-APACHE	texts/a6
 num-traits	0.2.19	MIT	Crates.io num-traits-0.2.19/LICENSE-MIT	texts/6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb.txt
 object	0.36.7	Apache-2.0	https://static.crates.io/crates/object/object-0.36.7.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 object	0.36.7	MIT	https://static.crates.io/crates/object/object-0.36.7.crate :: LICENSE-MIT	texts/0b74dfa0bcee5c420c6b7f67b4b2658f9ab8388c97b8e733975f2cecbdd668a6.txt
-object	0.39.1	Apache-2.0	https://static.crates.io/crates/object/object-0.39.1.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-object	0.39.1	MIT	https://static.crates.io/crates/object/object-0.39.1.crate :: LICENSE-MIT	texts/0b74dfa0bcee5c420c6b7f67b4b2658f9ab8388c97b8e733975f2cecbdd668a6.txt
 once_cell	1.13.0	Apache-2.0	Crates.io once_cell-1.13.0/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 once_cell	1.13.0	MIT	Crates.io once_cell-1.13.0/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
 openai	7.59.0	Apache-2.0	node_modules/openai/LICENSE	texts/636eb7d79da9bb6d515a4b3fd417aa26679eb3cf16396ddab4bc55fa74e616e4.txt
@@ -289,7 +220,6 @@ palette_derive	0.6.1	MIT	Crates.io palette_derive-0.6.1/LICENSE-MIT	texts/be1313
 partial-json	0.1.7	MIT	node_modules/partial-json/LICENSE	texts/cd519ad3d7e012427f978dfb2e3b92ee403d189d7b859ba6bf68fd7e12ca456f.txt
 paste	1.0.15	Apache-2.0	Crates.io paste-1.0.15/LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
 paste	1.0.15	MIT	Crates.io paste-1.0.15/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
-path-key	3.1.1	MIT	node_modules/path-key/license	texts/48da2f39e100d4085767e94966b43f4fa95ff6a0698fba57ed460914e35f94a0.txt
 perlin2d	0.2.6	Apache-2.0	Crates.io perlin2d-0.2.6/LICENSE	texts/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt
 phf	0.11.0	MIT	https://raw.githubusercontent.com/sfackler/rust-phf/v0.11.0/LICENSE	texts/d8870d5e2ab20fc50915b711c5aa7588131c9abcc1bcb980da1efd7486522a46.txt
 phf_generator	0.11.0	MIT	https://raw.githubusercontent.com/sfackler/rust-phf/v0.11.0/LICENSE	texts/d8870d5e2ab20fc50915b711c5aa7588131c9abcc1bcb980da1efd7486522a46.txt
@@ -334,22 +264,15 @@ retry	0.12.0	MIT	node_modules/proper-lockfile/node_modules/retry/License	texts/0
 retry	0.13.1	MIT	node_modules/retry/License	texts/01ad164273e8e095abc9dbd1c21e194594a671af7d528cb43ee7b4c903ba7da3.txt
 rustc-demangle	0.1.24	Apache-2.0	https://static.crates.io/crates/rustc-demangle/rustc-demangle-0.1.24.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 rustc-demangle	0.1.24	MIT	https://static.crates.io/crates/rustc-demangle/rustc-demangle-0.1.24.crate :: LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
-rustc-demangle	0.1.28	Apache-2.0	https://static.crates.io/crates/rustc-demangle/rustc-demangle-0.1.28.crate :: LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
-rustc-demangle	0.1.28	MIT	https://static.crates.io/crates/rustc-demangle/rustc-demangle-0.1.28.crate :: LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
-rustc-literal-escaper	0.0.8	Apache-2.0	https://static.crates.io/crates/rustc-literal-escaper/rustc-literal-escaper-0.0.8.crate :: LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
-rustc-literal-escaper	0.0.8	MIT	https://static.crates.io/crates/rustc-literal-escaper/rustc-literal-escaper-0.0.8.crate :: LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
 rusttype	0.9.2	Apache-2.0	Crates.io rusttype-0.9.2/LICENSE-APACHE	texts/000b4962e6b27176a0ff89cce4be555b16472cafb5671eb2804a8fdac6854793.txt
 rusttype	0.9.2	MIT	Crates.io rusttype-0.9.2/LICENSE-MIT	texts/fd198949ebcc78b2d12fc57ebfb2da4ae8f781b7c3b7047aaccc2f804b6f12ef.txt
 safe-buffer	5.2.1	MIT	node_modules/safe-buffer/LICENSE	texts/c7cc929b57080f4b9d0c6cf57669f0463fc5b39906344dfc8d3bc43426b30eac.txt
 safe_arch	0.7.2	Apache-2.0	Crates.io safe_arch-0.7.2/LICENSE-APACHE.md	texts/870e20c217d15bcfcbe53d7c5867cd8fac44a4ca0b41fc1eb843557e16063eba.txt
 safe_arch	0.7.2	MIT	Crates.io safe_arch-0.7.2/LICENSE-MIT.md	texts/45ca0f2bd0519a1826b11dbbd3e170c7bd3173b919a27b8be88329231806d395.txt
-semver	7.8.5	ISC	node_modules/semver/LICENSE	texts/4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b.txt
 serde	1.0.188	Apache-2.0	Crates.io serde-1.0.188/LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
 serde	1.0.188	MIT	Crates.io serde-1.0.188/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
 serde_derive	1.0.188	Apache-2.0	Crates.io serde_derive-1.0.188/LICENSE-APACHE	texts/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a.txt
 serde_derive	1.0.188	MIT	Crates.io serde_derive-1.0.188/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
-shebang-command	2.0.0	MIT	node_modules/shebang-command/license	texts/69dee148a2cc470554dfa7142e830662062394d0fe67cddd379aba90dc60d6b3.txt
-shebang-regex	3.0.0	MIT	node_modules/shebang-regex/license	texts/48da2f39e100d4085767e94966b43f4fa95ff6a0698fba57ed460914e35f94a0.txt
 signal-exit	3.0.7	ISC	node_modules/signal-exit/LICENSE.txt	texts/e05b1eaf5b5f99b7ad75cd1f38858ff9a311780b97715ead67936d60bf96aa7e.txt
 simba	0.7.3	Apache-2.0	Crates.io simba-0.7.3/LICENSE	texts/ceacfa4d7fa67df64ab09a56fe248c50a3bfc9bc00374d69bd74ad763b14b89c.txt
 simd-adler32	0.3.7	MIT	Crates.io simd-adler32-0.3.7/LICENSE.md	texts/42a35170233e83e18856792e748de4c1ce4a63b2afce9a370c89ef3fe23f9f2d.txt
@@ -372,11 +295,9 @@ toml	0.5.9	Apache-2.0	Crates.io toml-0.5.9/LICENSE-APACHE	texts/a60eea8175145316
 toml	0.5.9	MIT	Crates.io toml-0.5.9/LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
 ttf-parser	0.6.2	Apache-2.0	Crates.io ttf-parser-0.6.2/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 ttf-parser	0.6.2	MIT	Crates.io ttf-parser-0.6.2/LICENSE-MIT	texts/0118c87dc5e451ede21a999b0f8808f6806f2ac6aac72a3a768f5c67d9b02340.txt
-typebox	1.3.27	MIT	node_modules/typebox/license	texts/e8a7cc256941a26ba8234f04390165243a4d42f74fd6491934140605bf7eae2d.txt
 typenum	1.17.0	Apache-2.0	Crates.io typenum-1.17.0/LICENSE-APACHE	texts/516b24e051bf5630880ebbd55c40a25ce9552ebaf8970a53e8976eb70e522406.txt
 typenum	1.17.0	MIT	Crates.io typenum-1.17.0/LICENSE	texts/db11fec9946737df39ca3898d9cd8c10ec6f6c3a884a6802b0ad0b81b4e8f23a.txt
 typenum	1.17.0	MIT	Crates.io typenum-1.17.0/LICENSE-MIT	texts/a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f.txt
-undici	8.12.4	MIT	node_modules/undici/LICENSE	texts/a6db8096b2707bc0102d256917d4d33f298ba36d8c3f25de067a2b5bb379db27.txt
 unicode-ident	1.0.2	Apache-2.0	Crates.io unicode-ident-1.0.2/LICENSE-APACHE	texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt
 unicode-ident	1.0.2	MIT	Crates.io unicode-ident-1.0.2/LICENSE-MIT	texts/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3.txt
 unicode-ident	1.0.2	Unicode-DFS-2016	Crates.io unicode-ident-1.0.2/LICENSE-UNICODE	texts/68f5b9f5ea36881a0942ba02f558e9e1faf76cc09cb165ad801744c61b738844.txt
@@ -395,7 +316,6 @@ web-sys	0.3.55	Apache-2.0	Crates.io web-sys-0.3.55/LICENSE-APACHE	texts/a60eea81
 web-sys	0.3.55	MIT	Crates.io web-sys-0.3.55/LICENSE-MIT	texts/378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397.txt
 weezl	0.1.8	Apache-2.0	Crates.io weezl-0.1.8/LICENSE-APACHE	texts/769f80b5bcb42ed0af4e4d2fd74e1ac9bf843cb80c5a29219d1ef3544428a6bb.txt
 weezl	0.1.8	MIT	Crates.io weezl-0.1.8/LICENSE-MIT	texts/573f5227db835cd30bbdd3aed3f82615f80119a4d5c82b4daf642dbfe2b6afde.txt
-which	2.0.2	ISC	node_modules/which/LICENSE	texts/4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b.txt
 wide	0.7.28	Zlib (conservative inclusion; linkage not established)	https://static.crates.io/crates/wide/wide-0.7.28.crate :: LICENSE-ZLIB.md	texts/6f5eb1806918b0e331db6aae84abddbcc7a297ffea58582211e41e941b5a1841.txt
 ws	8.23.0	MIT	node_modules/ws/LICENSE	texts/2b29dcfe0d6471f7e8c92c5fb38c9f93edee10330937055440192f1832b1ecef.txt
 yaml	2.9.0	ISC	node_modules/yaml/LICENSE	texts/5bba27375d93e9119f76c1015f7672cf9ad5f70952296e0842fb2243d6376869.txt

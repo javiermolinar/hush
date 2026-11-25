@@ -26,12 +26,10 @@ func TestParsePrivateAndDeferredFlagsBeforeWork(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--mode=rpc", "prompt"}, "startup messages"},
-		{[]string{"--mode=rpc", "@input.txt"}, "@file arguments"},
-		{[]string{"--mode=json", "--no-wait", "prompt"}, "--no-wait only"},
-		{[]string{"--no-session", "--mode=json", "--continue", "prompt"}, "--no-session requires"},
-		{[]string{"--mode=json", "--thinking=off|minimal", "prompt"}, "invalid --thinking"},
-		{[]string{"--session-dir=/tmp", "prompt"}, "require Pi session import"},
+		{[]string{"--mode=rpc", "prompt"}, "unknown mode"},
+		{[]string{"--mode=json", "--no-wait", "prompt"}, "unknown mode"},
+		{[]string{"--session-dir=/tmp", "prompt"}, "unknown flag"},
+		{[]string{"--profile=pi", "status"}, "only the Hush backend"},
 		{[]string{"prompt", "--no-session", "--thread=7"}, "--no-session requires"},
 		{[]string{"--no-session", "--no-wait", "prompt"}, "--no-session requires"},
 		{[]string{"status", "--no-session"}, "--no-session requires"},
@@ -73,13 +71,10 @@ func TestInteractiveRouting(t *testing.T) {
 		{[]string{"print a reply"}, true, true, false},
 		{[]string{"--print"}, true, true, false},
 		{[]string{"--mode=text"}, true, true, false},
-		{[]string{"--mode=json"}, true, true, false},
-		{[]string{"--mode=rpc"}, true, true, false},
 		{[]string{"--mode=protocol"}, true, true, false},
 		{[]string{"--no-session"}, true, true, false},
 		{[]string{"--no-wait"}, true, true, false},
 		{[]string{"--request-id=explicit"}, true, true, false},
-		{[]string{"--model=fixture"}, true, true, false},
 		{[]string{"--help"}, true, true, false},
 	} {
 		o, err := parse(tc.args)
@@ -365,6 +360,13 @@ func TestCodexAuthLoopback(t *testing.T) {
 		_, production, _ = bytes.Cut(production, []byte("\n"))
 	}
 	if err := os.WriteFile(entry, append([]byte(prefix), production...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pack, err := os.ReadFile(bundle + ".wasm-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry+".wasm-pack", pack, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(home, "hush")
@@ -689,14 +691,10 @@ func TestParseLiteralPromptAndTrailingFlags(t *testing.T) {
 	}
 }
 
-func TestParsePiModes(t *testing.T) {
-	o, err := parse([]string{"--mode=json", "--no-session", "--models=faux/faux-1,faux/faux-2", "@input.txt", "--", "-first", "second"})
-	if err != nil || o.command != piJSON || !o.ephemeral || strings.Join(o.prompt, ",") != "-first,second" || len(o.fileArgs) != 1 || len(o.pi.Models) != 2 {
-		t.Fatalf("Pi JSON options = %+v, %v", o, err)
-	}
-	o, err = parse([]string{"--mode=rpc", "--no-session", "-n", "fixture title"})
-	if err != nil || o.command != piRPC || !o.ephemeral || o.pi.Name != "fixture title" {
-		t.Fatalf("Pi RPC options = %+v, %v", o, err)
+func TestLiteralAtReferenceInNativePrint(t *testing.T) {
+	o, err := parse([]string{"--print", "Read", "@notes.txt"})
+	if err != nil || o.command != printAnswer || strings.Join(o.prompt, " ") != "Read @notes.txt" {
+		t.Fatalf("literal @ reference = %+v, %v", o, err)
 	}
 }
 

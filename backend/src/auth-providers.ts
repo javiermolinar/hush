@@ -1,7 +1,7 @@
 import providers from "../../app/internal/authproviders/providers.json" with { type: "json" };
 
 // Shared with the Go TUI and keyring helper. These flows must work with the
-// bundled Pi version, without models.json overlays or extension providers.
+// bundled Pi AI version, without models.json overlays.
 export const defaultAuthProvider = "openai-codex";
 export type AuthProvider = (typeof providers)[number];
 export const authProviders: readonly AuthProvider[] = providers;

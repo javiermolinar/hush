@@ -27,7 +27,7 @@ const (
 	privateCloseGrace   = 2 * time.Second
 )
 
-func startPrivate(ctx context.Context, node, entry string, profile backendstart.Profile, piEvents bool) (*privateBackend, error) {
+func startPrivate(ctx context.Context, node, entry string) (*privateBackend, error) {
 	base, err := filepath.Abs(os.TempDir())
 	if err != nil {
 		return nil, fmt.Errorf("resolve temporary directory: %w", err)
@@ -52,14 +52,9 @@ func startPrivate(ctx context.Context, node, entry string, profile backendstart.
 	defer parentRead.Close()
 	b.life = parentWrite // Only this invocation holds the write end.
 	ready := readyLine{socket: b.socket, result: make(chan error, 1)}
-	args := []string{entry, "--no-session", "--socket", b.socket, "--parent-stdin"}
-	if piEvents {
-		args = append(args, "--pi-events")
-	} else {
-		args = append(args, "--profile", string(profile))
-	}
+	args := []string{entry, "--no-session", "--socket", b.socket, "--parent-stdin", "--profile", "hush"}
 	cmd := exec.Command(node, args...)
-	cmd.Env = backendstart.RuntimeEnv(profile)
+	cmd.Env = backendstart.RuntimeEnv()
 	cmd.Stdin, cmd.Stdout = parentRead, &ready
 	// Child diagnostics aren't part of native CLI stdout/stderr. In particular,
 	// do not surface a provider's output from a private invocation.

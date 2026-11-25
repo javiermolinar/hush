@@ -9,7 +9,6 @@ import (
 
 func main() {
 	copySchema("../protocol/v1/core.schema.json", "internal/core.schema.json")
-	copySchema("../protocol/v1/pi-1.6/pi-events.schema.json", "internal/pi-events.schema.json")
 	copySchema("../protocol/v1/intro.schema.json", "internal/intro.schema.json")
 	copySchema("../protocol/v1/thread-directory.schema.json", "internal/thread-directory.schema.json")
 	copySchema("../protocol/v1/images.schema.json", "internal/images.schema.json")

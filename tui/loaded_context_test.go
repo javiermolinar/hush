@@ -132,7 +132,7 @@ func TestLoadedContextDiscardsLateRepliesAfterThreadSwitch(t *testing.T) {
 	if !strings.Contains(frame, "/work/2/AGENTS.md") || strings.Contains(frame, "/work/1/AGENTS.md") {
 		t.Fatal(frame)
 	}
-	if s.draft != "keep this draft" || threadBusy(s) || threadBusy(m.threads["2"]) {
+	if s.draft.text != "keep this draft" || threadBusy(s) || threadBusy(m.threads["2"]) {
 		t.Fatal("inspection changed the draft or run")
 	}
 	press(m, tea.KeyEscape, 0)

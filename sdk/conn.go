@@ -40,7 +40,6 @@ type session struct {
 	hello    Hello // set before publishing the session
 	verified bool  // guarded by mu; events are forbidden during the handshake
 	event    func(map[string]any) error
-	pi       bool
 }
 
 func (c *Client) dial(ctx, lifetime context.Context, offered map[string][]uint64, event func(map[string]any) error) (_ *session, err error) {
@@ -69,7 +68,7 @@ func (c *Client) dial(ctx, lifetime context.Context, offered map[string][]uint64
 		return nil, ErrProtocol
 	}
 	s := &session{wire: conn, done: make(chan struct{}), gate: make(chan struct{}, 1),
-		pending: make(map[string]pendingCall), event: event, pi: len(offered["piEvents"]) != 0 && event != nil}
+		pending: make(map[string]pendingCall), event: event}
 	release := context.AfterFunc(lifetime, func() { s.fail(ErrClosed) })
 	go func() { s.read(); release(); c.untrack(s) }()
 	defer func() {
@@ -174,7 +173,7 @@ func (s *session) read() {
 
 func (s *session) receive(f map[string]any) error {
 	typ, _ := f["type"].(string)
-	if typ == "patch" || typ == "state_end" || s.pi && (typ == "pi_event" || typ == "pi_end") {
+	if typ == "patch" || typ == "state_end" {
 		s.mu.Lock()
 		verified := s.verified
 		s.mu.Unlock()
@@ -378,10 +377,6 @@ func (s *session) receive(f map[string]any) error {
 				return err
 			}
 		}
-	} else if ok && s.pi && isPiMethod(method) {
-		if err := piEnvelope(f); err != nil {
-			return err
-		}
 	} else if err := schemaCheck(schema, f); err != nil {
 		return err
 	}
@@ -394,7 +389,7 @@ func (s *session) receive(f map[string]any) error {
 	}
 	s.mu.Unlock()
 	if !pending {
-		if s.pi || storeReply {
+		if storeReply {
 			return ErrProtocol
 		}
 		// A caller can cancel a wait without cancelling admitted work.

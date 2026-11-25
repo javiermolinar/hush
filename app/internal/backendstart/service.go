@@ -67,7 +67,7 @@ type loginService struct {
 }
 
 func servicePaths() (loginService, error) {
-	agent, _, err := Hush.directory()
+	agent, err := hushDirectory()
 	if err != nil {
 		return loginService{}, err
 	}

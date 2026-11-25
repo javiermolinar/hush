@@ -134,11 +134,11 @@ func readDraftImage(path string, cap int) (draftImage, error) {
 
 func (m *Model) pastePrompt(msg tea.PasteMsg) tea.Cmd {
 	if !m.images.capable {
-		return m.updatePrompt(msg)
+		return m.pasteText(msg.Content)
 	}
 	sets := dropCandidates(msg.Content)
 	if len(sets) == 0 {
-		return m.updatePrompt(msg)
+		return m.pasteText(msg.Content)
 	}
 	return m.attachImages(msg.Content, func(ctx context.Context, room, count int) ([]draftImage, error) {
 		for _, paths := range sets {
@@ -194,9 +194,11 @@ func (m *Model) attachImages(fallback string, read func(context.Context, int, in
 		}
 		if fallback != "" {
 			if m.foreground(r) && m.editor.revision == revision {
-				return tea.Batch(m.updatePrompt(tea.PasteMsg{Content: fallback}), m.refreshFilePicker())
+				return tea.Batch(m.pasteText(fallback), m.refreshFilePicker())
 			}
-			m.restoreText(r.owner, fallback)
+			if !m.restoreText(r.owner, fallback) {
+				return m.notifyRoute(r, pasteDoesNotFit, x.Warning)
+			}
 			return nil
 		}
 		return m.notifyRoute(r, "No supported clipboard image within the attachment limit", x.Warning)

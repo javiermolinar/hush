@@ -1,25 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, fstatSync, realpathSync, writeSync } from "node:fs";
 import { chmod } from "node:fs/promises";
+import { flushCompileCache } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
-import type { CredentialStore } from "@earendil-works/pi-ai";
-import { ModelRegistry, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createModels, InMemoryCredentialStore, type Models } from "@earendil-works/pi-ai";
 import {
-  AgentDoc, createRegistry, Harness, hook, MemoryStorage, ToolTask, type AgentChange, type Conversation, type Cursor,
+  createRegistry, Harness, hook, MemoryStorage, ROOT_CONVERSATION_ID, ToolTask, type AgentChange, type Conversation,
   type Extension, type HarnessSettings,
 } from "@earendil-works/pi-durable";
-import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createCoreServer, type NativeHost } from "../../server/src/index.js";
 import { WireError } from "../../server/src/wire.js";
 import { runAuthCommand } from "./auth.js";
 import { registerBundledOAuthFlows } from "./auth-providers.js";
-import { credentialAdvice, credentialConfigurationFailed, hushCredentialStore } from "./credentials.js";
+import { CredentialWrites, credentialAdvice, credentialConfigurationFailed, hushCredentialStore } from "./credentials.js";
 import { nativeModelCatalog, nativeSelectionValidator } from "./model-catalog.js";
-import { Rejected } from "./pi/commands.js";
+import { ModelOverlayError } from "./model-overlays.js";
+import { createHushModels } from "./models.js";
 import { IntroReports } from "./intro.js";
 import { ThreadDirectory } from "./thread-directory.js";
 import { threadTitleGenerator } from "./thread-title-model.js";
@@ -30,10 +30,11 @@ import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
 import { LoadedContext } from "./loaded-context.js";
 import { skillUnavailable, StandaloneSkills } from "./workspace-skills.js";
 import { readStandaloneSettings, StandaloneSettingsHost, standaloneModelDefault, standaloneSettingsView } from "./standalone-settings.js";
-import { workspaceCodemode } from "./codemode.js";
+import type { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
 import { runWorkspaceTrustCommand, WorkspaceTrust } from "./workspace-trust.js";
 import { ImageFitter } from "./images.js";
+import { WasmAssets } from "./wasm-assets.js";
 import { BackendError, parseConfig, type BackendConfig } from "./config.js";
 import { fauxModel, fauxTools, makeFaux } from "./faux.js";
 import { checkStoreProfile, hushDefaultModel, initializeStore, privateDirectory, privateFile } from "./profile.js";
@@ -42,60 +43,42 @@ import { dataLock } from "./store-lock.js";
 import { checkSupervisor, claimSupervisor } from "./supervisor.js";
 import { StoreValidationError, verifyLegacyStore } from "./store-snapshot.js";
 import { checkSocket } from "./store-socket.js";
-import { findInitialModel, InMemoryCodingAgentModelsStore, InMemoryCredentialStore, resolveModelScopeFromModels } from "./pi-source.js";
-import { LocalEnvironment, ProjectResources, type Warn } from "./resources.js";
-import { PiHost } from "./pi/host.js";
-import { ProfileDoc } from "./pi/projection.js";
-import { PiSources } from "./pi/source.js";
+import { LocalEnvironment, StandaloneResources, type Warn } from "./resources.js";
 
 const codingOrder = ["read", "bash", "edit", "write"];
-const workspaceWriters = new Set(["write", "edit", "bash", CODEMODE_TOOL_NAME]);
-const coding: Extension = { ...CodingTools, tools: [...(CodingTools.tools ?? [])].sort(
-  (a, b) => codingOrder.indexOf(a.name) - codingOrder.indexOf(b.name)) };
-const standaloneCoding: Extension = { ...coding, tools: coding.tools?.map(tool => tool.name === "edit"
-  ? { ...tool, description: "Replace exact text in one file. Keep replacements small." }
-  : tool) };
+const workspaceWriters = new Set(["write", "edit", "bash"]);
+const coding: Extension = { ...CodingTools, tools: [...(CodingTools.tools ?? [])]
+  .sort((a, b) => codingOrder.indexOf(a.name) - codingOrder.indexOf(b.name))
+  .map(tool => tool.name === "edit" ? { ...tool, description: "Replace exact text in one file. Keep replacements small." } : tool),
+};
 
-function shellSettings(settings: SettingsManager): HarnessSettings {
-  const compaction = {
-    ...settings.getCompactionSettings(), modelOverrides: settings.getSettings().compaction?.modelOverrides,
-  };
-  return {
-    compaction, retry: settings.getRetrySettings(),
-    stream: { ...settings.getProviderRetrySettings(), transport: settings.getTransport() },
-    steeringMode: settings.getSteeringMode(), followUpMode: settings.getFollowUpMode(),
-  };
-}
+// Freeze the standalone profile's existing policy. The Durable agent loop
+// still owns retry, context trimming and compaction, not the model adapter.
+const hushSettings: HarnessSettings = {
+  compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+  retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60000 },
+  stream: { maxRetryDelayMs: 60000, transport: "auto" },
+  steeringMode: "one-at-a-time", followUpMode: "one-at-a-time",
+};
 
 export async function loadModels(config: BackendConfig) {
   await registerBundledOAuthFlows();
-  const standalone = config.profile === "hush";
-  const authPath = join(config.agentDir, "auth.json"), modelsPath = join(config.agentDir, "models.json");
-  let credentials: CredentialStore | undefined;
-  if (standalone) {
-    await privateDirectory(config.agentDir, !config.ephemeral, config.ephemeral);
-    await privateFile(modelsPath);
-    if (!config.faux) credentials = (await hushCredentialStore(config.agentDir, {
-      createFile: !config.ephemeral, readOnly: config.ephemeral,
-    })).credentials;
-  }
-  if (config.faux) credentials = new InMemoryCredentialStore();
-  const runtime = await ModelRuntime.create({
-    authPath, modelsPath,
-    ...(standalone || config.ephemeral || config.faux ? { modelsStore: new InMemoryCodingAgentModelsStore() } : {}),
-    ...(credentials ? { credentials } : {}),
-    allowModelNetwork: false, refreshOnCreate: !config.faux && !standalone,
-  });
-  if (config.faux) runtime.registerNativeProvider(makeFaux(config.ephemeral));
-  return { runtime, models: new ModelRegistry(runtime) };
+  await privateDirectory(config.agentDir, !config.ephemeral, config.ephemeral);
+  const writes = new CredentialWrites();
+  const credentials = config.faux ? new InMemoryCredentialStore() : (await hushCredentialStore(config.agentDir, {
+    createFile: !config.ephemeral, readOnly: config.ephemeral, writes,
+  })).credentials;
+  const runtime = await createHushModels(credentials, join(config.agentDir, "models.json"));
+  if (config.faux) runtime.setProvider(makeFaux(config.ephemeral));
+  return { runtime, writes };
 }
 
-interface RunningBackend {
+export interface RunningBackend {
   harness: Harness;
   root: Conversation;
   server: ReturnType<typeof createCoreServer>;
-  modelRegistry: ModelRegistry;
-  runtime: ModelRuntime;
+  runtime: Models;
+  readOnlyReason?: string;
   closed: Promise<void>;
   close(): Promise<void>;
 }
@@ -104,31 +87,29 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
   if (config.ephemeral ? config.dataDir !== undefined : config.socket !== join(config.dataDir ?? "", "hush.sock")) {
     throw new BackendError("configuration");
   }
-  const standalone = config.profile === "hush";
-  if (standalone && config.piEvents) throw new BackendError("configuration");
-  // Keep the optional Pi loader offline. Standalone never invokes it.
-  process.env.PI_OFFLINE = "1";
-  if (standalone) await privateDirectory(config.agentDir, !config.ephemeral, config.ephemeral);
+  await privateDirectory(config.agentDir, !config.ephemeral, config.ephemeral);
   const directory = dirname(config.socket);
   let unlockRuntime: (() => void) | undefined, unlockManaged: (() => void) | undefined;
   let compatibleStore = false;
-  const warn: Warn = code => {
+  const log = (message: string) => {
     if (config.dataDir && compatibleStore) {
-      try { appendFileSync(join(config.dataDir, "hush.log"), new Date().toISOString() + " " + code + "\n", { mode: 0o600 }); }
-      catch { /* do not leak diagnostics or make logging a condition of scheduler progress */ }
+      try { appendFileSync(join(config.dataDir, "hush.log"), new Date().toISOString() + " " + message + "\n", { mode: 0o600 }); }
+      catch { /* logging is not a condition of scheduler progress */ }
     }
   };
+  const warn: Warn = log;
   const registry = createRegistry();
   const startedAtMs = Date.now();
   let intro: IntroReports | undefined;
   let threadDirectory: ThreadDirectory | undefined;
   let images: ImageFitter | undefined;
+  let wasm: WasmAssets | undefined;
   let workspaceFiles: WorkspaceFiles | undefined;
   let gitDiff: GitDiffService | undefined;
   let stopGrantWatch: (() => void) | undefined;
   let codemode: Awaited<ReturnType<typeof workspaceCodemode>> | undefined;
-  let h: Harness | undefined, resources: ProjectResources | undefined, server: ReturnType<typeof createCoreServer> | undefined;
-  let models: Awaited<ReturnType<typeof loadModels>> | undefined;
+  let h: Harness | undefined, server: ReturnType<typeof createCoreServer> | undefined;
+  let hushModels: Awaited<ReturnType<typeof loadModels>> | undefined;
   let timer: NodeJS.Timeout | undefined;
   let closing: Promise<void> | undefined;
   const stopped = Promise.withResolvers<void>();
@@ -138,6 +119,9 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     warn("closing");
     const tasks = [
       () => intro?.close(),
+      // Publish this boot's cache before the socket disappears so a CLI
+      // restart can use it immediately. No-op when Node caching is disabled.
+      () => flushCompileCache(),
       () => server?.close(),
       () => images?.close(),
       () => stopGrantWatch?.(),
@@ -146,8 +130,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       () => threadDirectory?.close(),
       () => h?.close(context),
       () => codemode?.sandbox.close(),
-      () => resources?.close(),
-      () => models?.runtime.settleCredentialWrites(),
+      () => wasm?.close(),
+      () => hushModels?.writes.settle(),
       () => unlockRuntime?.(),
       () => unlockManaged?.(),
     ];
@@ -163,51 +147,66 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     stopped.resolve();
   })();
   try {
-    const managed = standalone && config.dataDir ? await managedRuntime(config.agentDir, config.dataDir) : undefined;
+    const managed = config.dataDir ? await managedRuntime(config.agentDir, config.dataDir) : undefined;
     if (managed) unlockManaged = await managedWriter(managed);
     await checkSupervisor(managed?.agent, config.supervisor);
     const gate = managed && await activeCutover(managed);
     await privateDirectory(directory, !config.ephemeral && !gate);
     if (config.dataDir) unlockRuntime = await dataLock(config.dataDir);
-    let localSettings = standalone && (config.dataDir || !config.faux && !config.model)
+    let localSettings = (config.dataDir || !config.faux && !config.model)
       ? await readStandaloneSettings(config.agentDir) : {};
     const allowLegacy = managed && !gate && localSettings.allowLegacyStore === true;
-    const manifest = config.dataDir ? await checkStoreProfile(config.dataDir, standalone, allowLegacy ? "either" : undefined) : undefined;
+    const manifest = config.dataDir ? await checkStoreProfile(config.dataDir, allowLegacy ? "either" : undefined) : undefined;
     await allowManagedOpen(managed, gate, manifest, fileURLToPath(import.meta.url));
+    if (config.dataDir) wasm = await WasmAssets.open(import.meta.url);
     if (manifest?.format !== 1) await checkSocket(config.socket, config.ephemeral ? "refuse" : "clean");
-    const storeIdentity = manifest ? { storeId: manifest.storeId, generation: manifest.generation } : standalone ?
-      config.dataDir ? await initializeStore(config.dataDir) : { storeId: randomUUID(), generation: randomUUID() } : undefined;
     compatibleStore = manifest?.format !== 1;
-    const { models: modelRegistry, runtime } = models = await loadModels(config);
-    const sources = config.piEvents ? new PiSources(runtime) : undefined;
-    const trust = standalone && !config.ephemeral ? new WorkspaceTrust(config.agentDir) : undefined;
+    let modelIssue: ModelOverlayError | undefined;
+    const runtime = await loadModels(config).then(models => (hushModels = models).runtime).catch(error => {
+      if (!(error instanceof ModelOverlayError)) throw error;
+      if (!manifest) {
+        log(error.message); // bounded and redacted by the overlay loader
+        throw error;
+      }
+      modelIssue = error;
+      // A broken proxy override must never send work to a built-in endpoint,
+      // including a submission or tool that Durable would otherwise recover.
+      return createModels({ credentials: new InMemoryCredentialStore() });
+    });
+    const storeIdentity = manifest ? { storeId: manifest.storeId, generation: manifest.generation } :
+      config.dataDir ? await initializeStore(config.dataDir) : { storeId: randomUUID(), generation: randomUUID() };
+    const readOnlyReason = modelIssue?.message;
+    const refuseWork = readOnlyReason ? () => {
+      const error = new WireError("invalid_request");
+      error.message = readOnlyReason;
+      throw error;
+    } : undefined;
+    const trust = !config.ephemeral ? new WorkspaceTrust(config.agentDir) : undefined;
     const workspaceSkills = trust && config.dataDir && ["darwin", "linux"].includes(process.platform)
       ? new StandaloneSkills(() => h!, config.agentDir, trust) : undefined;
-    const dirs = resources = new ProjectResources(config.cwd, config.agentDir, registry, modelRegistry, warn, config.ephemeral,
-      sources?.tapTool, standalone, workspaceSkills);
+    const resources = new StandaloneResources(config.cwd, config.agentDir, workspaceSkills);
     const authorizeWork = trust && ((cwd: string | undefined, ctx: Context) =>
-      trust.require(dirs.directory(cwd), ctx.abortSignal));
-    const prompt = dirs.extension(() => h, !!trust);
+      trust.require(resources.directory(cwd), ctx.abortSignal));
+    const prompt = resources.extension(() => h, !!trust);
     // Use the existing prompt extension name so persisted threads get the
     // hook too. Observe every write-capable result, including failed tools
     // that may have changed files before reporting the failure.
     const withWorkspaceChanges: Extension = trust ? { ...prompt, hooks: [...prompt.hooks ?? [], hook(ToolTask, {
       afterTool: (call, _result, api) => {
-        if (!workspaceWriters.has(call.name)) return;
+        if (!workspaceWriters.has(call.name) && call.name !== codemode?.toolName) return;
         gitDiff?.toolFinished(api.conversationId);
         // Shell and Codemode can write outside the thread's own directory.
         workspaceFiles?.invalidateSearch();
       },
     })] } : prompt;
-    const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;
-    const builtin = tap(standalone ? standaloneCoding : coding), fauxExtension = tap(fauxTools);
-    if (standalone && config.dataDir && localSettings.codemode === true) codemode = await workspaceCodemode();
-    const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, builtin,
-      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxExtension] : [])];
-    const ordered = sources?.extensions(() => h!) ?? [];
-    const schedules = standalone && config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork) : undefined;
+    if (config.dataDir && localSettings.codemode === true) {
+      codemode = (await import("./codemode.js")).workspaceCodemode(wasm);
+    }
+    const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, coding,
+      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxTools] : [])];
+    const schedules = config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork) : undefined;
     const checkpoints = trust && config.dataDir ? new CheckpointService(() => h!, config.dataDir, trust) : undefined;
-    for (const extension of [...base, ...ordered]) registry.install(extension);
+    for (const extension of base) registry.install(extension);
     if (schedules) registry.install(schedules.extension);
     if (checkpoints) registry.install(checkpoints.extension);
     if (manifest?.format === 1) {
@@ -217,49 +216,19 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       await checkSocket(config.socket, "clean");
       compatibleStore = true;
     }
-    const rootResources = await dirs.load(config.cwd);
-    const selection = (project: typeof rootResources): AgentChange => {
-      const requested = project.settings.getDefaultTools();
-      const tools = requested?.flatMap(name => builtin.tools?.filter(t => t.name === name) ?? []);
-      return {
-        extensions: project.mcp ? [...base, project.mcp] : base,
-        tools: config.ephemeral ? [] : tools
-          ? [...tools, ...(project.mcp?.tools ?? []), ...(config.faux ? fauxExtension.tools ?? [] : [])]
-          : null,
-      };
-    };
-    const preparePi = async (cwd: string): Promise<AgentChange> => {
-      const project = await dirs.load(cwd);
-      return { ...selection(project), extensions: [...base, ...ordered, ...(project.mcp ? [project.mcp] : [])] };
-    };
-    const nativeSelection = () => standalone && !config.faux && !config.model
-      ? standaloneModelDefault(localSettings, runtime) : undefined;
+    if (readOnlyReason) log(readOnlyReason);
+    const selection: AgentChange = { extensions: base, tools: config.ephemeral ? [] : null };
+    const useStoredDefaults = !modelIssue && !config.faux && !config.model;
+    const nativeSelection = () => useStoredDefaults ? standaloneModelDefault(localSettings, runtime) : undefined;
     const nativeDefault = () => config.faux ? fauxModel : config.model ?? nativeSelection()?.model ?? hushDefaultModel;
-    if (standalone && !config.faux && !config.model) standaloneSettingsView(localSettings, runtime);
-    const defaultModel = async (settings: SettingsManager) => {
-      if (standalone) return { model: nativeDefault(), thinkingLevel: config.model ? "off" as const : nativeSelection()?.thinkingLevel ?? "off" as const };
-      const initial = await findInitialModel({
-        scopedModels: resolveModelScopeFromModels(settings.getSettings().enabledModels ?? [], modelRegistry.getAvailable()).scopedModels,
-        isContinuing: false,
-        defaultProvider: settings.getDefaultProvider(), defaultModelId: settings.getDefaultModel(),
-        defaultThinkingLevel: settings.getDefaultThinkingLevel(), modelThinkingLevels: settings.getSettings().modelThinkingLevels,
-        modelRuntime: runtime,
-      });
-      const model = config.faux ? fauxModel : config.model ?? (initial.model &&
-        { provider: initial.model.provider, modelId: initial.model.id });
-      return { model, thinkingLevel: config.faux ? settings.getDefaultThinkingLevel() ?? "off" : initial.thinkingLevel };
-    };
-    const defaults: NonNullable<NativeHost["defaults"]> = async (cwd) => {
-      const directory = dirs.directory(cwd);
-      const project = await dirs.load(directory);
-      return {
-        ...selection(project), cwd: directory, ...await defaultModel(project.settings),
-        compaction: config.faux ? { enabled: false } : shellSettings(project.settings).compaction,
-      };
-    };
-    const requireModel: NativeHost["requireModel"] = standalone && !config.faux ? async model => {
-      // A disk-backed check, not ModelRegistry's startup availability snapshot.
-      // ModelRuntime separately reads and resolves auth at each provider request.
+    if (useStoredDefaults) standaloneSettingsView(localSettings, runtime);
+    const defaultModel = () => ({ model: nativeDefault(), thinkingLevel: nativeSelection()?.thinkingLevel ?? "off" as const });
+    const defaults: NonNullable<NativeHost["defaults"]> = async cwd => ({
+      ...selection, cwd: resources.directory(cwd), ...defaultModel(),
+      compaction: config.faux ? { enabled: false } : hushSettings.compaction,
+    });
+    const requireModel: NativeHost["requireModel"] = refuseWork ? async () => refuseWork() : !config.faux ? async model => {
+      // Pi AI reads and resolves auth at each provider request.
       let installed = false, diagnostic: string | undefined;
       try {
         installed = !!(model && runtime.getModel(model.provider, model.modelId));
@@ -278,70 +247,38 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     } : undefined;
     const host: NativeHost = {
       defaults, requireModel,
-      validateSelection: standalone ? nativeSelectionValidator(runtime, requireModel) : undefined,
-      async mayMutate(conv, ctx) { return !(await h!.snapshot(ProfileDoc, conv.id, ctx))?.id; },
+      validateSelection: nativeSelectionValidator(runtime, requireModel),
       async prepare({ threadId, cwd, text, skillToken }, ctx) {
         // Native text, images, Continue and Retry share this admission path.
+        refuseWork?.();
         await authorizeWork?.(cwd, ctx);
-        const project = await dirs.load(cwd);
-        if (standalone && !config.ephemeral && text?.startsWith("/skill:")) {
+        if (!config.ephemeral && text?.startsWith("/skill:")) {
           if (!workspaceSkills || !threadId) throw skillUnavailable();
           const skill = await workspaceSkills.expand(threadId, cwd, text, skillToken, ctx.abortSignal);
-          return { ...skill, agent: selection(project) };
+          return { ...skill, agent: selection };
         }
         if (skillToken) throw skillUnavailable();
-        try {
-          const expanded = !standalone && !config.ephemeral && text?.startsWith("/skill:") ? await dirs.expandSkill(project, text, true) : text;
-          return { text: dirs.expand(project, expanded), agent: selection(project) };
-        } catch (error) {
-          if (error instanceof Rejected) throw new WireError("invalid_request");
-          throw error;
-        }
+        return { text, agent: selection };
       },
     };
     const store = config.dataDir ? await openNodeSqliteStorage(join(config.dataDir, "history.sqlite")) : new MemoryStorage();
-    const settings = { ...shellSettings(rootResources.settings), extensions: base,
+    const settings = { ...hushSettings, extensions: base,
       ...(config.faux ? { retry: { enabled: false }, compaction: { enabled: false }, progress: { outputIntervalMs: 10 } } : {}),
     };
     const harness = h = await Harness.open(store, {
-      models: sources?.modelAPI ?? runtime, registry, settings,
+      models: runtime, registry, settings, readOnly: !!modelIssue,
       env: async ({ cwd }, ctx) => {
-        const path = dirs.directory(cwd);
-        const { settings } = await dirs.load(path);
+        const path = resources.directory(cwd);
         // Durable builds the env for every tool attempt, also after a wake or
         // recovery that skips beforeTool. Do not hand a tool an unchecked cwd.
         const authorized = authorizeWork ? await authorizeWork(cwd, ctx) : path;
-        return new LocalEnvironment(authorized, settings.getShellPath(), path);
+        return new LocalEnvironment(authorized, path);
       },
-      onReport: report => {
-        warn("harness_report");
-        // Generation/provider stop reasons have their own evidence. A failed
-        // observing hook or faulted task may have lost a required boundary.
-        if (sources && (report.kind === "extension_error" || report.kind === "task_faulted" || report.kind === "task_interrupted")) {
-          const thread = report.task?.conversationId ?? (report.kind === "extension_error" ? report.conversationId : undefined);
-          if (thread !== undefined) sources.threads.get(thread)?.trace.fail("harness source faulted");
-        }
-      },
+      onReport: () => warn("harness_report"),
     }, context);
-    const pi = sources && new PiHost(h, sources, runtime, dirs, defaults, preparePi, settings.retry, config.ephemeral, config.faux);
-    const root = await h.root(context, { agent: await defaults(config.cwd, context) });
-    // Reinstall previously selected per-project MCP tool definitions before runnable work resumes.
-    if (!standalone && !config.ephemeral) {
-      const loaded = new Set([config.cwd]);
-      let cursor: Cursor | undefined;
-      do {
-        const page = await h.commit(tx => tx.scanConversations({}, 100, cursor), context);
-        for (const row of page.items) {
-          const doc = await h.snapshot(AgentDoc, row.id, context);
-          const cwd = dirs.directory(doc?.cwd);
-          if (loaded.has(cwd) || !Array.isArray(doc?.extensions) ||
-              !doc.extensions.some(name => name.startsWith("hush-mcp-"))) continue;
-          loaded.add(cwd);
-          await dirs.load(cwd);
-        }
-        cursor = page.next;
-      } while (cursor);
-    }
+    const root = modelIssue ? await h.conversation(ROOT_CONVERSATION_ID, context)
+      : await h.root(context, { agent: await defaults(config.cwd, context) });
+    if (!root) throw modelIssue; // A store without a root has no history to serve.
     let connected = false;
     let quiescentSince: number | undefined;
     const check = () => {
@@ -353,7 +290,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       }
       if (config.supervisor) return; // Only its login supervisor owns this lifetime.
       const wake = harness.wake();
-      if (server.connections !== 0 || wake.active || wake.at !== undefined || pi?.active) {
+      if (server.connections !== 0 || wake.active || wake.at !== undefined) {
         quiescentSince = undefined;
         return;
       }
@@ -361,20 +298,18 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       const grace = config.ephemeral ? 10_000 : config.idleMs;
       if (performance.now() - quiescentSince >= grace) void close().catch(() => {});
     };
-    if (!config.ephemeral) intro = new IntroReports(harness, root, dirs, runtime, startedAtMs, async project => {
-      const selected = selection(project);
-      const tools = Array.isArray(selected.tools) ? selected.tools : (Array.isArray(selected.extensions) ? selected.extensions : base)
-        .flatMap(ext => ext.tools ?? []);
-      return { ...await defaultModel(project.settings),
-        tools: tools.filter(tool => !tool.deferred && (tool.callers === undefined || tool.callers.includes("model"))) };
-    }, host.prepare!, host.requireModel);
-    if (config.dataDir) {
-      const title = config.threadTitleModel && threadTitleGenerator(runtime, config.threadTitleModel);
-      threadDirectory = new ThreadDirectory(harness, config.cwd, defaults,
-        new ThreadWorktrees(config.dataDir, root => dirs.trusted(root), trust), title);
-      images = new ImageFitter(runtime);
+    if (!config.ephemeral) {
+      const tools = base.flatMap(ext => ext.tools ?? [])
+        .filter(tool => !tool.deferred && (tool.callers === undefined || tool.callers.includes("model")));
+      intro = new IntroReports(harness, root, resources, runtime, startedAtMs, () => ({ ...defaultModel(), tools }),
+        host.prepare!, host.requireModel);
     }
-    const modelCatalog = standalone ? nativeModelCatalog(harness, runtime, modelRegistry, nativeDefault) : undefined;
+    if (config.dataDir && trust) {
+      const title = !modelIssue && config.threadTitleModel ? threadTitleGenerator(runtime, config.threadTitleModel) : undefined;
+      threadDirectory = new ThreadDirectory(harness, config.cwd, defaults, new ThreadWorktrees(config.dataDir, trust), title, readOnlyReason);
+      images = new ImageFitter(runtime, wasm);
+    }
+    const modelCatalog = modelIssue ? undefined : nativeModelCatalog(harness, runtime, nativeDefault);
     gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
     const browser = trust && config.dataDir ? await workspaceFileHelper() : undefined;
     workspaceFiles = trust && browser ? new WorkspaceFiles(harness, trust, browser) : undefined;
@@ -382,19 +317,19 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       gitDiff?.invalidate();
       workspaceFiles?.grantsChanged();
     });
-    const loadedContext = trust && config.dataDir ? new LoadedContext(harness, dirs, trust) : undefined;
-    const settingsHost = standalone && config.dataDir && !config.faux && !config.model
+    const loadedContext = trust && config.dataDir ? new LoadedContext(harness, resources, trust) : undefined;
+    const settingsHost = config.dataDir && useStoredDefaults
       ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
-    server = createCoreServer(harness, { host, onConnections: check, capabilities: { piEvents: pi, intro, threadDirectory, images, schedules, checkpoints, gitDiff, workspaceFiles, workspaceSkills, loadedContext,
-      hushProfile: standalone ? 1 : undefined, nativeStop: standalone ? 1 : undefined,
-      workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost,
-      clientEnvironment: standalone ? 1 : undefined, modelCatalog, storeIdentity,
+    server = createCoreServer(harness, { host, onConnections: check, readOnlyReason, capabilities: { intro, threadDirectory, images,
+      schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
+      gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
+      workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });
     await server.listen(config.socket);
     await chmod(config.socket, 0o600);
     warn("listening");
-    harness.resume();
-    if (config.supervisor && !config.faux) {
+    if (!modelIssue) harness.resume();
+    if (config.supervisor && !config.faux && !modelIssue) {
       const { provider } = nativeDefault();
       // A once-per-boot diagnostic must not stop the scheduler. Never print provider data.
       void runtime.checkAuth(provider, { signal: AbortSignal.timeout(5_000) }).then(auth => {
@@ -404,17 +339,17 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     void harness.closed.then(() => { if (!closing) void close().catch(() => {}); });
     check();
     if (!config.supervisor) timer = setInterval(check, Math.min(250, Math.max(15, Math.ceil(config.idleMs / 4))));
-    return { harness, root, server, modelRegistry, runtime, closed: stopped.promise, close };
+    return { harness, root, server, runtime, readOnlyReason, closed: stopped.promise, close };
   } catch (err) {
     await close().catch(() => {});
     throw err;
   }
 }
 
-const errorCode = (error: unknown) => error instanceof BackendError ? error.code
+const errorCode = (error: unknown) => error instanceof ModelOverlayError ? "models_configuration" : error instanceof BackendError ? error.code
   : credentialConfigurationFailed(error) ? "credential_configuration" : "startup_failed";
 
-async function main() {
+async function main(entryUrl: string) {
   process.umask(0o077);
   const argv = process.argv.slice(2);
   if (argv[0] === "auth") {
@@ -431,7 +366,7 @@ async function main() {
     return;
   }
   if (argv[0] === "store") {
-    try { await runStoreCommand(argv.slice(1), fileURLToPath(import.meta.url)); }
+    try { await runStoreCommand(argv.slice(1), fileURLToPath(entryUrl)); }
     catch (error) {
       const reason = error instanceof StoreValidationError ? error.message :
         error instanceof BackendError && (error.code === "data_locked" || error.code === "socket_unavailable") ?
@@ -442,7 +377,9 @@ async function main() {
     }
     return;
   }
-  const config = await parseConfig(argv).catch(() => { throw new BackendError("configuration"); });
+  const config = await parseConfig(argv).catch((error: unknown) => {
+    throw error instanceof BackendError ? error : new BackendError("configuration");
+  });
   let startupFd = config.startupFd;
   if (startupFd !== undefined) {
     try { if (!fstatSync(startupFd).isFIFO()) throw new Error("not a pipe"); }
@@ -473,11 +410,16 @@ async function main() {
   }
   try {
     app = await startBackend(config);
-    process.once("SIGTERM", terminate);
-    process.once("SIGINT", terminate);
+    // Keep the handlers installed while closing. The legacy file-lock
+    // library also listens for signals and re-raises an unhandled signal.
+    process.on("SIGTERM", terminate);
+    process.on("SIGINT", terminate);
     const ready = { ready: true as const, socket: config.socket };
     if (config.startupFd !== undefined) notify(ready);
-    else process.stdout.write(JSON.stringify(ready) + "\n");
+    else {
+      if (app.readOnlyReason) process.stderr.write(`hush-backend: ${app.readOnlyReason} History is read-only.\n`);
+      process.stdout.write(JSON.stringify(ready) + "\n");
+    }
     await app.closed;
   } catch (error) {
     notify({ error: errorCode(error) });
@@ -493,23 +435,26 @@ async function main() {
   }
 }
 
-function invokedDirectly() {
-  try { return process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); }
+function invokedDirectly(url: string) {
+  try { return process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(url); }
   catch { return false; }
 }
 
-if (invokedDirectly()) {
-  await main().catch(error => {
+export async function runIfMain(url: string) {
+  if (!invokedDirectly(url)) return;
+  await main(url).catch(error => {
     const code = errorCode(error);
     const supervised = process.argv.includes("--supervisor");
     const serviceClaim = process.argv[2] === "--hush-internal-service-claim";
     const advice = code === "service_owned" ? "The login supervisor owns this backend. Check 'hush service status' or 'hush service resume'."
+      : code === "wasm_pack" ? "Backend .wasm-pack is missing or invalid. Rebuild or reinstall the paired backend files."
       : supervised && code === "store_cutover" ? "The store is fenced. Run 'hush store inspect' before restarting the service."
       : (supervised || serviceClaim) && code === "data_locked" ? "Another backend or store operation owns this profile. Wait until it stops."
-      : credentialAdvice(error);
+      : error instanceof ModelOverlayError ? error.message : credentialAdvice(error);
     process.stderr.write("hush-backend: " + (advice ?? code) + "\n");
     // The launcher maps known startup/hold failures to a non-restarting exit.
     process.exitCode = supervised &&
-      ["service_owned", "data_locked", "store_profile", "store_cutover", "configuration", "socket_directory", "socket_unavailable", "credential_configuration"].includes(code) ? 78 : 1;
+      ["service_owned", "data_locked", "store_profile", "store_cutover", "configuration", "socket_directory", "socket_unavailable",
+        "credential_configuration", "models_configuration", "wasm_pack"].includes(code) ? 78 : 1;
   });
 }

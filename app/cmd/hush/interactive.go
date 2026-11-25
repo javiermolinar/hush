@@ -39,7 +39,6 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 	if o.Local != nil {
 		local = *o.Local
 	}
-	profile := backendstart.Profile(o.Profile)
 	caps := map[string][]uint64{
 		"modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion},
 		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceSearchVersion, sdk.ThreadWorkspaceVersion},
@@ -49,15 +48,10 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		"workspaceScopeWatch": {sdk.WorkspaceScopeWatchVersion}, "gitDiffWatch": {sdk.GitDiffWatchVersion},
 		"workspaceSkills": {sdk.WorkspaceSkillDraftVersion, sdk.WorkspaceSkillsVersion}, "loadedContext": {sdk.LoadedContextAgentsVersion, sdk.LoadedContextVersion},
 	}
-	var environment sdk.ClientEnvironment
-	if profile == backendstart.Pi {
-		caps["piEvents"] = []uint64{sdk.PiEventsVersion}
-	} else {
-		caps["clientEnvironment"] = []uint64{sdk.ClientEnvironmentVersion}
-		environment = detectClientEnvironment(ctx)
-	}
+	caps["clientEnvironment"] = []uint64{sdk.ClientEnvironmentVersion}
+	environment := detectClientEnvironment(ctx)
 	client, err := backendstart.NewClient(ctx,
-		backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, Profile: profile, RequireWorkTrust: true}, sdk.ClientOptions{Capabilities: caps})
+		backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, RequireWorkTrust: true}, sdk.ClientOptions{Capabilities: caps})
 	if err != nil {
 		return err
 	}
@@ -75,14 +69,14 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		return err
 	}
 	err = m.Run()
-	if err == nil && profile == backendstart.Hush && o.Socket == "" && os.Getenv("HUSH_SOCKET") == "" {
+	if err == nil && o.Socket == "" && os.Getenv("HUSH_SOCKET") == "" {
 		backendstart.ReportServiceAfterExit(ctx, os.Stderr)
 	}
 	return err
 }
 
 func localProviderLogin(o headless.InteractiveOptions) *tui.ProviderLoginOptions {
-	if o.Profile != string(backendstart.Hush) || o.Socket != "" || os.Getenv("HUSH_SOCKET") != "" {
+	if o.Socket != "" || os.Getenv("HUSH_SOCKET") != "" {
 		return nil
 	}
 	var choices []extension.Choice
@@ -99,7 +93,7 @@ func localProviderLogin(o headless.InteractiveOptions) *tui.ProviderLoginOptions
 			if err != nil {
 				return nil, err
 			}
-			args := []string{"auth", "login", "--profile", "hush"}
+			args := []string{"auth", "login"}
 			if provider != authproviders.Default {
 				args = append(args, provider)
 			}

@@ -1,10 +1,14 @@
 import { build } from "esbuild";
+import standaloneValidators from "ajv/dist/standalone/index.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire, isBuiltin } from "node:module";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { configureValidators } from "../server/src/validators.ts";
 
 process.chdir(fileURLToPath(new URL("..", import.meta.url)));
+if (process.argv.length > 2) throw new Error("usage: node backend/bundle.mjs");
 const common = {
   bundle: true,
   platform: "node",
@@ -34,8 +38,8 @@ function check(result) {
   return result;
 }
 
-// Keep the backend a single deployable file. Worker assets are available even
-// after the launcher removes the extracted backend and its directory.
+// Worker JS stays inline. It can run even after the launcher removes the
+// extracted backend and its directory; WASM is loaded separately on demand.
 async function worker(entry, define, plugins = common.plugins) {
   const result = check(await build({ ...common, entryPoints: [entry], write: false, define, plugins,
     // In a data: URL worker, import.meta.url is not a valid createRequire base.
@@ -64,14 +68,28 @@ const photonGlue = { name: "pinned-photon-glue", setup(builder) {
 const codemode = createRequire(import.meta.resolve("@earendil-works/pi-codemode"));
 const quickjs = readFileSync(codemode.resolve("quickjs-wasi/quickjs.wasm"));
 const [imageWorker, codemodeWorker] = await Promise.all([
-  worker("backend/src/image-worker.ts", { HUSH_PHOTON_WASM: JSON.stringify(photon.toString("base64")) }, [...common.plugins, photonGlue]),
+  worker("backend/src/image-worker.ts", {}, [...common.plugins, photonGlue]),
   worker(fileURLToPath(import.meta.resolve("@earendil-works/pi-codemode/worker"))),
 ]);
-const main = check(await build({ ...common, entryPoints: ["backend/src/index.ts"], outfile: "dist/hush-backend.mjs",
+const slice = (bytes, offset) => ({ offset, length: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+const wasmIndex = { photon: slice(photon, 0), quickjs: slice(quickjs, photon.length) };
+const wire = configureValidators(true);
+const validators = standaloneValidators(wire.ajv, wire.exports);
+const stem = "dist/hush-backend";
+const entry = stem + ".mjs";
+const main = check(await build({ ...common, entryPoints: ["backend/src/entry.ts"], outfile: entry,
   define: {
     HUSH_IMAGE_WORKER: JSON.stringify(imageWorker.url),
     HUSH_CODEMODE_WORKER: JSON.stringify(codemodeWorker.url),
-    HUSH_QUICKJS_WASM: JSON.stringify(quickjs.toString("base64")),
+    HUSH_WASM_INDEX: JSON.stringify(wasmIndex),
     HUSH_SYSTEM_PROMPT: JSON.stringify(readFileSync("backend/src/prompts/system.md", "utf8")),
-  } }));
-writeFileSync("dist/hush-backend-inputs.json", JSON.stringify({ main: main.metafile, image: imageWorker.meta, codemode: codemodeWorker.meta }));
+  },
+  plugins: [...common.plugins, { name: "precompiled-wire-validators", setup(builder) {
+    builder.onLoad({ filter: /[/\\]server[/\\]src[/\\]validators\.ts$/ }, ({ path }) =>
+      ({ contents: validators, resolveDir: dirname(path), loader: "js" }));
+  } }],
+}));
+writeFileSync(entry + ".wasm-pack", Buffer.concat([photon, quickjs]));
+writeFileSync(stem + "-inputs.json", JSON.stringify({
+  main: main.metafile, image: imageWorker.meta, codemode: codemodeWorker.meta, wasm: wasmIndex,
+}));

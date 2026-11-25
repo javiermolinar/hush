@@ -3,14 +3,13 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { readStandaloneSettings, standaloneModelDefault } from "../../dist/backend/src/standalone-settings.js";
 
 test("Pi-compatible Hush global model defaults, validation, and file privacy", async t => {
   const dir = await mkdtemp(join(tmpdir(), "hush-settings-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const runtime = await ModelRuntime.create({ authPath: join(dir, "auth.json"), modelsPath: join(dir, "models.json"),
-    allowModelNetwork: false, refreshOnCreate: false });
+  const runtime = builtinModels();
   const path = join(dir, "settings.json");
   const modelDefault = async () => standaloneModelDefault(await readStandaloneSettings(dir), runtime);
   const fallback = await modelDefault();

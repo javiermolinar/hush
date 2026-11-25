@@ -13,11 +13,10 @@ tool calls, tool results and maintenance records do not count as chat.
 A fork can show its inherited chat. A thread without chat sorts after dated
 threads and has no `lastMessageMs`.
 
-`title` is the explicit Hush name when set, then the Pi session name, then the
-opt-in generated title, then an excerpt of the first committed user message.
+`title` is the explicit Hush name when set, then the opt-in generated title, then an automatic title based on the first exchange.
 The reference backend saves these in its presentation document, using the
 invocation name for an expanded skill. Empty threads have no derived title.
-Use [intro v2](intro.md) to rename a thread without changing its Pi session data.
+Use [intro v2](intro.md) to rename a thread.
 
 The reference backend builds a disposable in-memory index cooperatively and
 updates it from coalesced commit observations. Listing reads only the index,
@@ -39,8 +38,8 @@ whose recent activity moved them ahead of the fence.
 - `ext.threadDirectory.new`: optional `cwd`, `title` and `worktree` (defaults to false).
   Paths are on the backend. Omitting `cwd` uses the backend's project directory.
   An opted-in worktree requires Git, a trusted source, and a committed HEAD.
-  A standalone Hush host checks the source directory's workspace grant before
-  checkout; the legacy Pi host uses Pi trust. The connection cannot grant or change trust.
+  The reference host checks the source directory's workspace grant before
+  checkout. The connection cannot grant or change trust.
   It creates a private checkout and unique branch from committed HEAD, not from
   working files, then creates a conversation with its `cwd` and allocation metadata
   in one Durable commit. The new checkout does not inherit a Hush workspace grant.

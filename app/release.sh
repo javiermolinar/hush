@@ -20,7 +20,7 @@ assets=app/internal/backendstart/release-assets
 mkdir "$assets" # Refuse a concurrent build or stale generated input.
 stage=
 cleanup() {
-  rm -f "$assets/hush-backend.mjs"
+  rm -f "$assets/hush-backend.mjs" "$assets/hush-backend.mjs.wasm-pack"
   rmdir "$assets"
   if [ -n "$stage" ]; then rm -rf "$stage"; fi
 }
@@ -28,7 +28,7 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 npm ci --ignore-scripts
 npm run backend:bundle
-cp dist/hush-backend.mjs "$assets/hush-backend.mjs"
+cp dist/hush-backend.mjs dist/hush-backend.mjs.wasm-pack "$assets/"
 output="dist/release/$os-$arch"
 mkdir -p "$output"
 stage=$(mktemp -d "$output/.build-XXXXXXXX")
@@ -72,18 +72,12 @@ if [ "${1:-verify}" = verify ]; then
   export HUSH_TEST_CLI="$PWD/$stage/install/hush" HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs"
   test "$(sha256 "$HUSH_TEST_BACKEND")" = "$bundle_sha"
   record installed node app/test/release.test.mjs "$HUSH_TEST_CLI" "$bundle_sha" backend/src/prompts/system.md
+  record managed-cold-start node --test app/test/cold-start.test.mjs
   record typescript npm run build
   record native-protocol npm run protocol:check
-  record native-recovery node --test --test-concurrency=1 server/test/core.test.mjs backend/test/backend.test.mjs
+  record native-recovery node --test --test-concurrency=1 server/test/core.test.mjs backend/test/backend.test.mjs backend/test/model-runtime.test.mjs
   optional='schedule CLI|checkpoint CLI|workspace trust'
-  pi='^Pi |^raw native protocol|^persistent headless joins'
-  record native-cli node --test --test-skip-pattern="$optional|$pi" app/test/headless.test.mjs
-  # Run the bundled opt-in profile separately, with real producer fixtures and
-  # bare-host rejection. A slice that matches no tests must not certify it.
-  record pi-reference npm run profile:check
-  record pi-backend node --test --test-concurrency=1 server/test/pi-events.test.mjs backend/test/pi-events.test.mjs
-  record pi-cli node --test --test-name-pattern="$pi" app/test/headless.test.mjs
-  grep -Eq '^# pass [1-9][0-9]*$' "$evidence/pi-cli.log"
+  record native-cli node --test --test-skip-pattern="$optional" app/test/headless.test.mjs
   record optional-native-cli node --test --test-name-pattern="$optional" app/test/headless.test.mjs
   grep -Eq '^# pass [1-9][0-9]*$' "$evidence/optional-native-cli.log"
   export HUSH_RELEASE_FRAMES="$PWD/$evidence/frames"

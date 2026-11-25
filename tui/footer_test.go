@@ -170,7 +170,7 @@ func TestMouseSwitchesTabsWithSheet(t *testing.T) {
 	m, first := demo(t, Options{Fills: FillOff, Intro: &IntroOptions{}})
 	first.info.Title = "最初のスレッド"
 	second := m.ensureThread("2")
-	second.info.Title, second.draft = "Second thread", "second draft"
+	second.info.Title, second.draft.text = "Second thread", "second draft"
 	m.openedTab("2")
 	m.editor.set("first draft")
 
@@ -204,7 +204,7 @@ func TestMouseSwitchesTabsWithSheet(t *testing.T) {
 	if m.active != "2" || m.sheet != nil || dismissed != 1 {
 		t.Fatal("click on a visible tab should switch threads and dismiss the sheet")
 	}
-	if first.draft != "first draft" || m.editor.value() != "second draft" {
+	if first.draft.text != "first draft" || m.editor.value() != "second draft" {
 		t.Fatal("click did not preserve each thread's draft")
 	}
 }

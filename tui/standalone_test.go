@@ -225,6 +225,7 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 		t.Fatalf("first feed: %+v", first)
 	}
 	m.receiveFeed(first)
+	m.editor.area.Focus()
 	for i, local := range []string{"tui-agents-original", "tui-agents-edited"} {
 		personal := "tui-personal-agents-original"
 		if i > 0 {
@@ -235,7 +236,13 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 			write(personalAgents, personal+"\n")
 			write(agents, local+"\n")
 		}
-		m.editor.set(fmt.Sprintf("TUI prompt fixture turn %d", i+1))
+		userText := fmt.Sprintf("TUI prompt fixture turn %d\n", i+1)
+		m.editor.set(userText)
+		m.Update(tea.PasteMsg{Content: pasteFixture()})
+		userText += pasteFixture()
+		if !strings.Contains(ansi.Strip(assertFrame(t, m)), pasteLabel29) {
+			t.Fatal("large paste did not fold in the prompt")
+		}
 		result := m.sendPrompt(sdk.Steer)().(workMsg)
 		if result.err != nil {
 			t.Fatal(result.err)
@@ -261,7 +268,11 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 			t.Fatal("loopback provider request missing")
 		}
 		var system []string
+		var lastUser json.RawMessage
 		for _, message := range req.Messages {
+			if message.Role == "user" {
+				lastUser = message.Content
+			}
 			if message.Role != "system" && message.Role != "developer" {
 				if strings.Contains(string(message.Content), "You are Hush") {
 					t.Fatal("default leaked into chat messages")
@@ -273,6 +284,17 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 				t.Fatal(err)
 			}
 			system = append(system, text)
+		}
+		var submitted string
+		if err := json.Unmarshal(lastUser, &submitted); err != nil {
+			var parts []struct{ Text string }
+			if err := json.Unmarshal(lastUser, &parts); err != nil || len(parts) != 1 {
+				t.Fatalf("unexpected user message: %s", lastUser)
+			}
+			submitted = parts[0].Text
+		}
+		if submitted != userText {
+			t.Fatalf("provider received %q, want %q", submitted, userText)
 		}
 		prompt := strings.Join(system, "\n\n")
 		expected := []string{strings.TrimSpace(string(bundled)), fmt.Sprintf("Working directory: %q", cwd), "## Personal instructions"}

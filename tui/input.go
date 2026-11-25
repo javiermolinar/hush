@@ -39,11 +39,11 @@ func binding(chord, label string) key.Binding {
 func keyLabel(k key.Binding) string { h := k.Help(); return h.Key + " " + h.Desc }
 
 type promptEditor struct {
+	promptDraft
 	area         textarea.Model
-	text         string
 	revision     uint64
 	historyIndex int
-	scratch      string
+	scratch      promptDraft
 	memo         *promptLayout
 
 	lines      []promptLine
@@ -70,7 +70,10 @@ func newPrompt() promptEditor {
 }
 
 func cleanPrompt(value string) string {
-	value = limitText(value, maxPromptBytes)
+	return sanitizePrompt(limitText(value, maxPromptBytes), false)
+}
+
+func sanitizePrompt(value string, keepTabs bool) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
 	value = strings.ReplaceAll(value, "\r", "\n")
 	return strings.Map(func(r rune) rune {
@@ -78,6 +81,9 @@ func cleanPrompt(value string) string {
 		case r == '\n':
 			return r
 		case r == '\t':
+			if keepTabs {
+				return r
+			}
 			return ' '
 		case unicode.IsControl(r):
 			return -1
@@ -87,11 +93,54 @@ func cleanPrompt(value string) string {
 	}, value)
 }
 
+// value is the editor text, not the expanded input sent to the backend.
 func (p *promptEditor) value() string { return p.text }
+
 func (p *promptEditor) set(text string) {
 	p.area.SetValue(cleanPrompt(text))
-	p.indexText(p.area.Value())
+	p.adoptDraft(promptDraft{text: p.area.Value()})
 	p.syncViewport()
+}
+
+func (p *promptEditor) setDraft(d promptDraft) {
+	if p.setDraftAt(d, len(d.text)) {
+		return
+	}
+	// A restored draft can have more logical lines than the textarea can
+	// show inline. Fold it instead of truncating it or keeping a prior draft.
+	d = pasteDraft(d.expanded(), 1)
+	if !p.setDraftAt(d, len(d.text)) {
+		p.set("")
+	}
+}
+
+func (p *promptEditor) setDraftAt(d promptDraft, at int) bool {
+	set := func(text string, at int) {
+		if at == len(text) {
+			p.area.SetValue(text)
+			return
+		}
+		// Inserting the prefix in front of the suffix leaves the caret at
+		// the splice without walking every visual row from the end.
+		p.area.SetValue(text[at:])
+		p.area.MoveToBegin()
+		p.area.InsertString(text[:at])
+	}
+	oldAt := p.cursorByte()
+	set(d.text, at)
+	if p.area.Value() != d.text {
+		set(p.text, oldAt)
+		p.syncViewport()
+		return false
+	}
+	p.adoptDraft(d)
+	p.syncViewport()
+	return true
+}
+
+func (p *promptEditor) adoptDraft(d promptDraft) {
+	p.indexText(d.text)
+	p.pastes, p.lastPaste = d.pastes, d.lastPaste
 	p.revision++
 }
 
@@ -128,10 +177,16 @@ func (p *promptEditor) atEnd() bool {
 }
 
 func (p *promptEditor) cursorByte() int {
-	if p.atEnd() || p.area.Line() >= len(p.lines) {
+	if p.atEnd() {
 		return len(p.text)
 	}
-	row, col := p.area.Line(), p.area.Column()
+	return p.byteAt(p.area.Line(), p.area.Column())
+}
+
+func (p *promptEditor) byteAt(row, col int) int {
+	if row >= len(p.lines) {
+		return len(p.text)
+	}
 	line, start := p.lineText(row), p.lines[row].start
 	for i := range line {
 		if col == 0 {
@@ -147,21 +202,16 @@ func (p *promptEditor) replace(start, end int, value string) {
 }
 
 func (p *promptEditor) replaceAt(start, end int, value string, cursor int) {
-	if !byteBoundary(p.text, start) || !byteBoundary(p.text, end) || !byteBoundary(value, cursor) || start > end || len(p.text)-end+start+len(value) > maxPromptBytes {
+	if !byteBoundary(p.text, start) || !byteBoundary(p.text, end) || !byteBoundary(value, cursor) || start > end || p.overlapsPaste(start, end) {
 		return
 	}
-	prefix := p.text[:start] + value[:cursor]
-	p.set(p.text[:start] + value + p.text[end:])
-	row := strings.Count(prefix, "\n")
-	for n := 0; p.area.Line() > row && n < maxPromptBytes; n++ {
-		p.area.CursorUp()
+	insert := promptDraft{text: sanitizePrompt(value, false)}
+	if p.fits(start, end, insert) {
+		p.setDraftAt(p.splice(start, end, insert), start+len(sanitizePrompt(value[:cursor], false)))
 	}
-	column := prefix[strings.LastIndexByte(prefix, '\n')+1:]
-	p.area.SetCursorColumn(utf8.RuneCountInString(column))
-	p.syncViewport()
 }
 
-func (p *promptEditor) resetHistory() { p.historyIndex = -1; p.scratch = "" }
+func (p *promptEditor) resetHistory() { p.historyIndex = -1; p.scratch = promptDraft{} }
 func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
 	p.memo.rows = nil
 	if paste, ok := msg.(tea.PasteMsg); ok {
@@ -182,6 +232,9 @@ func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
 		if p.appendKey(k) {
 			p.revision++
 			return nil
+		}
+		if len(p.pastes) != 0 {
+			return p.updateFoldedKey(k)
 		}
 	}
 	p.restoreViewport()
@@ -204,6 +257,10 @@ func (p *promptEditor) update(msg tea.Msg, multiline bool) tea.Cmd {
 }
 
 func (p *promptEditor) newline() {
+	if len(p.pastes) != 0 {
+		p.insertDraft(promptDraft{text: "\n"})
+		return
+	}
 	if len(p.text) >= maxPromptBytes {
 		return
 	}
@@ -225,6 +282,9 @@ func (p *promptEditor) appendKey(k tea.KeyPressMsg) bool {
 		if unicode.IsControl(r) || r == utf8.RuneError {
 			return false
 		}
+	}
+	if len(p.pastes) != 0 && len(k.Text)+p.expandedBytes() > maxPromptBytes {
+		return false
 	}
 	// The byte check implies the default character limit. Avoid counting
 	// the whole draft against it on each append; keep it for other edits.
@@ -277,14 +337,18 @@ func (m *Model) resizeEditors() tea.Cmd {
 }
 
 func (m *Model) updatePrompt(msg tea.Msg) tea.Cmd {
-	old := m.editor.value()
+	old, folds := m.editor.value(), len(m.editor.pastes)
 	cmd := m.editor.update(msg, true)
-	if old != m.editor.value() {
-		m.slashHidden = false
-		m.slashIndex = 0
-		m.editor.resetHistory()
+	if old != m.editor.value() || folds != len(m.editor.pastes) {
+		m.promptChanged()
 	}
 	return cmd
+}
+
+func (m *Model) promptChanged() {
+	m.slashHidden = false
+	m.slashIndex = 0
+	m.editor.resetHistory()
 }
 
 func (m *Model) recallHistory(older bool) {
@@ -297,7 +361,7 @@ func (m *Model) recallHistory(older bool) {
 		if !older {
 			return
 		}
-		p.scratch = p.text
+		p.scratch = p.promptDraft
 		p.historyIndex = len(h)
 	}
 	if older {
@@ -306,10 +370,10 @@ func (m *Model) recallHistory(older bool) {
 		p.historyIndex++
 	}
 	if p.historyIndex >= len(h) {
-		p.set(p.scratch)
+		p.setDraft(p.scratch)
 		p.resetHistory()
 	} else {
-		p.set(h[p.historyIndex])
+		p.setDraft(h[p.historyIndex])
 	}
 	m.slashHidden = false
 }
@@ -382,6 +446,9 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 	}
 	switch {
 	case key.Matches(k, shellKeys.send):
+		if len(m.editor.pastes) != 0 {
+			return m.sendPrompt(sdk.Steer)
+		}
 		text := m.editor.value()
 		if strings.HasPrefix(text, "/skill:") && (m.menuFeatures().Has(extension.Skills) || t.stagedSkill.token != "") {
 			if m.nativeSkills && t.stagedSkill.token == "" {
@@ -392,17 +459,20 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 			return m.sendPrompt(sdk.Steer)
 		}
 		if strings.HasPrefix(text, "/") && !strings.Contains(text, "\n") {
-			if list := m.slashMatches(); len(list) > 0 {
-				return m.runSlash(list[min(m.slashIndex, len(list)-1)])
-			}
 			name, args, _ := slashParts(text)
-			if i, ok := m.host.slash[name]; ok {
-				if !m.eligible(m.host.actions[i], m.active) {
-					return m.notify(m.active, "Command unavailable", extension.Warning)
+			// A second slash in the first word denotes a path, not a command.
+			if !strings.ContainsRune(name, '/') {
+				if list := m.slashMatches(); len(list) > 0 {
+					return m.runSlash(list[min(m.slashIndex, len(list)-1)])
 				}
-				return m.runSlashWithArgs(m.host.actions[i], args)
+				if i, ok := m.host.slash[name]; ok {
+					if !m.eligible(m.host.actions[i], m.active) {
+						return m.notify(m.active, "Command unavailable", extension.Warning)
+					}
+					return m.runSlashWithArgs(m.host.actions[i], args)
+				}
+				return m.notify(m.active, "Unknown slash command", extension.Warning)
 			}
-			return m.notify(m.active, "Unknown slash command", extension.Warning)
 		}
 		if m.editor.value() == "" && len(t.attachments) == 0 && !t.attaching && m.currentFrame() && m.frame.openActivity != "" {
 			b := maxEffects
@@ -471,6 +541,12 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		return tea.Quit
 	case key.Matches(k, shellKeys.complete):
 		m.completeSlash()
+	case len(m.editor.pastes) != 0 && key.Matches(k, m.editor.area.KeyMap.CopySelection):
+		if start, end, ok := m.editor.selectionBytes(); ok {
+			start, end = m.editor.coverPastes(start, end)
+			budget := maxEffects
+			return m.copyText(m.route(m.active, coreID), m.editor.expandedRange(start, end), &budget)
+		}
 	case chord == "?" && m.editor.value() == "":
 		if i, ok := m.host.byID[paletteID]; ok {
 			return m.runAction(i, "")
@@ -500,7 +576,7 @@ func slashParts(text string) (name, args string, start int) {
 
 func (m *Model) slashMatches() []registeredAction {
 	text := m.editor.value()
-	if m.slashHidden || !strings.HasPrefix(text, "/") || strings.ContainsAny(text, " \t\n") {
+	if len(m.editor.pastes) != 0 || m.slashHidden || !strings.HasPrefix(text, "/") || strings.ContainsAny(text[1:], " \t\n/") {
 		return nil
 	}
 	var out []registeredAction
@@ -510,7 +586,12 @@ func (m *Model) slashMatches() []registeredAction {
 			out = append(out, a)
 		}
 	}
-	return m.skillSlashMatches(text[1:], out)
+	out = m.skillSlashMatches(text[1:], out)
+	if text == "/" && m.editor.atEnd() && m.pathRootsAvailable() {
+		// Make browsing visible without changing the default command.
+		out = slices.Insert(out, min(1, len(out)), browsePathsAction)
+	}
+	return out
 }
 
 func (m *Model) runSlash(a registeredAction) tea.Cmd {
@@ -518,6 +599,10 @@ func (m *Model) runSlash(a registeredAction) tea.Cmd {
 }
 
 func (m *Model) runSlashWithArgs(a registeredAction, args string) tea.Cmd {
+	if a.action.ID == browsePathsID {
+		m.openPathRoots()
+		return nil
+	}
 	if a.action.ID == stageSkillID {
 		m.stageSkill(a.skill)
 		return nil
@@ -529,7 +614,7 @@ func (m *Model) runSlashWithArgs(a registeredAction, args string) tea.Cmd {
 
 func (m *Model) slashCompleter() func(extension.Context, extension.CompletionRequest) []extension.Completion {
 	text := m.editor.value()
-	if !strings.HasPrefix(text, "/") || strings.Contains(text, "\n") {
+	if len(m.editor.pastes) != 0 || !strings.HasPrefix(text, "/") || strings.Contains(text, "\n") {
 		return nil
 	}
 	name, _, start := slashParts(text)
@@ -588,9 +673,12 @@ func (m *Model) completeSlash() {
 	}
 	if list := m.slashMatches(); len(list) > 0 {
 		a := list[min(m.slashIndex, len(list)-1)]
-		if a.action.ID == stageSkillID {
+		switch a.action.ID {
+		case browsePathsID:
+			m.openPathRoots()
+		case stageSkillID:
 			m.stageSkill(a.skill)
-		} else {
+		default:
 			m.editor.set("/" + a.action.Slash.Name + " ")
 		}
 		m.slashIndex = 0
@@ -649,7 +737,8 @@ func (t *threadState) hasSubmission(id sdk.ID) bool {
 }
 
 func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
-	text := m.editor.value()
+	draft := m.editor.promptDraft
+	text := draft.expanded()
 	r := m.route(m.active, coreID)
 	t := m.threads[r.owner]
 	if t.attaching {
@@ -750,8 +839,8 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 				t.following, t.anchor = true, rowAnchor{}
 			}
 			if show {
-				if dst.draft == "" {
-					dst.draft = m.editor.value()
+				if dst.draft.text == "" {
+					dst.draft = m.editor.promptDraft
 					m.editor.set("")
 				}
 				attach = m.switchThread(target)
@@ -766,19 +855,22 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 				copy(dst.history, dst.history[1:])
 				dst.history = dst.history[:maxPromptHistory-1]
 			}
-			dst.history = append(dst.history, text)
+			dst.history = append(dst.history, draft)
 		}
 		if err != nil {
 			note := err.Error()
 			uncertain := isIndeterminate(err)
 			if !uncertain || out.key == "" {
-				m.restoreText(target, text)
-				if skill.token != "" {
+				restored := m.restoreDraft(target, draft)
+				if skill.token != "" && restored {
 					dst.stagedSkill = skill
 				}
 				dst.addImages(sent)
 				if uncertain {
 					note = "Thread creation unconfirmed; prompt not sent. Check /threads before retrying."
+				}
+				if !restored {
+					note += "; prompt no longer fits in the draft"
 				}
 			} else {
 				note = "Input admission unconfirmed; not restored or replayed (request " + out.key + ")"
@@ -810,29 +902,40 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 	}, &budget)
 }
 
-func (m *Model) restoreText(id sdk.ID, text string) {
-	if text == "" {
-		return
+func (m *Model) restoreText(id sdk.ID, text string) bool {
+	return m.restoreDraft(id, pasteDraft(sanitizePrompt(text, true), 1))
+}
+
+func (m *Model) restoreDraft(id sdk.ID, insert promptDraft) bool {
+	if insert.text == "" {
+		return true
 	}
 	t := m.threads[id]
-	current := t.draft
+	draft := t.draft
 	if id == m.active {
-		current = m.editor.value()
+		draft = m.editor.promptDraft
 	}
-	if current != "" {
-		text = limitText(text, max(0, maxPromptBytes-len(current)-1))
-		if text == "" {
-			return
+	if draft.text != "" {
+		if len(draft.pastes) != 0 && len(insert.pastes) != 0 {
+			// The restored and current drafts may have used the same numbers.
+			insert = pasteDraft(insert.expanded(), draft.lastPaste+1)
 		}
-		text += "\n" + current
+		insert.text += "\n"
+	}
+	if draft.expandedBytes()+insert.expandedBytes() > maxPromptBytes {
+		return false
+	}
+	next := draft.splice(0, 0, insert)
+	if len(next.text) > maxPromptBytes {
+		next = pasteDraft(next.expanded(), 1)
 	}
 	if id == m.active {
-		m.editor.set(text)
-		m.editor.resetHistory()
-		m.slashHidden = false
+		m.editor.setDraft(next)
+		m.promptChanged()
 	} else {
-		t.draft = cleanPrompt(text)
+		t.draft = next
 	}
+	return true
 }
 
 type stopBackend interface {
@@ -891,9 +994,9 @@ func (m *Model) finishStop(r ownerRoute, inputs []localInput, evicted bool, out 
 	t := m.threads[r.owner]
 	current := t.draft
 	if r.owner == m.active {
-		current = m.editor.value()
+		current = m.editor.promptDraft
 	}
-	left := maxPromptBytes - len(current)
+	left := maxPromptBytes - current.expandedBytes()
 	var texts, unknown []string
 	var firstSkill stagedSkill
 	restored, tooLarge := 0, 0
@@ -911,7 +1014,7 @@ func (m *Model) finishStop(r ownerRoute, inputs []localInput, evicted bool, out 
 			continue
 		}
 		cost := len(input.text)
-		if cost != 0 && (current != "" || len(texts) != 0) {
+		if cost != 0 && (current.text != "" || len(texts) != 0) {
 			cost++
 		}
 		if cost > left || !t.restoreInputImages(input.images) {

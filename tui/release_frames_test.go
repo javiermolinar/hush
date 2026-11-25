@@ -57,6 +57,12 @@ func TestReleaseFrames(t *testing.T) {
 			}
 			press(m, tea.KeyEscape, 0)
 
+			m.editor.set("Review this log: ")
+			m.Update(tea.PasteMsg{Content: pasteFixture()})
+			if frame := shot("folded-paste"); !strings.Contains(frame, "Review this log: "+pasteLabel29) {
+				t.Fatal("the folded paste was not visible")
+			}
+
 			m.editor.set("Keep this draft")
 			s.queue = []sdk.QueueItem{{SubmissionID: "7", Mode: string(sdk.FollowUp), Text: "Queued fixture"}}
 			s.info.Status = x.Running
@@ -89,6 +95,22 @@ func TestReleaseFrames(t *testing.T) {
 				t.Fatalf("clipboard=%q, frame=%s", clipboard, frame)
 			}
 			m.notice = noticeState{}
+			m.selection = selection{}
+
+			m.options.ReducedMotion = false
+			shot("code-copy-ready")
+			p := codeCopyPoint(t, m, "2/0/0", true)
+			workflowWork(t, m, clickCodeCopy(t, m, p))
+			if frame := shot("code-copy-start"); clipboard != "func main() { println(42) }" || !strings.Contains(frame, "✓ copied") {
+				t.Fatalf("code clipboard=%q, frame=%s", clipboard, frame)
+			}
+			for i := 0; i < copySweepFrames/2; i++ {
+				m.Update(copySweepTick{m.copied.token})
+				assertFrame(t, m)
+			}
+			shot("code-copy-sweep")
+			m.Update(copyLabelExpired{m.copied.token})
+			m.options.ReducedMotion = true
 
 			m.runAction(m.host.byID[paletteID], "")
 			d := m.focusedDialog()
@@ -199,7 +221,12 @@ func TestReleaseFrames(t *testing.T) {
 			}
 			press(m, tea.KeyEscape, 0)
 			m.options.WorkspaceTrust = nil
-			openBrowseScope(t, m, fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true},
+			openBrowseScope(t, m, fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true, Home: true},
+				list: func(context.Context, sdk.WorkspaceFileTarget, string, string, int, string) (sdk.WorkspaceFilePage, error) {
+					return sdk.WorkspaceFilePage{Entries: []sdk.WorkspaceFileEntry{
+						{Name: "Documents", Directory: true}, {Name: "notes.md"},
+					}}, nil
+				},
 				search: func(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error) {
 					return sdk.WorkspaceFileSearchResult{Partial: true, Matches: []sdk.WorkspaceFileMatch{
 						{Path: "other/pkg/generator.go"}, {Path: "tempo.fork/modules/generator/generator.go"},
@@ -214,6 +241,20 @@ func TestReleaseFrames(t *testing.T) {
 			press(m, tea.KeyDown, 0)
 			if body := shot("file-search-results"); !strings.Contains(body, "› tempo.fork/modules/generator/generator.go") || !strings.Contains(body, "partial results") {
 				t.Fatal("file search did not show the selected path and scan state")
+			}
+
+			m.editor.set("/")
+			if body := shot("slash-path-entry"); !strings.Contains(body, "Browse paths…") {
+				t.Fatal("slash menu did not show the path picker entry")
+			}
+			m.openPathRoots()
+			if body := shot("path-locations"); !strings.Contains(body, "Workspace · /work/project/src/") || !strings.Contains(body, "Backend home · ~/") {
+				t.Fatal("path picker did not show both granted locations")
+			}
+			press(m, tea.KeyDown, 0)
+			pathCompletionPage(t, m, press(m, tea.KeyEnter, 0))
+			if body := shot("path-home"); !strings.Contains(body, "Backend home files") || !strings.Contains(body, "› Documents/") || !strings.Contains(body, "notes.md") {
+				t.Fatal("path picker did not show the selected directory and file")
 			}
 
 			m.editor.set("")

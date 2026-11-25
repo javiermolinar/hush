@@ -13,7 +13,6 @@
   ],
   "scripts": {
     "build": "tsc",
-    "profile:check": "tsc -p protocol/v1/pi-1.6 && node --test protocol/v1/pi-1.6/*.test.mjs",
     "protocol:check": "node --test protocol/v1/*.test.mjs",
     "server:check": "npm run build && node --test server/test/*.test.mjs",
     "server:bench": "npm run build && node --expose-gc server/test/memory.mjs",

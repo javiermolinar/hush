@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -277,13 +277,14 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
   await writeFile(preload, `
     import { appendFileSync, readFileSync, lstatSync } from 'node:fs';
     import { createHash } from 'node:crypto';
+    import { getCompileCacheDir } from 'node:module';
     import { dirname } from 'node:path';
     import { isMainThread } from 'node:worker_threads';
     if (isMainThread) {
       const entry = process.argv[1];
       appendFileSync(${JSON.stringify(log)}, JSON.stringify({ pid: process.pid, entry, args: process.argv.slice(2),
         version: process.version, mode: lstatSync(entry).mode & 0o777, dirMode: lstatSync(dirname(entry)).mode & 0o777,
-        sha: createHash('sha256').update(readFileSync(entry)).digest('hex') }) + '\\n');
+        compileCache: getCompileCacheDir(), sha: createHash('sha256').update(readFileSync(entry)).digest('hex') }) + '\\n');
     }
     const fetchFixture = globalThis.fetch;
     const zlib = process.getBuiltinModule('node:zlib');
@@ -546,7 +547,20 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
   assert.deepEqual(unexpected, []);
   await absent(join(home, '.pi'));
   const records = await launches();
-  assert.equal(new Set(records.map(r => r.entry)).size, records.length);
+  const cached = records.filter(r => r.compileCache);
+  const direct = records.filter(r => !r.compileCache);
+  const expectedCache = join(profile, 'backend-cache');
+  assert.equal((await lstat(expectedCache)).mode & 0o777, 0o700);
+  assert.ok(cached.length > 1, 'managed restarts must share the compile cache');
+  assert.equal(new Set(cached.map(r => r.entry)).size, 1);
+  assert.equal(new Set(direct.map(r => r.entry)).size, direct.length);
+  for (const r of cached) {
+    assert.ok(r.args.includes('--startup-fd'));
+    const generation = dirname(r.compileCache);
+    assert.match(basename(generation), /^gen-[a-f0-9]{64}$/);
+    assert.equal(dirname(generation), expectedCache);
+    assert.equal(dirname(dirname(r.entry)), generation);
+  }
   for (const r of records) {
     assert.equal(r.version, 'v22.19.0');
     assert.equal(r.sha, digest, 'extracted bytes differ from lockfile-built artifact');

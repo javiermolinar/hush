@@ -28,16 +28,17 @@ func TestBackendE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	skill := filepath.Join(root, "skills", "fixture-review")
+	skill := filepath.Join(root, ".hush", "skills", "fixture-review")
 	if err := os.MkdirAll(skill, 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: fixture-review\ndescription: An integration skill\n---\nTest instructions\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	socket := filepath.Join(root, "hush.sock")
-	cmd := exec.CommandContext(ctx, "node", bundle, "--faux", "--data-dir", root, "--pi-events")
-	cmd.Env = append(os.Environ(), "HOME="+root, "PI_CODING_AGENT_DIR="+root, "NODE_NO_WARNINGS=1")
+	grantStandaloneFixture(t, root, root)
+	socket := filepath.Join(root, ".hush", "runtime", "hush.sock")
+	cmd := exec.CommandContext(ctx, "node", bundle, "--faux")
+	cmd.Env = standaloneFixtureEnv(root)
 	cmd.Dir = root
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
@@ -52,7 +53,7 @@ func TestBackendE2E(t *testing.T) {
 	if !scan.Scan() || !strings.Contains(scan.Text(), `"ready":true`) {
 		t.Fatalf("backend not ready: %q %v", scan.Text(), scan.Err())
 	}
-	sdkClient := sdk.NewClient(socket, sdk.ClientOptions{Capabilities: map[string][]uint64{"piEvents": {sdk.PiEventsVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion}, "threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}}})
+	sdkClient := sdk.NewClient(socket, sdk.ClientOptions{Capabilities: map[string][]uint64{"modelCatalog": {sdk.ModelCatalogDraftVersion}, "workspaceSkills": {sdk.WorkspaceSkillDraftVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion}, "threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}}})
 	defer sdkClient.Close()
 	thread, err := sdkClient.NewThread(ctx, sdk.NewThread{CWD: root})
 	if err != nil {
@@ -84,11 +85,12 @@ func TestBackendE2E(t *testing.T) {
 	if row := ansi.Strip(m.frame.rows[m.height-1]); !strings.Contains(row, filepath.Base(root)) || !strings.Contains(row, "faux-1") || !strings.Contains(row, "ctx ") {
 		t.Fatalf("missing pinned metadata: %q", row)
 	}
-	for _, want := range []string{"● attached", " open · ", "skills      1 loaded", "context", "(estimate)"} {
+	for _, want := range []string{"● attached", " open · ", "context", "(estimate)"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing live intro field %q:\n%s", want, body)
 		}
 	}
+	m.Update(m.menuProbe()())
 	m.editor.set("/skills")
 	list := press(m, tea.KeyEnter, 0)
 	if list == nil {
@@ -248,23 +250,22 @@ func TestBackendE2E(t *testing.T) {
 
 	// Start with a different stored configuration so an ignored menu action
 	// cannot pass by observing the backend's default model and level.
+	otherModel := sdk.Model{Provider: "openai-codex", ModelID: "gpt-6-sol"}
 	if err := sdkClient.ConfigureThread(ctx, thread.ID, sdk.Configure{
-		Model: sdk.Clear[sdk.Model](), ThinkingLevel: sdk.Set("low"),
+		Model: sdk.Set(otherModel), ThinkingLevel: sdk.Set("low"),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	wait(func() bool { return state.info.Model == (sdk.Model{}) && state.info.Thinking == "low" })
+	wait(func() bool { return state.info.Model == otherModel && state.info.Thinking == "low" })
 	m.Update(m.menuProbe()())
 	if !m.contextFor(m.active).Features.Has(x.Catalog) {
 		t.Fatal("live catalog not available")
 	}
-	lookup := m.runAction(m.host.byID[menusID+".model"], "")
-	m.finishWork(lookup().(workMsg))
+	lookup := m.runAction(m.host.byID[menusID+".model"], "faux/faux-1")
+	m.Update(reply[modelSearchResult](t, lookup))
 	if m.sheet == nil || m.sheet.title != "Select model" {
 		t.Fatalf("catalog menu did not open: %+v", m.notice)
 	}
-	m.sheet.query = "faux/faux-1"
-	m.sheet.filter()
 	if choice, ok := m.sheet.choice(); !ok || choice.Label != "faux/faux-1" {
 		t.Fatalf("fixture model missing from catalog: %+v", choice)
 	}

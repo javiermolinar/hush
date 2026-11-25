@@ -2,8 +2,7 @@ import { defineDoc, type ConversationId, type RunFailure, type RunFailureReason,
 import type { ThreadStatus } from "../../server/src/thread-directory.js";
 import type { ManagedCheckout } from "./worktrees.js";
 
-// Hush's display metadata is independent of Pi's session profile and does not
-// change the Durable run, its inputs or their terminal outcomes.
+// Display metadata does not change the Durable run, its inputs or their terminal outcomes.
 type ThreadPresentation = {
   title?: string; autoTitle?: string; topicTitle?: string; generatedTitle?: string; titleAttempted?: boolean;
   dismissedFailure?: number; archived?: boolean; checkout?: ManagedCheckout;
@@ -80,8 +79,8 @@ export function topicTitle(user: string, answer = "") {
   return best || (prompt[0] ? `${prompt[0].word} discussion` : "Quick chat");
 }
 
-export function displayTitle(doc: Readonly<ThreadPresentation> | undefined, piName?: string) {
-  return doc?.title || (piName && threadLabel(piName, 96)) || (doc?.generatedTitle && shortTitle(doc.generatedTitle)) ||
+export function displayTitle(doc: Readonly<ThreadPresentation> | undefined) {
+  return doc?.title || (doc?.generatedTitle && shortTitle(doc.generatedTitle)) ||
     doc?.topicTitle || (doc?.autoTitle && topicTitle(doc.autoTitle)) || undefined;
 }
 

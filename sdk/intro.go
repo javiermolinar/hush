@@ -164,7 +164,7 @@ func introAction[T any](ctx context.Context, c *Client, method string, params an
 }
 
 // RenameThread sets the Hush presentation name and returns its normalized value.
-// It does not change the Pi session name. Requires intro version 2.
+// Requires intro version 2.
 func (c *Client) RenameThread(ctx context.Context, thread ID, title string) (string, error) {
 	if !thread.Valid() || !utf8.ValidString(title) || strings.TrimSpace(title) == "" || utf8.RuneCountInString(title) > 256 {
 		return "", ErrProtocol

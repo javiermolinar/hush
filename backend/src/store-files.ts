@@ -42,7 +42,7 @@ export async function syncPath(path: string, dir = false) {
 
 // The old executable must see either the old manifest or a complete refusal
 // marker. Do not unlink the destination, even after an interrupted write.
-export async function replaceStoreJSON(path: string, value: object) {
+export async function replaceStoreJSON(path: string, value: object, beforePublish?: () => Promise<void>) {
   const temp = path + ".new-" + randomUUID();
   const f = await open(temp, "wx", 0o600);
   try {
@@ -50,6 +50,7 @@ export async function replaceStoreJSON(path: string, value: object) {
       await f.writeFile(JSON.stringify(value) + "\n");
       await f.sync();
     } finally { await f.close(); }
+    if (beforePublish) await beforePublish();
     await rename(temp, path);
     await syncPath(dirname(path), true);
   } finally { await rm(temp, { force: true }); }

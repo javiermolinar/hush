@@ -109,6 +109,16 @@ func testFilePickerFrameGeometry(t *testing.T) {
 		m.Update(tea.WindowSizeMsg{Width: w, Height: 12})
 		assertFrame(t, m)
 	}
+
+	m, s := demo(t, Options{ReducedMotion: true})
+	s.info.Workspace = "/work/" + strings.Repeat("wide 界", 12)
+	openBrowseScope(t, m, fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true, Home: true}})
+	m.editor.set("/")
+	m.openPathRoots()
+	for _, w := range []int{40, 64, 100} {
+		m.Update(tea.WindowSizeMsg{Width: w, Height: 12})
+		assertFrame(t, m)
+	}
 }
 
 func TestNativeFileSearchDebouncesCancelsAndCompletes(t *testing.T) {
@@ -325,6 +335,15 @@ func TestFreshSessionBrowsesProspectiveWorkspace(t *testing.T) {
 	if got := m.editor.value(); got != "look @"+found+" " {
 		t.Fatal(got)
 	}
+	m.editor.set("look /")
+	m.refreshFilePicker()
+	checkPathChoices(t, m, workspaceRootChoice)
+	pathCompletionPage(t, m, press(m, tea.KeyTab, 0))
+	checkPathChoices(t, m, "README.md")
+	press(m, tea.KeyTab, 0)
+	if got := m.editor.value(); got != "look /workspace/README.md " {
+		t.Fatal(got)
+	}
 	if created.Load() != 0 || m.active != "" {
 		t.Fatalf("the picker created a thread: calls=%d active=%q", created.Load(), m.active)
 	}
@@ -364,7 +383,7 @@ func TestFreshSessionFilePickerNeedsProspectiveScope(t *testing.T) {
 			m := modelFor(t, Options{ReducedMotion: true, WorkspaceLocal: tc.local})
 			m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
 			openFreshScope(t, m, fixture)
-			for _, draft := range []string{"look @", "look @read"} {
+			for _, draft := range []string{"look @", "look @read", "look /", "~", "look /workspace/"} {
 				m.editor.set(draft)
 				if cmd := m.refreshFilePicker(); cmd != nil || m.fileAvailable("") {
 					t.Fatalf("%q opened the picker", draft)

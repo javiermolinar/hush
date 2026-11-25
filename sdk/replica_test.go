@@ -42,7 +42,6 @@ func TestFrozenSchemaCopy(t *testing.T) {
 		copy []byte
 	}{
 		{"../protocol/v1/core.schema.json", coreSchema},
-		{"../protocol/v1/pi-1.6/pi-events.schema.json", piSchema},
 		{"../protocol/v1/thread-directory.schema.json", threadDirectorySchema},
 	} {
 		source, err := os.ReadFile(schema.path)

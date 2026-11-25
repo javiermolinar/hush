@@ -1,18 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { CredentialStore } from "@earendil-works/pi-ai";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, type AuthEvent, type AuthPrompt, type Models } from "@earendil-works/pi-ai";
 import { object } from "../../server/src/wire.js";
 import { authProvider, authProviders, defaultAuthProvider, registerBundledOAuthFlows, type AuthProvider } from "./auth-providers.js";
 import { hushDirectory } from "./config.js";
 import { acquireCredentialLock, credentialAdvice, hushCredentialStore } from "./credentials.js";
-import { InMemoryCodingAgentModelsStore, InMemoryCredentialStore } from "./pi-source.js";
-import { privateDirectory, privateFile, uuid } from "./profile.js";
+import { ModelOverlayError } from "./model-overlays.js";
+import { createHushModels } from "./models.js";
+import { privateDirectory, uuid } from "./profile.js";
 import { readStoreJSON, replaceStoreJSON } from "./store-files.js";
-
-type Interaction = Parameters<ModelRuntime["login"]>[2];
-type AuthEvent = Parameters<Interaction["notify"]>[0];
-type AuthPrompt = Parameters<Interaction["prompt"]>[0];
 
 const screen = (text: string) => process.stderr.write(text + "\n");
 const loginTTY = () => process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY;
@@ -84,7 +80,7 @@ async function openAIDeviceId(dir: string, signal: AbortSignal) {
   } finally { unlock(); }
 }
 
-async function login(runtime: ModelRuntime, provider: AuthProvider, abort: AbortController, deviceId?: string) {
+async function login(runtime: Models, provider: AuthProvider, abort: AbortController, deviceId?: string) {
   const input = process.stdin;
   const { signal } = abort;
   const terminal = new AbortController();
@@ -192,11 +188,9 @@ export async function runAuthCommand(args: string[]) {
   const stop = () => abort.abort();
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   if (action === "login") for (const signal of signals) process.on(signal, stop);
-  let runtime: ModelRuntime | undefined;
   const statusCommand = `hush auth status${id === defaultAuthProvider ? "" : " " + id}`;
   try {
-    // No Pi defaults, and never allow an inherited callback binding override.
-    process.env.PI_OFFLINE = "1";
+    // Do not allow inherited callback binding overrides.
     delete process.env.PI_OAUTH_CALLBACK_HOST;
     delete process.env.KIMI_CODE_OAUTH_HOST;
     delete process.env.KIMI_OAUTH_HOST;
@@ -205,40 +199,38 @@ export async function runAuthCommand(args: string[]) {
     await privateDirectory(dir, action === "login", action !== "login");
     const modelsPath = join(dir, "models.json");
     const { credentials, keyring } = await hushCredentialStore(dir, { createFile: action === "login" });
-    const create = (store: CredentialStore, overlays: boolean) => ModelRuntime.create({
-      credentials: store, modelsPath: overlays ? modelsPath : null,
-      modelsStore: new InMemoryCodingAgentModelsStore(),
-      allowModelNetwork: false, refreshOnCreate: false,
-    });
     if (action === "login") {
       const deviceId = id === "openai" ? await openAIDeviceId(dir, abort.signal) : undefined;
-      const signIn = async (store: CredentialStore) => {
+      const signIn = async (store: typeof credentials) => {
         // An overlay must not change the provider login offer. Test keyring
         // access before beginning a browser flow that may spend a code.
-        runtime = await create(store, false);
+        const runtime = await createHushModels(store);
         if (keyring) await store.read(id, { signal: abort.signal });
-        try { await login(runtime, provider, abort, deviceId); }
-        finally { await runtime.settleCredentialWrites(); }
+        await login(runtime, provider, abort, deviceId);
       };
       if (keyring) await keyring.exclusive(signIn, abort.signal);
       else await signIn(credentials);
       process.stdout.write(`${id}: signed in with OAuth\n`);
       return 0;
     }
-    if (action === "logout") {
-      runtime = await create(credentials, false);
-      await runtime.logout(id);
+    if (action === "logout") await credentials.delete(id);
+    let runtime: Models;
+    let usableOverlays = true;
+    try { runtime = await createHushModels(credentials, modelsPath); }
+    catch (error) {
+      if (!(error instanceof ModelOverlayError)) throw error;
+      screen(error.message);
+      usableOverlays = false;
+      // Still report the managed credential. Do not advertise fallback auth.
+      runtime = await createHushModels(credentials);
     }
-    await privateFile(modelsPath);
-    runtime = await create(credentials, true);
     const opts = { signal: AbortSignal.timeout(5_000) };
     const managed = (await credentials.read(id, opts))?.type;
     const oauth = managed === "oauth" && (await runtime.checkAuth(id, opts))?.type === "oauth";
     // A managed credential can hide a configured alternative. Check that
     // same Hush config with an empty in-memory store, never by deleting data.
-    const withoutManaged = managed ? await create(new InMemoryCredentialStore(), true) : runtime;
-    const alternative = withoutManaged.getProviderAuthStatus(id).configured ||
-      (await withoutManaged.checkAuth(id, opts))?.type === "api_key";
+    const alternative = usableOverlays && (await (managed
+      ? await createHushModels(new InMemoryCredentialStore(), modelsPath) : runtime).checkAuth(id, opts))?.type === "api_key";
     const status = managed === "oauth" ? (oauth ? "OAuth configured" : "stored OAuth unavailable")
       : managed === "api_key" ? "stored API key (not OAuth)" : "no Hush-managed credential";
     process.stdout.write(`${id}: ${status}\n`);
@@ -252,7 +244,6 @@ export async function runAuthCommand(args: string[]) {
     screen(credentialAdvice(error) ?? `Could not complete ${provider.label} auth. Check the private Hush profile and run '${statusCommand}' to inspect it.`);
     return 1;
   } finally {
-    await runtime?.settleCredentialWrites().catch(() => {});
     if (action === "login") for (const signal of signals) process.off(signal, stop);
   }
 }

@@ -2,7 +2,7 @@
 import { withAbortSignal, BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/delta";
 import {
-  AgentDoc, ConversationBusy, ConversationIdle, configure,
+  AgentDoc, ConversationBusy, ConversationIdle, ReadOnlySession, configure,
   type AgentChange, type AgentState, type Conversation, type ConversationId, type ConversationRecord, type ConversationView,
   type Cursor, type EntryId, type EntryRecord, type Harness, type InboxState, type LiveState, type Observer,
   type SubmissionId, type SubmissionRecord, type UsageState,
@@ -26,8 +26,13 @@ const submissionID = (value: string) => Number(value) as SubmissionId;
 const ownerless = { kind: "ownerless" } as const;
 const notFound = () => new WireError("not_found");
 
-export function requestError(error: unknown) {
+export function requestError(error: unknown, readOnlyReason?: string) {
   if (error instanceof WireError) return error;
+  if (error instanceof ReadOnlySession) {
+    const refusal = new WireError("invalid_request");
+    refusal.message = readOnlyReason ?? "The backend is read-only.";
+    return refusal;
+  }
   if (error instanceof ConversationBusy) return new WireError("busy");
   if (error instanceof ConversationIdle) return new WireError("idle");
   return new WireError("internal");
@@ -194,8 +199,6 @@ export function parseStop(params: Record<string, unknown>): StopQuery {
 /** Local customization of base admission, not a negotiated wire extension. */
 export interface NativeHost {
   defaults?(cwd: string | undefined, context: Context): Promise<AgentChange>;
-  /** Decline native writes/forks on host-owned threads before admission. Native reads stay available. */
-  mayMutate?(conv: Conversation, context: Context): Promise<boolean>;
   prepare?(input: Readonly<{ threadId?: string; cwd?: string; text?: string; skillToken?: string }>, context: Context):
     Promise<{ text?: string; agent?: AgentChange; confirm?: (signal?: AbortSignal) => Promise<void> }>;
   /** Check the selected model outside the transaction. Never resolve or carry request credentials. */
@@ -231,7 +234,6 @@ export class DurableAdapter {
     const conv = await this.#get(query.threadId, ctx);
     const record = await this.harness.commit(tx => tx.conversation(conv.id), ctx);
     if (!record || record.owner) throw notFound();
-    if (this.host?.mayMutate && !await this.host.mayMutate(conv, ctx)) throw notFound();
     const candidates: StopResult["candidates"] = [];
     for (const value of query.submissionIds) {
       let outcome: Withdrawal = "unknown";
@@ -308,8 +310,6 @@ export class DurableAdapter {
     }
 
     const conv = await this.#get(request.params.threadId, ctx);
-    if (request.method !== "history" && request.method !== "thread.wait" && this.host?.mayMutate &&
-        !await this.host.mayMutate(conv, ctx)) throw new WireError("unsupported_capability", "piEvents");
     switch (request.method) {
       case "history": return { result: await this.#history(conv, request.params, ctx) };
       case "thread.fork": {
@@ -406,9 +406,6 @@ export class DurableAdapter {
       environment?: ClientEnvironment, skillToken?: string) {
     if (skillToken && !this.host?.prepare) throw new WireError("unsupported_capability", "workspaceSkills");
     const conv = await this.#get(input.threadId, ctx);
-    if (this.host?.mayMutate && !await this.host.mayMutate(conv, ctx)) {
-      throw new WireError("unsupported_capability", "piEvents");
-    }
     const { requestId, text, whenBusy } = input;
     const start = await conv.commit(async tx => {
       const previous = await tx.submissionByRequest(conv.id, requestId);

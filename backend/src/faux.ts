@@ -1,6 +1,5 @@
 import { setTimeout } from "node:timers/promises";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
-import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 
 export const fauxModel = { provider: "faux", modelId: "faux-1" };
@@ -11,7 +10,7 @@ export function makeFaux(ephemeral: boolean) {
     faux.appendResponses([reply]);
     const last = messages.findLast(message => message.role !== "system");
     if (last?.role === "toolResult") {
-      if (last.toolName.startsWith("mcp__") || last.toolName === "codemode" ||
+      if (last.toolName === "codemode" ||
           last.toolName === "hush_fixture_fast" || last.toolCallId === "workspace-read") {
         return fauxAssistantMessage(last.content.filter(b => b.type === "text").map(b => b.text).join("\n"));
       }
@@ -44,10 +43,6 @@ export function makeFaux(ephemeral: boolean) {
         fauxThinking("fixture thinking"), fauxText("calling the fixture"), fauxToolCall("hush_fixture_fast", {}, { id: "fast-call" }),
       ], { stopReason: "toolUse" });
       if (text === "!unoffered-tool") return fauxAssistantMessage(fauxToolCall("hush_not_offered", {}, { id: "unoffered-call" }), { stopReason: "toolUse" });
-      if (text === "!mcp") {
-        const target = getCurrentTools(messages).find(tool => tool.name.startsWith("mcp__"));
-        if (target) return fauxAssistantMessage(fauxToolCall(target.name, {}, { id: "hush-mcp-fixture" }), { stopReason: "toolUse" });
-      }
       const sleep = /^!sleep ([1-9]\d{0,4})$/.exec(text);
       if (sleep || text === "!crash") {
         return fauxAssistantMessage(fauxToolCall("hush_fixture_wait", { ms: sleep ? Number(sleep[1]) : 0 },

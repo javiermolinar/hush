@@ -1,9 +1,9 @@
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { Models } from "@earendil-works/pi-ai";
 import { shortTitle } from "./thread-presentation.js";
 
 export type GenerateThreadTitle = (user: string, answer: string, signal: AbortSignal) => Promise<string | undefined>;
 
-export function threadTitleGenerator(runtime: ModelRuntime, ref: { provider: string; modelId: string }): GenerateThreadTitle {
+export function threadTitleGenerator(runtime: Models, ref: { provider: string; modelId: string }): GenerateThreadTitle {
   return async (user, answer, life) => {
     const model = runtime.getModel(ref.provider, ref.modelId);
     if (!model) return;

@@ -22,7 +22,6 @@ run = [
   "go vet ./sdk/... ./tui/... ./app/...",
   'HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs" go test ./sdk/... ./tui/... ./app/...',
   "npm run protocol:check",
-  "npm run profile:check",
   # Test the already-built server, backend and CLI serially to avoid timing contention.
   "node --test --test-concurrency=1 server/test/*.test.mjs backend/test/*.test.mjs app/test/*.test.mjs",
 ]
@@ -36,6 +35,11 @@ run = 'HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs" go test -race -short ./sdk
 description = "Build the macOS menu bar app at dist/macos/Hush.app (macOS only)"
 depends = ["build"]
 run = "sh app/macos/build.sh bin/hush dist/macos"
+
+[tasks."app:macos:install"]
+description = "Build and install Hush.app in /Applications and restart its development service"
+depends = ["app:macos"]
+run = "sh app/macos/install.sh dist/macos/Hush.app /Applications/Hush.app dist/hush-backend.mjs"
 
 [tasks."release:build"]
 description = "Build the installable hush with its embedded backend (without verification)"

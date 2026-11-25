@@ -117,14 +117,14 @@ func TestCustomDialCoversDedicatedConnections(t *testing.T) {
 	}
 	cancel()
 	_, helloErr := c.Hello(ctx)
-	_, catalogErr := c.PiCatalog(ctx)
-	for _, err := range []error{helloErr, catalogErr, c.WaitIdle(ctx, "1")} {
+	for _, err := range []error{helloErr, c.WaitIdle(ctx, "1")} {
 		var transport *TransportError
 		if !errors.Is(err, dialErr) || !errors.As(err, &transport) || transport.Indeterminate {
 			t.Fatalf("error should be a pre-admission dial error: %v", err)
 		}
 	}
-	if calls.Load() < 5 {
+	// One dial each for the two watches, hello, and the idle wait.
+	if calls.Load() < 4 {
 		t.Fatalf("only %d custom dial calls", calls.Load())
 	}
 }

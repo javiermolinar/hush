@@ -18,7 +18,6 @@ import { parseWorkspaceFiles, parseWorkspaceFileSearch, parseWorkspaceScopeWatch
   workspaceFileProjectPathsVersion, workspaceScopeWatchVersion, type WorkspaceFilesHost } from "./workspace-files.js";
 import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillDraftVersion, workspaceSkillsVersion,
   type WorkspaceSkillsHost, type WorkspaceSkillsVersion } from "./workspace-skills.js";
-import { PiPeer, piEventsVersion, type PiEventsHost } from "./pi-events.js";
 import { imageReply, imagesVersion, parseImageRef, parseImageSubmit, type ImagesHost } from "./images.js";
 export type { ImagesHost } from "./images.js";
 import { checkIntroReply, parseIntroAction, parseIntroQuery, type IntroHost, type IntroVersion } from "./intro.js";
@@ -26,7 +25,6 @@ export type { IntroAction, IntroAttention, IntroHost, IntroQuery, IntroReport, I
 import { checkThreadDirectoryReply, parseThreadArchive, parseThreadCreation, parseThreadDirectoryQuery, parseThreadLookup,
   threadDirectoryVersion, threadManagementVersion, threadWorkspaceSearchVersion, threadWorkspaceVersion,
   type ThreadDirectoryHost, type ThreadDirectoryVersion, type ThreadWorkspaceVersion } from "./thread-directory.js";
-export type { PiBinding, PiCommand, PiCommandAction, PiEventsHost, PiEventSink, PiHeader, PiOpen, PiResponse, PiService } from "./pi-events.js";
 import {
   MAX_RECORD, encode, cleanJSON, identity, isCoreMethod, object, parseRecord, patchShape,
   successShape, token, validRequest, WireError, type Envelope, type Params,
@@ -39,7 +37,7 @@ const MAX_BACKLOG = MAX_RECORD * 2 + 1024;
 // No optional capability is inferred from the Harness. Each installed adapter
 // needs a versioned, additive schema and an explicit negotiation branch.
 export type HostCapabilities = Readonly<{
-  piEvents?: PiEventsHost; intro?: IntroHost; threadDirectory?: ThreadDirectoryHost; images?: ImagesHost;
+  intro?: IntroHost; threadDirectory?: ThreadDirectoryHost; images?: ImagesHost;
   hushProfile?: 1; nativeStop?: 1; modelCatalog?: ModelCatalogHost; storeIdentity?: StoreIdentity; clientEnvironment?: 1;
   runtime?: RuntimeHost;
   settings?: SettingsHost;
@@ -55,9 +53,10 @@ export type HostCapabilities = Readonly<{
 export interface ServerOptions {
   host?: NativeHost;
   capabilities?: HostCapabilities;
+  /** Public, host-owned diagnostic for an attempted mutation on a read-only Harness. */
+  readOnlyReason?: string;
   maxConnections?: number;
   pendingObservations?: number;
-  pendingPiEvents?: number;
   onConnections?: (count: number) => void;
 }
 
@@ -157,7 +156,6 @@ class Peer {
   readonly #context: Context;
   readonly #seen = new Set<string>();
   #version?: number;
-  #pi?: PiPeer;
   #intro?: { host: IntroHost; version: IntroVersion };
   #threadDirectory?: { host: ThreadDirectoryHost; version: ThreadDirectoryVersion; workspace?: ThreadWorkspaceVersion };
   #directoryPending = false;
@@ -184,16 +182,15 @@ class Peer {
 
   constructor(private readonly socket: Socket, private readonly adapter: DurableAdapter, private readonly epoch: string,
       private readonly pendingObservations: number, private readonly capabilities: HostCapabilities | undefined,
-      private readonly pendingPiEvents: number | undefined) {
+      private readonly readOnlyReason?: string) {
     this.#context = adapter.context(this.#abort.signal);
     socket.on("error", () => socket.destroy());
     socket.on("close", () => {
       this.#abort.abort();
       this.#feed?.close();
-      this.#pi?.close();
       this.#seen.clear();
     });
-    socket.on("drain", () => { this.#feed?.drain(); this.#pi?.drain(); });
+    socket.on("drain", () => this.#feed?.drain());
   }
 
   async run() {
@@ -475,9 +472,7 @@ class Peer {
           this.#write(encode(imageReply({ ...identity(req), ok: true, result })));
           return;
         }
-        if (parts[1] !== "piEvents" || !this.#pi) throw new WireError("unsupported_capability", parts[1]);
-        await this.#pi.request(parts[2], req.params, result => this.#write(encode({ ...identity(req), ok: true, result })));
-        return;
+        throw new WireError("unsupported_capability", parts[1]);
       }
       if (!validRequest(req)) throw new WireError("invalid_request");
       if (req.method === "hello") {
@@ -566,14 +561,6 @@ class Peer {
             this.#modelCatalog = { host: modelCatalog, version };
           }
         }
-        const pi = this.capabilities?.piEvents;
-        if (typeof pi?.open === "function" && typeof pi.catalog === "function" && req.params.capabilities?.piEvents?.includes(piEventsVersion)) {
-          capabilities.piEvents = piEventsVersion;
-          this.#pi = new PiPeer(pi, {
-            write: this.#write, backpressured: () => this.socket.writableNeedDrain,
-            end: () => this.socket.destroySoon(), destroy: () => this.socket.destroy(),
-          }, this.#abort.signal, this.pendingPiEvents);
-        }
         const intro = this.capabilities?.intro, offeredIntro = req.params.capabilities?.intro;
         if (intro) {
           const version = intro.act && offeredIntro?.includes(2) ? 2 : offeredIntro?.includes(1) ? 1 : undefined;
@@ -651,7 +638,7 @@ class Peer {
     catch (error) { this.#error(req, error); }
   }
   #error(req: Envelope, error: unknown) {
-    const { code, message, capability } = requestError(error);
+    const { code, message, capability } = requestError(error, this.readOnlyReason);
     this.#write(encode({ ...identity(req), ok: false, error: capability ? { code, message, capability } : { code, message } }));
   }
   #write: Write = (record, flushed) => {
@@ -676,7 +663,7 @@ export function createCoreServer(harness: Harness, options: ServerOptions = {}) 
   const peers = new Set<Socket>();
   const maxConnections = options.maxConnections ?? 512;
   const pendingObservations = options.pendingObservations ?? 64;
-  for (const bound of [maxConnections, pendingObservations, options.pendingPiEvents ?? 1]) {
+  for (const bound of [maxConnections, pendingObservations]) {
     if (!Number.isSafeInteger(bound) || bound < 1) throw new RangeError("Invalid server limit");
   }
   let closing: Promise<void> | undefined;
@@ -685,7 +672,7 @@ export function createCoreServer(harness: Harness, options: ServerOptions = {}) 
     if (closing || peers.size >= maxConnections) { socket.destroy(); return; }
     peers.add(socket);
     socket.once("close", () => { peers.delete(socket); changed(); });
-    const peer = new Peer(socket, adapter, epoch, pendingObservations, capabilities, options.pendingPiEvents);
+    const peer = new Peer(socket, adapter, epoch, pendingObservations, capabilities, options.readOnlyReason);
     changed();
     void peer.run();
   });

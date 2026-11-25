@@ -87,7 +87,7 @@ func TestWorkspaceNewThreadHereKeyboard(t *testing.T) {
 	}
 	workflowWork(t, m, threadPickerStep(t, m, lookup))
 	if len(b.created) != 1 || b.created[0].CWD != deployCWD || m.active != "7" || m.sheet != nil ||
-		m.focusedDialog() != nil || m.threads["1"].draft != "unsent draft" {
+		m.focusedDialog() != nil || m.threads["1"].draft.text != "unsent draft" {
 		t.Fatalf("create did not use the selected workspace or preserve the old draft: active=%s created=%+v", m.active, b.created)
 	}
 }

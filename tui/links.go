@@ -16,6 +16,7 @@ import (
 
 const oscEnd = "\x1b\\"
 const oscLink = "\x1b]8;"
+const oscLinkEnd = oscLink + ";" + oscEnd
 
 type linkTarget struct {
 	url, path string
@@ -119,7 +120,7 @@ func hyperlink(text, params, uri string) string {
 	if strings.HasPrefix(uri, "file:") {
 		ink = "\x1b[4:4m" // dotted underline distinguishes paths from web links
 	}
-	return ink + oscLink + params + ";" + uri + oscEnd + text + oscLink + ";" + oscEnd + "\x1b[24m"
+	return ink + oscLink + params + ";" + uri + oscEnd + text + oscLinkEnd + "\x1b[24m"
 }
 
 func (m *Model) linkify(text, workspace string) string {
@@ -199,7 +200,7 @@ func decodeLink(link string) linkTarget {
 	if !ok || uri == "" {
 		return linkTarget{}
 	}
-	if id, ok := strings.CutPrefix(uri, "hush-copy:"); ok {
+	if id, ok := strings.CutPrefix(uri, codeCopyScheme); ok {
 		return linkTarget{code: true, codeID: id}
 	}
 	if u, err := url.Parse(uri); err == nil && u.Scheme == "file" && u.Host == "" && u.User == nil && filepath.IsAbs(u.Path) && !hasControl(u.Path) {

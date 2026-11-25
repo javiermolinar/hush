@@ -62,18 +62,23 @@ func TestStreamFromBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(data)
+	profile := filepath.Join(data, ".hush")
+	if err := os.Mkdir(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for name, body := range map[string]string{
 		"settings.json": `{"defaultProvider":"fixture","defaultModel":"fixture","retry":{"enabled":false},"compaction":{"enabled":false}}`,
 		"auth.json":     `{"fixture":{"type":"api_key","key":"local-test-only"}}`,
 		"models.json":   `{"providers":{"fixture":{"baseUrl":"` + server.URL + `/v1","api":"openai-completions","models":[{"id":"fixture","name":"Fixture","reasoning":false,"contextWindow":20000,"maxTokens":500}]}}}`,
 	} {
-		if err := os.WriteFile(filepath.Join(data, name), []byte(body), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(profile, name), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	proc := exec.CommandContext(ctx, "node", bundle, "--profile", "pi", "--data-dir", data, "--model", "fixture/fixture")
+	grantStandaloneFixture(t, data, data)
+	proc := exec.CommandContext(ctx, "node", bundle, "--profile", "hush", "--model", "fixture/fixture")
 	proc.Dir = data
-	proc.Env = append(os.Environ(), "HOME="+data, "PI_CODING_AGENT_DIR="+data, "NODE_NO_WARNINGS=1")
+	proc.Env = standaloneFixtureEnv(data)
 	proc.Stderr = os.Stderr
 	stdout, err := proc.StdoutPipe()
 	if err != nil {
@@ -87,7 +92,7 @@ func TestStreamFromBackend(t *testing.T) {
 	if !scan.Scan() || !strings.Contains(scan.Text(), `"ready":true`) {
 		t.Fatalf("startup: %s %v", scan.Text(), scan.Err())
 	}
-	client := sdk.NewClient(filepath.Join(data, "hush.sock"), sdk.ClientOptions{})
+	client := sdk.NewClient(filepath.Join(profile, "runtime", "hush.sock"), sdk.ClientOptions{})
 	defer client.Close()
 	thread, err := client.NewThread(ctx, sdk.NewThread{CWD: data})
 	if err != nil {

@@ -1,6 +1,5 @@
 import { isAbsolute } from "node:path";
-import AjvModule from "ajv/dist/2020.js";
-import schema from "../../protocol/v1/intro.schema.json" with { type: "json" };
+import { introGet as getShape, introRename as renameShape, introRecover as recoverShape, introSuccess, introSuccessV2 } from "./validators.js";
 import { durableID, WireError } from "./wire.js";
 
 export type IntroVersion = 1 | 2;
@@ -24,10 +23,7 @@ export interface IntroHost {
   act?(action: IntroAction, signal: AbortSignal): Promise<object>;
 }
 
-const ajv = new AjvModule.Ajv2020({ strict: false, ownProperties: true }).addSchema(schema);
-const shape = (name: string) => ajv.compile({ $ref: schema.$id + "#/$defs/" + name });
-const getShape = shape("get"), renameShape = shape("rename"), recoverShape = shape("recover");
-const envelopes = { 1: shape("successEnvelope"), 2: shape("successEnvelopeV2") };
+const envelopes = { 1: introSuccess, 2: introSuccessV2 };
 
 export function parseIntroQuery(params: Record<string, unknown>): IntroQuery {
   if (!getShape(params) || (params.threadId !== undefined && !durableID(params.threadId)) ||

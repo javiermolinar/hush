@@ -96,6 +96,7 @@ func TestWorkspaceWatchesLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m.Close()
+	m.editor.area.Focus()
 	l := newProgramLoop(t, m)
 	l.deliver(tea.WindowSizeMsg{Width: 140, Height: 42})
 	l.run(tea.Batch(m.beginFeed(), m.menuProbe(), m.beginBackendReport()))
@@ -145,6 +146,17 @@ func TestWorkspaceWatchesLive(t *testing.T) {
 	if result, err := c.SearchWorkspaceFiles(ctx, target, name, 1); err != nil || len(result.Matches) != 1 || result.Matches[0].Path != name {
 		t.Fatalf("search index was not refreshed after the tool write: %+v, %v", result, err)
 	}
+
+	if frame := l.deliver(tea.PasteMsg{Content: "Read /"}); !strings.Contains(frame, "Granted locations") || strings.Contains(frame, "Backend home ·") {
+		t.Fatal("slash picker did not reflect the workspace-only grant")
+	}
+	l.deliver(tea.KeyPressMsg{Code: tea.KeyTab})
+	l.until("workspace file in slash picker", func(frame string) bool { return strings.Contains(frame, "› "+name) })
+	l.deliver(tea.KeyPressMsg{Code: tea.KeyTab})
+	if draft := m.editor.value(); draft != "Read "+filepath.Join(m.threads[m.active].info.Workspace, name)+" " {
+		t.Fatalf("completed draft = %q", draft)
+	}
+	l.deliver(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	if full {
 		start = time.Now()

@@ -1,14 +1,14 @@
 import type { Harness } from "@earendil-works/pi-durable";
 import { loadedContextAgentsVersion, type LoadedContextHost, type LoadedContextVersion } from "../../server/src/loaded-context.js";
 import { WireError } from "../../server/src/wire.js";
-import type { ProjectResources } from "./resources.js";
+import type { StandaloneResources } from "./resources.js";
 import { threadWorkspace } from "./thread-workspace.js";
 import type { WorkspaceTrust } from "./workspace-trust.js";
 
 export class LoadedContext implements LoadedContextHost {
   #pending = 0;
 
-  constructor(private readonly h: Harness, private readonly resources: ProjectResources, private readonly work: WorkspaceTrust) {}
+  constructor(private readonly h: Harness, private readonly resources: StandaloneResources, private readonly work: WorkspaceTrust) {}
 
   async get(threadId: string, version: LoadedContextVersion, peer: AbortSignal) {
     if (this.#pending >= 8) throw new WireError("limit");

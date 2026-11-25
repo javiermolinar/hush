@@ -1,7 +1,7 @@
 # Native checkpoints and rewind, version 1
 
 Offer `"checkpoints":[1]` in hello. A persistent standalone Hush host selects it.
-Bare, legacy Pi and invocation-private hosts do not. All calls have a source
+Bare and invocation-private hosts do not. All calls have a source
 `threadId`. A thread and transcript entry are identified by Durable decimal IDs;
 Hush checkpoints and rewind operations have lowercase UUID v4 IDs.
 

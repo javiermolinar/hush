@@ -90,17 +90,5 @@ indeterminate; do not replay it against a possible replacement listener. Confirm
 gone. The managed CLI's `hush stop` performs that confirmation and never starts a missing backend. See the
 [wire contract](../protocol/v1/runtime.md).
 
-## Optional Pi stream
-
-`OpenPi(ctx, PiOptions{CWD: cwd})` opens a dedicated `piEvents:1` connection and returns the ready fence before it
-allows `Send`. Use `ParsePiCommand` on a Pi JSON object, `Send` once, and `Next` from one reader goroutine to consume
-verified events and correlated replies in socket order. An explicit session switch carries a new ready fence in
-its successful reply. `PiCatalog` reads public models without creating a thread. A bare native server fails with
-`unsupported_capability` before opening a session.
-
-This is **not** `Watch`: overflow, a sequence gap, a wrong epoch, or socket loss ends the stream. It won't reconnect
-or replay commands. A `TransportError` may report indeterminate admission; inspect the durable state separately.
-After terminal loss only an explicit new `OpenPi` against an idle thread creates a fresh stream, with no replay.
-
-`go generate ./...` refreshes the embedded native and Pi schemas from `../protocol/v1/`; tests reject drift. Run
+`go generate ./...` refreshes the embedded native schemas from `../protocol/v1/`; tests reject drift. Run
 `go vet ./... && go test -race ./...` in this module for the native goldens and scripted Unix-socket checks.

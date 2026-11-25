@@ -34,7 +34,7 @@ test('loaded context is the ordered next-prompt sources, scoped and stripped of 
   await symlink(lockedAgents, join(parent, '.agents'));
   const trust = new WorkspaceTrust(agentDir);
   for (const path of [cwd, empty, dir]) await trust.change(path, 'grant', AbortSignal.timeout(5000));
-  const host = await startBackend({ profile: 'hush', cwd, agentDir, dataDir, socket, idleMs: 5000, ephemeral: false, faux: true });
+  const host = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 5000, ephemeral: false, faux: true });
   const local = await dial(socket), remote = await dial(socket), legacy = await dial(socket), older = await dial(socket);
   t.after(async () => { for (const client of [local, remote, legacy, older]) client.close(); await host.close(); await rm(dir, { recursive: true, force: true }); });
   for (const client of [local, remote]) {

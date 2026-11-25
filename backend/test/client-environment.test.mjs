@@ -84,8 +84,8 @@ test("standalone environment follows durable placement, not the socket or conver
     models: [{ id: "test", name: "Fixture", contextWindow: 100000, maxTokens: 500, reasoning: false }],
   } } }), { mode: 0o600 });
 
-  const boot = async (pi = false) => {
-    const child = spawn(process.execPath, [bundle, "--profile", pi ? "pi" : "hush", "--model", "fixture/test", "--cwd", cwd], {
+  const boot = async () => {
+    const child = spawn(process.execPath, [bundle, "--model", "fixture/test", "--cwd", cwd], {
       cwd, env: { HOME: root, PATH: "/usr/bin:/bin", LANG: "C", SHELL: "/pretend/daemon-shell",
         NODE_NO_WARNINGS: "1", PI_CODING_AGENT_DIR: join(root, "pi") }, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -97,7 +97,7 @@ test("standalone environment follows durable placement, not the socket or conver
     const row = await createInterface({ input: child.stdout })[Symbol.asyncIterator]().next();
     assert.ok(!row.done, diagnostics);
     const ready = JSON.parse(row.value);
-    assert.deepEqual(ready, { ready: true, socket: pi ? join(root, "pi", "hush", "hush.sock") : socket });
+    assert.deepEqual(ready, { ready: true, socket });
     return { socket: ready.socket, async stop() {
       child.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null], diagnostics);
@@ -166,7 +166,4 @@ test("standalone environment follows durable placement, not the socket or conver
     [firstText, secondText, toolText, steerText, plain, invalid].map(text => ["pi.user", text]));
   assert.doesNotMatch(JSON.stringify(entries), /clientInput|clientEnvironment|private-hostname|unallowlisted/);
   await host.stop();
-  const optional = await boot(true);
-  await connect(true, optional.socket, false);
-  await optional.stop();
 });

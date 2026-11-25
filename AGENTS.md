@@ -6,5 +6,5 @@ Build and test per [CONTRIBUTING.md](CONTRIBUTING.md). Read only the guides rele
 - [TUI model, rendering, and performance](docs/tui-rendering.md). Keep `Update` nonblocking; never send raw model or tool text to the terminal.
 - [TUI layout, colors, keys, and links](docs/tui-design.md).
 - [TUI extension API](docs/tui-extensions.md).
-- [Headless I/O and Pi compatibility](protocol/v1/pi-1.6/README.md#modes-flags-and-io).
+- [Headless I/O](protocol/v1/README.md#headless-io).
 - [Backend and pinned Durable references](backend/README.md#pi-durable-references).

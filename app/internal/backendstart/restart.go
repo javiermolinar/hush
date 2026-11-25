@@ -19,15 +19,13 @@ func Restart(ctx context.Context, opts Options) (bool, error) {
 	if t.agent == "" {
 		return false, errors.New("restart requires a managed local backend; --socket and HUSH_SOCKET are attach-only")
 	}
-	if t.profile == Hush {
-		if installed, err := serviceInstalled(t.agent); err != nil {
-			return false, err
-		} else if installed {
-			return false, errRestartSupervised
-		}
+	if installed, err := serviceInstalled(t.agent); err != nil {
+		return false, err
+	} else if installed {
+		return false, errRestartSupervised
 	}
 	// Check the replacement's bundle and Node before stopping a healthy backend.
-	node, bundle, err := LocalRuntime(ctx, opts.Bundle)
+	node, bundle, version, err := localRuntime(ctx, opts.Bundle)
 	if err != nil {
 		return false, err
 	}
@@ -37,19 +35,19 @@ func Restart(ctx context.Context, opts Options) (bool, error) {
 	}
 	startup, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
-	err = t.startReplacement(startup, node, bundle)
+	err = t.startReplacement(startup, node, bundle, version)
 	if stopped && err != nil {
 		err = fmt.Errorf("previous backend stopped; replacement not ready: %w", err)
 	}
 	return stopped, err
 }
 
-func (t target) startReplacement(ctx context.Context, node, bundle string) error {
+func (t target) startReplacement(ctx context.Context, node, bundle, version string) error {
 	for {
 		if needed, err := t.needsStart(ctx); err != nil || !needed {
 			return err // Another managed caller may have started a replacement.
 		}
-		switch err := launch(ctx, node, bundle, t); {
+		switch err := launch(ctx, node, bundle, version, t); {
 		case err == nil:
 			return t.waitHello(ctx)
 		case errors.Is(err, errSupervised):

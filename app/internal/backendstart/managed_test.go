@@ -139,6 +139,13 @@ func TestManagedClientColdStartsAndReattaches(t *testing.T) {
 	if err := os.WriteFile(entry, append([]byte(bootstrap), source...), 0600); err != nil {
 		t.Fatal(err)
 	}
+	pack, err := os.ReadFile(bundle + ".wasm-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry+".wasm-pack", pack, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	pids := func() []int {
 		contents, _ := os.ReadFile(pidFile)
 		var out []int
@@ -241,7 +248,7 @@ func newStoreFixture(t *testing.T) storeFixture {
 
 func (f storeFixture) command(dir string) *exec.Cmd {
 	cmd := exec.CommandContext(f.ctx, f.node, f.bundle, "--profile", "hush", "--faux", "--data-dir", dir, "--cwd", f.root)
-	cmd.Env = append(RuntimeEnv(Hush), "HOME="+f.root)
+	cmd.Env = append(RuntimeEnv(), "HOME="+f.root)
 	return cmd
 }
 
@@ -370,7 +377,7 @@ func TestBackendStoreRetryAcrossProcessLoss(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := newStoreFixture(t)
 			grant := exec.CommandContext(f.ctx, f.node, f.bundle, "trust", "grant", "--scope=work", "--cwd="+f.root)
-			grant.Env = append(RuntimeEnv(Hush), "HOME="+f.root, "HUSH_PROFILE=hush")
+			grant.Env = append(RuntimeEnv(), "HOME="+f.root)
 			if out, err := grant.CombinedOutput(); err != nil {
 				t.Fatalf("fixture workspace grant: %v: %s", err, out)
 			}

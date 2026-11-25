@@ -1,13 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const supplied = {
   "data-dir": { type: "string" },
   "socket": { type: "string" },
   "cwd": { type: "string" },
-  "agent-dir": { type: "string" },
   profile: { type: "string" },
   "model": { type: "string" },
   "thread-title-model": { type: "string" },
@@ -17,14 +15,11 @@ const supplied = {
   "parent-stdin": { type: "boolean" },
   "startup-fd": { type: "string" },
   "supervisor": { type: "string" },
-  "pi-events": { type: "boolean" },
   "faux": { type: "boolean" },
   "config": { type: "string" },
 } as const;
 
 export type BackendConfig = {
-  // Older programmatic callers supply a Pi agentDir explicitly.
-  profile?: "hush" | "pi";
   dataDir?: string;
   socket: string;
   cwd: string;
@@ -37,13 +32,12 @@ export type BackendConfig = {
   parentStdin?: boolean;
   startupFd?: 3;
   supervisor?: string;
-  piEvents?: boolean;
   faux: boolean;
 };
 
 export class BackendError extends Error {
   constructor(readonly code: "configuration" | "socket_directory" | "data_locked" | "socket_unavailable" |
-     "store_profile" | "store_cutover" | "service_owned" | "startup_failed" | "shutdown_failed") { super(code); }
+     "store_profile" | "store_cutover" | "service_owned" | "wasm_pack" | "startup_failed" | "shutdown_failed") { super(code); }
 }
 
 export function hushDirectory() {
@@ -88,21 +82,17 @@ export async function parseConfig(argv: string[]): Promise<BackendConfig> {
   const startup = cli["startup-fd"];
   if (startup !== undefined && (startup !== "3" || ephemeral || !data)) throw new BackendError("configuration");
   if (ephemeral ? !sock || data : sock || parentStdin) throw new BackendError("configuration");
-  const explicitAgent = str("agent-dir");
-  const piEvents = val["pi-events"] === true;
-  const profile = str("profile") ?? (explicitAgent || piEvents ? "pi" : process.env.HUSH_PROFILE || "hush");
-  if (profile !== "pi" && profile !== "hush" || profile === "hush" && (explicitAgent || piEvents)) {
-    throw new BackendError("configuration");
-  }
+  // Accept the old explicit Hush spelling from previously released launchers.
+  if ((str("profile") ?? (process.env.HUSH_PROFILE || "hush")) !== "hush") throw new BackendError("configuration");
   const supervisor = str("supervisor");
-  if (supervisor && (profile !== "hush" || ephemeral || !/^[a-f0-9-]{36}$/.test(supervisor))) throw new BackendError("configuration");
-  const agentDir = profile === "hush" ? hushDirectory() : resolve(explicitAgent ?? getAgentDir());
-  const dataDir = ephemeral ? undefined : data === undefined ? join(agentDir, profile === "pi" ? "hush" : "runtime") : resolve(data);
+  if (supervisor && (ephemeral || !/^[a-f0-9-]{36}$/.test(supervisor))) throw new BackendError("configuration");
+  const agentDir = hushDirectory();
+  const dataDir = ephemeral ? undefined : data === undefined ? join(agentDir, "runtime") : resolve(data);
   return {
-    profile, dataDir, socket: dataDir ? join(dataDir, "hush.sock") : resolve(sock!),
+    dataDir, socket: dataDir ? join(dataDir, "hush.sock") : resolve(sock!),
     cwd: resolve(str("cwd") ?? process.cwd()), agentDir,
     model: m ? { provider: m[1], modelId: m[2] } : undefined,
     threadTitleModel: title ? { provider: title[1], modelId: title[2] } : undefined,
-    idleMs, scheduleLateMs, ephemeral, parentStdin, startupFd: startup === "3" ? 3 : undefined, piEvents, faux, supervisor,
+    idleMs, scheduleLateMs, ephemeral, parentStdin, startupFd: startup === "3" ? 3 : undefined, faux, supervisor,
   };
 }

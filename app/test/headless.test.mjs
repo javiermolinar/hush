@@ -2,17 +2,17 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as httpServer } from "node:http";
 import { createConnection, createServer as unixServer } from "node:net";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { ProjectTrustStore, RpcClient } from "@earendil-works/pi-coding-agent";
 import { assertFrame } from "../../protocol/v1/replay.mjs";
 import { dial, request } from "../../server/test/client.mjs";
 
@@ -34,7 +34,7 @@ async function layout(t) {
   const cwd = join(dir, "project"), agent = join(dir, "agent"), tmp = join(dir, "tmp");
   await Promise.all([cwd, agent, tmp].map(path => mkdir(path, { mode: 0o700 })));
   return { dir, cwd, agent, tmp, env: {
-    HOME: dir, TMPDIR: tmp, HUSH_PROFILE: "pi", PI_CODING_AGENT_DIR: agent, NODE_NO_WARNINGS: "1", LANG: "C",
+    HOME: dir, TMPDIR: tmp, PI_CODING_AGENT_DIR: agent, NODE_NO_WARNINGS: "1", LANG: "C",
     PATH: dirname(process.execPath) + ":" + process.env.PATH,
   } };
 }
@@ -85,21 +85,23 @@ async function nextLine(lines, exit) {
   return result.done ? await exited : result.value;
 }
 
-async function faux(t, pi = false, cfg) {
-  cfg ??= await layout(t);
-  const host = launch(t, process.execPath, [bundle, "--faux", ...(pi ? ["--pi-events"] : [])], cfg, null);
+async function faux(t) {
+  const cfg = await layout(t);
+  value(await cli(t, cfg, ["--backend", bundle, "trust", "grant", "--scope", "work", "--json"]).exit);
+  const host = launch(t, process.execPath, [bundle, "--faux"], cfg, null);
   const lines = createInterface({ input: host.child.stdout });
-  const socket = join(cfg.agent, "hush", "hush.sock");
+  const socket = join(cfg.dir, ".hush", "runtime", "hush.sock");
   assert.deepEqual(JSON.parse(await nextLine(lines[Symbol.asyncIterator](), host.exit)), { ready: true, socket });
   lines.close();
+  cfg.env.HUSH_SOCKET = socket;
   t.after(async () => {
-    const p = await host.exit;
-    assert.doesNotMatch(p.stdout + p.stderr, /\x1B\]/);
+    const result = await host.exit;
+    assert.doesNotMatch(result.stdout + result.stderr, /\x1B\]/);
   });
   const wire = await dial(socket, assertFrame);
   t.after(() => wire.close());
-  const hello = ok(await wire.send("hello", { versions: [1], capabilities: { piEvents: [1] } }));
-  assert.deepEqual(hello.capabilities, pi ? { piEvents: 1 } : {});
+  const hello = ok(await wire.send("hello", { versions: [1], capabilities: { storeIdentity: [1] } }));
+  assert.deepEqual(hello.capabilities, { storeIdentity: 1 });
   return { cfg, wire, hello, host };
 }
 
@@ -122,19 +124,19 @@ test("unknown Hush commands exit before using the backend or reading stdin", { t
   await assert.rejects(lstat(join(cfg.dir, ".hush")), { code: "ENOENT" });
 });
 
-test("redirected default print handles text, length, failed model, and an aborted run", { timeout: 20_000 }, async t => {
+test("native print handles text, length, failed model, and an aborted run", { timeout: 20_000 }, async t => {
   const { cfg, wire } = await faux(t);
-  success(await cli(t, cfg, ["hello", "from args"]).exit, "Faux: hello from args\n");
-  success(await cli(t, cfg, [], "piped text").exit, "Faux: piped text\n");
+  success(await cli(t, cfg, ["-p", "hello", "from args"]).exit, "Faux: hello from args\n");
+  success(await cli(t, cfg, ["-p"], "piped text").exit, "Faux: piped text\n");
   success(await cli(t, cfg, ["-p", "status"]).exit, "Faux: status\n");
-  failed(await cli(t, cfg, ["!length"]).exit, /output token limit/, "partial faux answer\n");
-  const error = await cli(t, cfg, ["!error"]).exit;
+  failed(await cli(t, cfg, ["-p", "!length"]).exit, /output token limit/, "partial faux answer\n");
+  const error = await cli(t, cfg, ["-p", "!error"]).exit;
   failed(error, /request failed.*model_error/);
   assert.doesNotMatch(error.stderr, /synthetic failure/);
 
   const threadId = ok(await wire.send("thread.new", {})).id;
   const requestId = "abort-this-input";
-  const pending = cli(t, cfg, ["!pause", "--thread", threadId, "--request-id", requestId]);
+  const pending = cli(t, cfg, ["-p", "!pause", "--thread", threadId, "--request-id", requestId]);
   await eventually(async () => {
     const f = await wire.send("submission.get", { threadId, requestId });
     return f.ok && f.result.status === "placed";
@@ -144,7 +146,9 @@ test("redirected default print handles text, length, failed model, and an aborte
 });
 
 test("native thread CLI persists checkout ownership, titles, done status and archive without touching files", { timeout: 20_000 }, async t => {
-  const { cfg, wire, host, hello } = await faux(t);
+  const { cfg, wire, host } = await faux(t);
+  const local = { ...cfg, env: { ...cfg.env, HUSH_SOCKET: "" } };
+  const trust = (action, path) => cli(t, local, ["--backend", bundle, "trust", action, "--cwd", path, "--json"]).exit;
   const cwd = await realpath(cfg.cwd);
   const git = async (path, ...args) => (await promisify(execFile)("git", args, { cwd: path,
     env: { ...cfg.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } })).stdout.trim();
@@ -163,10 +167,10 @@ test("native thread CLI persists checkout ownership, titles, done status and arc
   assert.equal(shared.title, "Shared threads");
 
   const worktree = ["thread", "new", "--worktree", "--title", "  Isolated   review  ", "--json"];
-  new ProjectTrustStore(cfg.agent).set(cwd, false);
-  failed(await cli(t, cfg, worktree).exit, /Invalid request/);
+  value(await trust("revoke", cwd));
+  failed(await cli(t, cfg, worktree).exit, /not trusted by Hush/);
   assert.equal((await git(cwd, "worktree", "list", "--porcelain")).match(/^worktree /gm).length, 1);
-  new ProjectTrustStore(cfg.agent).set(cwd, true);
+  value(await trust("grant", cwd));
   const created = value(await cli(t, cfg, worktree).exit);
   const { id, checkout } = created;
   assert.equal(created.title, "Isolated review");
@@ -181,7 +185,8 @@ test("native thread CLI persists checkout ownership, titles, done status and arc
   assert.equal(await git(cwd, "status", "--porcelain"), dirty);
   assert.equal(await git(cwd, "rev-parse", "HEAD"), head);
 
-  success(await cli(t, cfg, ["--thread", id, "Review the checkout"]).exit, "Faux: Review the checkout\n");
+  value(await trust("grant", checkout.cwd));
+  success(await cli(t, cfg, ["--print", "--thread", id, "Review the checkout"]).exit, "Faux: Review the checkout\n");
   const page = await command("list", "--limit", "1");
   assert.equal(page.indexing, false);
   assert.equal(page.threads[0].id, id);
@@ -274,7 +279,7 @@ test("standalone workspace trust uses one exact-directory grant across operation
   const pi = join(cfg.dir, ".pi", "agent"), project = join(cwd, ".pi");
   await mkdir(pi, { recursive: true });
   await mkdir(project);
-  new ProjectTrustStore(pi).set(cwd, true);
+  await writeFile(join(pi, "trust.json"), JSON.stringify({ [cwd]: true }), { mode: 0o600 });
   await writeFile(join(project, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
   // A valid grant from the old Git-only store must not become a workspace grant.
   const common = join(cwd, ".git"), gitGrantDir = join(cfg.dir, ".hush", "workspace-trust-v1");
@@ -290,7 +295,7 @@ test("standalone workspace trust uses one exact-directory grant across operation
   const piConfigState = await readFile(join(project, "settings.json"));
   failed(await cli(t, cfg, ["--socket", h.socket, "trust", "grant", "--cwd", cwd]).exit, /local to the Hush backend host/);
   failed(await cli(t, { ...cfg, env: { ...cfg.env, HUSH_SOCKET: h.socket } }, ["trust", "grant"]).exit, /local to the Hush backend host/);
-  failed(await cli(t, cfg, ["--profile", "pi", "trust", "grant"]).exit, /local to the Hush backend host/);
+  failed(await cli(t, cfg, ["--profile", "pi", "trust", "grant"]).exit, /only the Hush backend/);
   const wire = await dial(h.socket);
   try {
     ok(await wire.send("hello", { versions: [1], capabilities: { workspaceTrust: [1] } }));
@@ -445,7 +450,7 @@ test("no-wait prints admission; keyed submission wait is not idle wait", { timeo
   const idle = cli(t, cfg, ["wait", ...thread, "--json"]);
   assert.deepEqual(value(await cli(t, cfg, ["submission", "wait", ...thread, ...firstKey, "--json"]).exit), firstResult);
   assert.deepEqual(value(await cli(t, cfg, ["submission", "get", ...thread, "--submission-id", submissionId, "--json"]).exit), firstResult);
-  success(await cli(t, cfg, ["first reply", ...thread, ...firstKey]).exit, "Faux: first reply\n");
+  success(await cli(t, cfg, ["-p", "first reply", ...thread, ...firstKey]).exit, "Faux: first reply\n");
   assert.equal(await Promise.race([idle.exit, delay(200, "still waiting")]), "still waiting");
   ok(await wire.send("thread.abort", { threadId }));
   assert.deepEqual(value(await idle.exit), { threadId, idle: true });
@@ -454,11 +459,12 @@ test("no-wait prints admission; keyed submission wait is not idle wait", { timeo
   assert.equal(laterSettled.reason, "aborted");
 });
 
-test("raw native protocol offers no Pi events; Pi modes reject before submission", { timeout: 15_000 }, async t => {
+test("removed Pi modes and capability reject before submission; raw native relay works", { timeout: 15_000 }, async t => {
   const { cfg, wire, hello } = await faux(t);
   const threadId = ok(await wire.send("thread.new", {})).id;
-  failed(await cli(t, cfg, ["must not submit", "--thread", threadId, "--mode=json"]).exit, /piEvents/);
-  failed(await cli(t, cfg, ["--mode=rpc", "--thread", threadId], '{"type":"prompt","id":"do-not-admit","message":"must not submit"}\n').exit, /piEvents/);
+  failed(await cli(t, cfg, ["must not submit", "--thread", threadId, "--mode=json"]).exit, /unknown mode/);
+  failed(await cli(t, cfg, ["--mode=rpc", "--thread", threadId], '{"type":"prompt","id":"do-not-admit","message":"must not submit"}\n').exit, /unknown mode/);
+  failed(await cli(t, cfg, ["--profile=pi", "--print", "must not submit"]).exit, /only the Hush backend/);
   const unchanged = ok(await wire.send("history", { threadId, range: { kind: "before", beforeEntryId: null }, limit: 10 }));
   assert.deepEqual(unchanged.entries, []);
 
@@ -471,7 +477,7 @@ test("raw native protocol offers no Pi events; Pi modes reject before submission
     rows.push(row);
     return JSON.parse(row);
   }
-  assert.deepEqual(await send(request("h", "hello", { versions: [1], capabilities: { piEvents: [1] } })),
+  assert.deepEqual(await send(request("h", "hello", { versions: [1], capabilities: { piEvents: [1], storeIdentity: [1] } })),
     { type: "response", id: "h", method: "hello", ok: true, result: hello });
   const ext = await send(request("e", "ext.piEvents.subscribe", { threadId }));
   assert.equal(ext.type, "response");
@@ -480,7 +486,7 @@ test("raw native protocol offers no Pi events; Pi modes reject before submission
   raw.child.stdin.end();
   success(await raw.exit, rows.join("\n") + "\n");
 
-  const offered = JSON.stringify(request("pipe", "hello", { versions: [1] })) + "\r\n";
+  const offered = JSON.stringify(request("pipe", "hello", { versions: [1], capabilities: { storeIdentity: [1] } })) + "\r\n";
   const finite = value(await cli(t, cfg, ["--mode", "protocol"], offered).exit);
   assert.equal(finite.id, "pipe");
   assert.deepEqual(finite.result, hello);
@@ -514,13 +520,15 @@ test("lost settlement transport reports it, without resubmission or a fabricated
   });
   peer.listen(path);
   await once(peer, "listening");
-  const r = await cli(t, cfg, ["--socket", path, "--thread", "2", "--request-id", "loss", "prompt"]).exit;
+  const r = await cli(t, cfg, ["--socket", path, "--thread", "2", "--request-id", "loss", "--print", "prompt"]).exit;
   failed(r, /wait for thread 2 submission 88 \(request ID "loss"\).*transport/);
   assert.deepEqual(methods, ["hello", "submit", "hello", "submission.wait"]);
 });
 
 async function privateConfig(t) {
   const cfg = await layout(t);
+  cfg.agent = join(cfg.dir, ".hush");
+  await mkdir(cfg.agent, { mode: 0o700 });
   const seen = [];
   const blocked = Promise.withResolvers();
   const abandoned = Promise.withResolvers();
@@ -590,7 +598,7 @@ test("private one-shot leaves no payload or detached work on exit or killed CLI"
   const { cfg, config, seen, blocked, abandoned } = await privateConfig(t);
   const flags = ["--no-session", "--backend", bundle];
   // Rejected requests cannot reach the provider or spawn a backend.
-  for (const bad of [["--thread", "1"], ["--no-wait"], ["--socket", join(cfg.dir, "other.sock")], ["--mode", "json", "--continue"]]) {
+  for (const bad of [["--thread", "1"], ["--no-wait"], ["--socket", join(cfg.dir, "other.sock")], ["--request-id", "private"]]) {
     failed(await cli(t, cfg, ["private reject", ...bad, ...flags]).exit, /--no-session requires/);
   }
   assert.deepEqual(seen, []);
@@ -628,6 +636,7 @@ test("private one-shot leaves no payload or detached work on exit or killed CLI"
 
 test("private parent's EOF shuts down before any SDK client connects", { timeout: 12_000 }, async t => {
   const cfg = await layout(t);
+  cfg.env.HUSH_PROFILE = "hush";
   const socket = join(cfg.tmp, "hush.sock");
   const rejected = launch(t, process.execPath, [bundle, "--faux", "--parent-stdin"], cfg);
   failed(await rejected.exit, /hush-backend: configuration/);
@@ -649,175 +658,6 @@ test("private parent's EOF shuts down before any SDK client connects", { timeout
   assert.deepEqual(await readdir(cfg.agent), []);
 });
 
-const rows = text => {
-  assert.ok(text === "" || text.endsWith("\n"), "unterminated stdout record");
-  return text.split("\n").slice(0, -1).map(JSON.parse);
-};
-const piText = message => typeof message.content === "string" ? message.content : message.content?.filter(b => b.type === "text").map(b => b.text).join("") ?? "";
-function jsonEvents(result) {
-  assert.equal(result.code, 0, JSON.stringify(result));
-  assert.equal(result.stderr, "");
-  const emitted = rows(result.stdout);
-  assert.equal(emitted[0].type, "session");
-  assert.equal(emitted[0].version, 3);
-  assert.ok(!emitted.slice(1).some(row => row.type === "response" || row.type === "session" || row.type === "pi_event"));
-  return emitted;
-}
-
-function watchRPC(process) {
-  let text = "";
-  process.child.stdout.setEncoding("utf8").on("data", s => { text += s; });
-  const complete = () => rows(text.slice(0, text.lastIndexOf("\n") + 1));
-  return {
-    send(type, fields = {}) { process.child.stdin.write(JSON.stringify({ type, ...fields }) + "\n"); },
-    wait(pred) { return eventually(() => complete().find(pred), "no matching record in: " + text); },
-  };
-}
-
-test("Pi JSON/print: sequential argv, stdin and @file, status per mode, stable session selection", { timeout: 20000 }, async t => {
-  const { cfg, wire } = await faux(t, true);
-  await writeFile(join(cfg.cwd, "fixture.txt"), "fixture file payload");
-  const out = jsonEvents(await cli(t, cfg, ["--mode=json", "--model", "faux-1", "--provider=faux", "--thinking=low", "--name", "fixture",
-    "@fixture.txt", "--", "-dash first", "second"], "stdin text\n").exit);
-  const header = out[0];
-  assert.equal(header.cwd.replace(/^\/private/, ""), cfg.cwd);
-  const delivered = out.filter(r => r.type === "message_start" && r.message.role === "user").map(r => piText(r.message));
-  assert.match(delivered[0], /^stdin text<file name="[^\n]+\/fixture\.txt">\nfixture file payload\n<\/file>\n-dash first$/);
-  assert.deepEqual(delivered.slice(1), ["second"]);
-  assert.equal(out.filter(r => r.type === "agent_settled").length, 2);
-  assert.equal(out.at(-1).type, "agent_settled");
-  assert.ok(out.some(r => r.type === "message_update" && r.usage && !r.message && !r.assistantMessageEvent.partial));
-  assert.equal(jsonEvents(await cli(t, cfg, ["--mode=json", "--continue", "continued"]).exit)[0].id, header.id);
-  success(await cli(t, cfg, ["-p", "--session", header.id, "from existing"]).exit, "Faux: from existing\n");
-  const fork = jsonEvents(await cli(t, cfg, ["--mode=json", "--fork", header.id, "forked"]).exit)[0];
-  assert.notEqual(fork.id, header.id);
-  assert.equal(fork.parentSession, header.id);
-  const modelList = await cli(t, cfg, ["--list-models", "faux-1"]).exit;
-  assert.equal(modelList.code, 0, modelList.stderr);
-  assert.match(modelList.stdout, /^provider\s+model\s+context\s+max-out\s+thinking\s+images\n.*faux-1/m);
-  for (const [input, reason] of [["!error", "error"], ["!length", "length"], ["!aborted", "aborted"]]) {
-    const trace = jsonEvents(await cli(t, cfg, ["--mode=json", input]).exit);
-    assert.ok(trace.some(r => r.type === "message_end" && r.message.role === "assistant" && r.message.stopReason === reason));
-    assert.equal(trace.at(-1).type, "agent_settled");
-  }
-  failed(await cli(t, cfg, ["-p", "!error"]).exit, /^synthetic failure\n$/);
-  failed(await cli(t, cfg, ["-p", "!aborted"]).exit, /^synthetic abort\n$/);
-  failed(await cli(t, cfg, ["-p", "!length"]).exit, /^Response was truncated.*\n$/, "partial faux answer\n");
-  success(await cli(t, cfg, ["--print", "first", "second"]).exit, "Faux: second\n");
-  const before = ok(await wire.send("thread.list", { limit: 100 })).threads;
-  await writeFile(join(cfg.cwd, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==", "base64"));
-  failed(await cli(t, cfg, ["--mode=json", "@pixel.png", "do not admit"]).exit, /capability: images/);
-  failed(await cli(t, cfg, ["--mode=json", "--session", "/missing/pi.jsonl", "do not import"]).exit, /piSessions/);
-  failed(await cli(t, cfg, ["--mode=json", "--model", "missing-physical-model", "do not admit"]).exit, /open Pi session/);
-  assert.deepEqual(ok(await wire.send("thread.list", { limit: 100 })).threads, before);
-});
-
-test("Pi RPC: stock RpcClient interoperates with tools, abort, queue and trusted prompt templates", { timeout: 20000 }, async t => {
-  const cfg = await layout(t);
-  await mkdir(join(cfg.agent, "prompts"));
-  await writeFile(join(cfg.agent, "prompts", "fixture.md"), "---\ndescription: Fixture resource\n---\nExpanded: $1\n");
-  // Seed startup resources before the host caches them. This test is not a
-  // filesystem-watch test; creating the template after ready races getCommands.
-  await faux(t, true, cfg);
-  const wrapper = join(cfg.dir, "rpc-loader.mjs");
-  // RpcClient starts `node cliPath`. Replace this fixture process with the
-  // compiled binary so the same stdin/stdout and signals reach hush directly.
-  await writeFile(wrapper, `process.execve(${JSON.stringify(binary)}, [${JSON.stringify(binary)}, ...process.argv.slice(2)], process.env);\n`);
-  const rpc = new RpcClient({ cliPath: wrapper, cwd: cfg.cwd, env: cfg.env, provider: "faux", model: "faux-1" });
-  try {
-    await rpc.start();
-    assert.equal((await rpc.getState()).model.id, "faux-1");
-    const resource = (await rpc.getCommands()).find(r => r.name === "fixture");
-    assert.ok(resource, "get_commands did not return the seeded user template");
-    assert.equal(resource.source, "prompt");
-    assert.equal(resource.sourceInfo.scope, "user");
-    const template = await rpc.promptAndWait("/fixture needle", undefined, 5000);
-    assert.match(piText(template.find(r => r.type === "message_end" && r.message.role === "user").message), /Expanded: needle/);
-    const tools = await rpc.promptAndWait("!fast-tool", undefined, 5000);
-    assert.deepEqual(tools.filter(e => e.type === "tool_execution_update").map(e => e.partialResult.content[0].text), ["first", " second"]);
-    assert.equal(tools.at(-1).type, "agent_settled");
-    assert.equal(await rpc.getLastAssistantText(), "fixture tool finished");
-    const events = rpc.collectEvents(5000);
-    void events.catch(() => {});
-    const starting = Promise.withResolvers();
-    const stop = rpc.onEvent(e => {
-      if (e.type === "message_end" && e.message.role === "user") starting.resolve();
-    });
-    try {
-      assert.equal(await rpc.prompt("!pause"), "started");
-      await within(starting.promise, 5000, "did not observe the paused prompt");
-      await assert.rejects(rpc.prompt("must not start"), /busy/);
-      assert.equal(await rpc.steer("stay queued"), "queued");
-      assert.equal(await rpc.prompt("queued follow-up", undefined, "followUp"), "queued");
-      await rpc.abort();
-    } finally { stop(); }
-    const stopped = await events;
-    assert.equal(stopped.at(-1).aborted, true);
-    assert.ok(stopped.some(e => e.type === "message_end" && e.message.stopReason === "aborted"));
-    assert.deepEqual(await rpc.clearQueue(), { steering: ["stay queued"], followUp: ["queued follow-up"] });
-    assert.equal((await rpc.getState()).isStreaming, false);
-    assert.equal(rpc.getStderr(), "");
-  } finally { await rpc.stop(); }
-});
-
-test("Pi RPC stdio permits only LF framing, correlates once, and rejects an absent producer before opening", { timeout: 20000 }, async t => {
-  const { cfg } = await faux(t, true);
-  const r = await cli(t, cfg, ["--mode=rpc"], [
-    "{invalid json}", '{"type":"steer","message":"a\u2028b\u2029c","id":"same"}\r',
-    '{"type":"clear_queue","id":"same"}', '{"type":"get_state"}',
-    '{"type":"get_tree","id":""}', '{"type":"get_state","id":"bad-field","extra":true}', "",
-  ].join("\n")).exit;
-  assert.equal(r.code, 0, r.stderr);
-  assert.equal(r.stderr, "");
-  const stdout = rows(r.stdout);
-  assert.ok(!stdout.some(e => e.type === "session" || e.type === "agent_start" || e.type === "agent_settled"));
-  const answers = stdout.filter(e => e.type === "response");
-  assert.equal(answers.length, 6);
-  assert.deepEqual(answers.filter(e => e.id === "same").map(e => [e.command, e.data]), [
-    ["steer", { disposition: "queued" }], ["clear_queue", { steering: ["a\u2028b\u2029c"], followUp: [] }],
-  ]);
-  assert.ok(answers.some(e => e.command === "parse" && e.success === false && e.id === undefined));
-  assert.ok(answers.some(e => e.command === "get_state" && e.success && e.id === undefined));
-  assert.ok(answers.some(e => e.command === "get_state" && !e.success && e.id === "bad-field"));
-  assert.ok(answers.some(e => e.command === "get_tree" && !e.success && e.id === ""));
-  const missing = await faux(t);
-  const before = ok(await missing.wire.send("thread.list", { limit: 100 }));
-  failed(await cli(t, missing.cfg, ["--mode=json", "not admitted"]).exit, /piEvents/);
-  failed(await cli(t, missing.cfg, ["--mode=rpc"], '{"type":"prompt","message":"not admitted"}\n').exit, /piEvents/);
-  assert.deepEqual(ok(await missing.wire.send("thread.list", { limit: 100 })), before);
-});
-
-test("Pi JSON/RPC transport loss after backend SIGKILL leaves no fabricated completion", { timeout: 20000 }, async t => {
-  const { cfg, host } = await faux(t, true);
-  const json = cli(t, cfg, ["--mode=json", "!pause"]);
-  const rpc = cli(t, cfg, ["--mode=rpc"], null);
-  const one = watchRPC(json), two = watchRPC(rpc);
-  two.send("prompt", { id: "admitted", message: "!pause" });
-  await Promise.all([one.wait(r => r.type === "agent_start"), two.wait(r => r.type === "response" && r.id === "admitted")]);
-  host.child.kill("SIGKILL");
-  await host.exit;
-  for (const proc of [json, rpc]) {
-    const result = await proc.exit;
-    assert.equal(result.code, 1, JSON.stringify(result));
-    assert.match(result.stderr, /transport/);
-    assert.ok(!rows(result.stdout).some(e => e.type === "agent_settled" || e.type === "agent_end"));
-  }
-  const next = launch(t, process.execPath, [bundle, "--faux", "--pi-events"], cfg, null);
-  const rl = createInterface({ input: next.child.stdout });
-  const { socket } = JSON.parse(await nextLine(rl[Symbol.asyncIterator](), next.exit));
-  rl.close();
-  const peer = await dial(socket, assertFrame);
-  t.after(() => peer.close());
-  await peer.send("hello", { versions: [1] });
-  const { threads } = ok(await peer.send("thread.list", { limit: 100 }));
-  assert.equal(threads.length, 3, "recovery did not replay a profile open");
-  for (const { id } of threads) {
-    const dump = ok(await peer.send("history", { threadId: id, range: { kind: "before", beforeEntryId: null }, limit: 100 }));
-    const inputs = dump.entries.flatMap(entry => entry.messages).filter(m => m.role === "user");
-    assert.equal(inputs.length, id === threads[0].id ? 0 : 1, "recovery did not re-admit input");
-  }
-});
-
 test("persistent headless joins concurrent cold starts, detaches, and reopens after a stale socket", { timeout: 25_000 }, async t => {
   const { cfg, seen } = await privateConfig(t);
   const tracking = join(cfg.dir, "backend-processes");
@@ -826,8 +666,9 @@ test("persistent headless joins concurrent cold starts, detaches, and reopens af
     Buffer.from(`import {appendFileSync as trackLauncherPID} from 'node:fs'; trackLauncherPID(${JSON.stringify(tracking)}, process.pid + '\\n');\n`),
     await readFile(bundle),
   ]));
+  await copyFile(bundle + ".wasm-pack", entry + ".wasm-pack");
   cfg.env.HUSH_BACKEND = entry;
-  const dataDir = join(cfg.agent, "hush"), socket = join(dataDir, "hush.sock");
+  const dataDir = join(cfg.agent, "runtime"), socket = join(dataDir, "hush.sock");
   const signalChildren = async signal => {
     const pids = await readFile(tracking, "utf8").catch(err => err.code === "ENOENT" ? "" : Promise.reject(err));
     for (const pid of pids.trim().split("\n").filter(Boolean).map(Number)) {
@@ -836,26 +677,21 @@ test("persistent headless joins concurrent cold starts, detaches, and reopens af
   };
   try {
     assert.equal(await accepting(socket), false);
-    const prompts = cli(t, cfg, ["--mode=json", "cold-start prompt"]);
+    value(await cli(t, cfg, ["--backend", bundle, "trust", "grant", "--scope", "work", "--json"]).exit);
+    const prompts = cli(t, cfg, ["--no-wait", "--json", "cold-start prompt"]);
     const statuses = Array.from({ length: 4 }, () => cli(t, cfg, ["status", "--json"]));
     const [json, ...states] = await Promise.all([prompts.exit, ...statuses.map(x => x.exit)]);
-    const trace = jsonEvents(json);
-    assert.equal(trace.at(-1).type, "agent_settled");
+    const receipt = value(json);
+    assert.equal(value(await cli(t, cfg, ["submission", "wait", "--thread", receipt.threadId,
+      "--submission-id", receipt.submissionId, "--json"]).exit).status, "done");
     assert.deepEqual(states.map(result => value(result).epoch), Array(4).fill(value(states[0]).epoch));
     const original = value(states[0]);
-    assert.deepEqual(original.capabilities, {}); // status is native; no unsolicited capabilities or ready records
+    assert.deepEqual(original.capabilities, { hushProfile: 1, storeIdentity: 1 }); // status is native; no unsolicited capabilities or ready records
     const countStarts = async () => (await readFile(join(dataDir, "hush.log"), "utf8")).split("\n").filter(line => line.endsWith(" listening")).length;
     assert.equal(await countStarts(), 1);
     assert.equal(seen.length, 1);
     const attach = { ...cfg, env: { ...cfg.env, PATH: "/nonexistent", HUSH_BACKEND: "/not/a/bundle" } };
     assert.deepEqual(value(await cli(t, attach, ["status", "--json"]).exit), original);
-    const rpc = await cli(t, attach, ["--mode=rpc"], '{"id":"ready","type":"get_state"}\n').exit;
-    assert.equal(rpc.code, 0, rpc.stderr);
-    assert.equal(rpc.stderr, "");
-    const [response] = rows(rpc.stdout);
-    assert.equal(rows(rpc.stdout).length, 1);
-    assert.equal(response.id, "ready");
-    assert.equal(response.success, true);
     assert.equal(await countStarts(), 1, "clients attach without inspecting Node or a launch bundle");
 
     await signalChildren("SIGKILL");
@@ -864,9 +700,9 @@ test("persistent headless joins concurrent cold starts, detaches, and reopens af
     const restarted = await cli(t, cfg, ["--backend", entry, "status", "--json"]).exit;
     assert.notEqual(value(restarted).epoch, original.epoch);
     assert.equal(await countStarts(), 2);
-    const resumed = await cli(t, attach, ["--mode=rpc", "--session", trace[0].id], '{"id":"state","type":"get_state"}\n').exit;
-    assert.equal(resumed.code, 0, resumed.stderr);
-    assert.equal(rows(resumed.stdout)[0].data.sessionId, trace[0].id, "the persisted session survives backend restart");
+    const resumed = value(await cli(t, attach, ["submission", "get", "--thread", receipt.threadId,
+      "--submission-id", receipt.submissionId, "--json"]).exit);
+    assert.equal(resumed.status, "done", "durable receipt survives backend restart");
   } finally {
     await signalChildren("SIGTERM");
     await eventually(async () => !(await accepting(socket)), "autostart backend did not close");
@@ -875,7 +711,7 @@ test("persistent headless joins concurrent cold starts, detaches, and reopens af
 
 test("persistent autostart never replaces an incompatible socket or executes a bundle from cwd", { timeout: 15_000 }, async t => {
   const cfg = await layout(t);
-  const dataDir = join(cfg.agent, "hush"), socket = join(dataDir, "hush.sock");
+  const dataDir = join(cfg.dir, ".hush", "runtime"), socket = join(dataDir, "hush.sock");
   const launched = join(cfg.dir, "unexpected-start");
   const dist = join(cfg.cwd, "dist"), entry = join(dist, "hush-backend.mjs");
   await mkdir(dist);
@@ -884,13 +720,13 @@ test("persistent autostart never replaces an incompatible socket or executes a b
   const missing = join(cfg.dir, "external.sock");
   for (const attached of [
     cli(t, { ...cfg, env: { ...cfg.env, HUSH_BACKEND: entry } }, ["--socket", missing, "status", "--json"]),
-    cli(t, { ...cfg, env: { ...cfg.env, HUSH_BACKEND: entry, HUSH_SOCKET: missing } }, ["--mode=rpc"]),
+    cli(t, { ...cfg, env: { ...cfg.env, HUSH_BACKEND: entry, HUSH_SOCKET: missing } }, ["--mode=protocol"]),
     cli(t, { ...cfg, env: { ...cfg.env, HUSH_BACKEND: entry } }, ["--mode=protocol"]),
   ]) failed(await attached.exit, /no such file/i);
   await assert.rejects(lstat(dataDir), { code: "ENOENT" });
   await assert.rejects(lstat(launched), { code: "ENOENT" });
 
-  await mkdir(dataDir, { mode: 0o700 });
+  await mkdir(dataDir, { mode: 0o700, recursive: true });
   const incompatible = unixServer(client => {
     client.on("error", () => {});
     createInterface({ input: client }).on("line", line => {
@@ -909,7 +745,7 @@ test("persistent autostart never replaces an incompatible socket or executes a b
     await assert.rejects(lstat(join(dataDir, "history.sqlite")), { code: "ENOENT" });
   } finally { await new Promise(resolve => incompatible.close(resolve)); }
   await writeFile(socket, "ordinary file");
-  failed(await cli(t, cfg, ["--backend", entry, "--mode=json", "no admission"]).exit, /not a Unix socket/);
+  failed(await cli(t, cfg, ["--backend", entry, "--print", "no admission"]).exit, /not a Unix socket/);
   assert.equal(await readFile(socket, "utf8"), "ordinary file");
 });
 
@@ -918,6 +754,7 @@ test("hush stop is attach-only and the next command starts the replacement backe
   delete cfg.env.HUSH_PROFILE;
   const entry = join(cfg.dir, "stop-fixture.mjs");
   await writeFile(entry, Buffer.concat([Buffer.from("process.argv.push('--faux', '--idle-ms', '1000');\n"), await readFile(bundle)]));
+  await copyFile(bundle + ".wasm-pack", entry + ".wasm-pack");
   cfg.env.HUSH_BACKEND = entry;
   const hush = join(cfg.dir, ".hush"), socket = join(hush, "runtime", "hush.sock");
 
@@ -973,6 +810,7 @@ if (!triedRestart(${JSON.stringify(tried)})) {
   process.exit(78);
 }
 ${flags}`), source]));
+  await Promise.all([entry, override].map(path => copyFile(bundle + ".wasm-pack", path + ".wasm-pack")));
   cfg.env.HUSH_BACKEND = entry;
   // An attach-only status must see the ready backend without cold-starting it.
   const status = async () => value(await cli(t, cfg, ["--socket", socket, "status", "--json"]).exit);
@@ -1046,6 +884,7 @@ test("the default standalone host ignores Pi profiles, shares its writer, and pr
     const entry = join(cfg.dir, "standalone-fixture.mjs");
     // Bounded idle timeout also handles cleanup of a failed detached fixture.
     await writeFile(entry, Buffer.concat([Buffer.from("process.argv.push('--faux', '--idle-ms', '1000');\n"), await readFile(bundle)]));
+    await copyFile(bundle + ".wasm-pack", entry + ".wasm-pack");
     cfg.env.HUSH_BACKEND = entry;
     success(await cli(t, cfg, ["--no-session", "-p", "!fast-tool"]).exit, "Faux: !fast-tool\n");
     assert.deepEqual(await readdir(cfg.tmp), []);
@@ -1101,18 +940,19 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
   cfg.cwd = await realpath(leaf);
   const agents = join(projectAgents, "AGENTS.md");
   const outside = join(cfg.dir, "AGENTS.md");
+  const piAgent = cfg.env.PI_CODING_AGENT_DIR;
   const ignored = ["pi-system-sentinel", "pi-append-sentinel", "project-system-sentinel", "project-append-sentinel",
     "host-replacement-sentinel", "above-repository-sentinel", "symlink-agents-sentinel", "pi-agents-sentinel", "project-hush-agents-sentinel"];
   await Promise.all([
     ...["models.json", "auth.json"].map(file => writeFile(join(home, file), JSON.stringify(config[file]), { mode: 0o600 })),
-    writeFile(join(cfg.agent, "SYSTEM.md"), ignored[0]),
-    writeFile(join(cfg.agent, "APPEND_SYSTEM.md"), ignored[1]),
+    writeFile(join(piAgent, "SYSTEM.md"), ignored[0]),
+    writeFile(join(piAgent, "APPEND_SYSTEM.md"), ignored[1]),
     writeFile(join(projectHush, "SYSTEM.md"), ignored[2]),
     writeFile(join(projectHush, "APPEND_SYSTEM.md"), ignored[3]),
     writeFile(join(home, "SYSTEM.md"), ignored[4]),
     writeFile(outside, ignored[5]),
     writeFile(join(cfg.dir, "unscoped.md"), ignored[6]),
-    writeFile(join(cfg.agent, "AGENTS.md"), ignored[7]),
+    writeFile(join(piAgent, "AGENTS.md"), ignored[7]),
     writeFile(join(projectHush, "AGENTS.md"), ignored[8]),
     symlink(join(cfg.dir, "unscoped.md"), join(middle, "AGENTS.md")),
     writeFile(join(home, "AGENTS.md"), "hush-agents-sentinel\n"),
@@ -1176,68 +1016,32 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
   assert.equal((await host.exit).code, 0);
 });
 
-test("managed Hush refuses an opt-in Pi listener and store at its own path", { timeout: 15_000 }, async t => {
+test("missing WASM pack and invalid fresh models file have actionable diagnostics", { timeout: 10_000 }, async t => {
   const cfg = await layout(t);
-  delete cfg.env.HUSH_PROFILE;
-  const data = join(cfg.dir, ".hush", "runtime"), socket = join(data, "hush.sock");
-  const host = launch(t, process.execPath, [bundle, "--data-dir", data, "--faux", "--pi-events"], cfg, null);
-  const lines = createInterface({ input: host.child.stdout });
-  assert.deepEqual(JSON.parse(await nextLine(lines[Symbol.asyncIterator](), host.exit)), { ready: true, socket });
-  lines.close();
-  // A Pi listener lacks both capabilities; the SDK need only report one.
-  failed(await cli(t, cfg, ["--backend", bundle, "status", "--json"]).exit, /unsupported_capability \((?:hushProfile|storeIdentity)\)/);
-  assert.deepEqual(value(await cli(t, cfg, ["--socket", socket, "status", "--json"]).exit).capabilities, {});
-  assert.equal(await accepting(socket), true);
-  host.child.kill("SIGTERM");
-  assert.equal((await host.exit).code, 0);
-  const history = join(data, "history.sqlite"), before = await readFile(history);
+  const path = join(cfg.dir, "override.mjs");
+  await copyFile(bundle, path);
+  failed(await cli(t, cfg, ["--backend", path, "status"]).exit, /\.wasm-pack is missing or invalid/);
+  await assert.rejects(lstat(join(cfg.dir, ".hush", "runtime", "history.sqlite")), { code: "ENOENT" });
+  const models = join(cfg.dir, ".hush", "models.json");
+  await writeFile(models, '{"providers":{"fixture":{"oauth":"radius"}}}', { mode: 0o600 });
+  failed(await cli(t, cfg, ["--backend", bundle, "status"]).exit, /models\.json.*hush\.log/);
+  assert.match(await readFile(join(cfg.dir, ".hush", "runtime", "hush.log"), "utf8"), /oauth is not supported/);
+  const status = await cli(t, cfg, ["--backend", bundle, "auth", "status"]).exit;
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stderr, /oauth is not supported/);
+  assert.match(status.stdout, /no Hush-managed credential/);
+});
+
+test("managed Hush refuses an unmarked SQLite store at its own path", { timeout: 15_000 }, async t => {
+  const cfg = await layout(t);
+  const data = join(cfg.dir, ".hush", "runtime");
+  await mkdir(data, { mode: 0o700, recursive: true });
+  const history = join(data, "history.sqlite");
+  const db = new DatabaseSync(history);
+  db.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('unowned store')");
+  db.close();
+  const before = await readFile(history);
   failed(await cli(t, cfg, ["--backend", bundle, "status", "--json"]).exit, /store_profile/);
   assert.deepEqual(await readFile(history), before);
   await assert.rejects(lstat(join(data, "store-profile")), { code: "ENOENT" });
 });
-
-for (const mode of ["json", "rpc"]) {
-  test(`Pi ${mode} --no-session keeps invocation data private on normal exit and SIGKILL`, { timeout: 20000 }, async t => {
-    const { cfg, config, seen, blocked, abandoned } = await privateConfig(t);
-    const args = ["--mode=" + mode, "--no-session", "--backend", bundle];
-    const normalMarker = "private-normal-" + mode;
-    await writeFile(join(cfg.cwd, "system.txt"), "invocation-private system prompt");
-    const prefs = ["--system-prompt", "system.txt", "--append-system-prompt", "one extra line", "--append-system-prompt", "second extra line"];
-    const run = (message, extra = []) => {
-      if (mode === "json") return { proc: cli(t, cfg, [...args, ...extra, message]) };
-      const proc = cli(t, cfg, [...args, ...extra], null);
-      const rpc = watchRPC(proc);
-      rpc.send("prompt", { id: "prompt", message });
-      return { proc, rpc };
-    };
-    const normal = run(normalMarker, prefs);
-    if (normal.rpc) {
-      await normal.rpc.wait(r => r.type === "agent_settled");
-      normal.proc.child.stdin.end();
-    }
-    const result = await normal.proc.exit;
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stderr, "");
-    assert.deepEqual(await readdir(cfg.tmp), []);
-    assert.match(JSON.stringify(seen[0].messages), /invocation-private system prompt/);
-    assert.match(JSON.stringify(seen[0].messages), /one extra line.*second extra line/);
-    assert.match(JSON.stringify(seen[0].messages), new RegExp(normalMarker));
-    assert.deepEqual(seen[0].tools ?? [], []);
-    const killing = run("headless-private-kill-marker-" + mode);
-    await within(blocked.promise, 7000, "provider did not see the held private input");
-    const dirs = await readdir(cfg.tmp);
-    assert.equal(dirs.length, 1);
-    killing.proc.child.kill("SIGKILL");
-    const killed = await killing.proc.exit;
-    assert.equal(killed.signal, "SIGKILL");
-    assert.ok(!rows(killed.stdout).some(r => r.type === "agent_settled"));
-    await within(abandoned.promise, 5000, "private provider connection outlived its client");
-    await eventually(async () => !(await accepting(join(cfg.tmp, dirs[0], "hush.sock"))), "private listener outlived its client");
-    for (const file of await readdir(join(cfg.tmp, dirs[0]))) {
-      assert.equal(file, "hush.sock");
-      assert.ok((await lstat(join(cfg.tmp, dirs[0], file))).isSocket());
-    }
-    assert.deepEqual((await readdir(cfg.agent)).sort(), Object.keys(config).sort());
-    assert.deepEqual(await readdir(cfg.cwd), ["system.txt"]);
-  });
-}

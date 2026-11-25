@@ -5,6 +5,7 @@
 - Use the full width. Prompt, status, user and assistant text, folded tool summaries, and live activity start two cells in. The user bar extends left of that edge; only expanded tool children indent farther.
 - Separate speakers and set off tool bursts with one blank row. Group results between pieces of assistant prose or before the next user turn. Count committed results and errors, with the timestamp at the right edge.
 - Put live state and applicable hints on the rule above the input, even when scrolled back. Order hints by importance and drop them from the right rather than clipping input. Long input wraps up to a quarter of the screen, then scrolls to show its end.
+- In the main prompt, pastes over 10 lines or 1,000 characters appear as markers such as `[paste #1 +29 lines]`. Arrow keys step over a marker and Backspace or Delete removes it as a unit. Sending uses the full text. A paste that would exceed the 32 KiB prompt limit is rejected, not truncated.
 - Below the input show directory, branch, model, current context, and spend when available. Cumulative tokens belong in usage details. A lone thread's title goes in status; the tab band starts at two threads.
 - Wrap messages and detailed output. One-line summaries and chrome may ellipsize.
 - Lists (slash commands, `@` files, switcher, fork picker, models) open below the prompt. Only the tab popover and overlay stack float, over the transcript, never the footer. The top overlay owns all keys and clicks; `esc` closes only it.
@@ -21,7 +22,7 @@
 
 - Give every action a `ctrl+x` leader binding and prefer it in hints when the direct chord is intercepted. Avoid `ctrl+k`, `ctrl+z`, `alt+[`, and Rex/Zellij defaults (`ctrl+p/t/n/g/h/s/b` and `alt` with arrows or `h/j/k/l`). Keep `ctrl+o` for Pi-style expand despite Zellij's binding. Use `ctrl+[` only with keyboard disambiguation; otherwise show `ctrl+x [`.
 - A second `esc` within 2 s stops a run and returns queued messages to the prompt. The fork picker uses `esc esc` within 450 ms only when idle with an empty prompt.
-- Under mouse capture, click to switch tabs, open `+N` or a link, expand activity, or copy code from the rule above it. Middle-click closes a tab, drag selects and copies via OSC 52, and the wheel scrolls. Show what clicks do: underlined links respond to hover, folded activity uses a muted disclosure marker, and `✓ copied` appears at the click.
+- Under mouse capture, click to switch tabs, open `+N` or a link, expand activity, or copy code from the rule above it. Middle-click closes a tab, drag selects and copies via OSC 52, and the wheel scrolls. Underlined links respond to hover, and folded activity uses a muted disclosure marker. Code copy shows `✓ copied` on the rule, with a brief green sweep when motion is enabled.
 - Live effects tick at 20 fps only while visible. Reduced motion keeps effects still and refreshes elapsed labels once per second.
 
 ## Links

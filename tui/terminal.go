@@ -360,8 +360,10 @@ func (m *Model) finishPromptEdit(msg promptEditFinished) tea.Cmd {
 			return m.notifyRoute(r, err.Error(), extension.Danger)
 		}
 		if m.foreground(r) && m.editor.revision == msg.rev {
-			m.editor.set(v.(string))
-			m.slashHidden = false
+			if edited := v.(string); edited != m.editor.expanded() {
+				m.editor.set(edited)
+				m.slashHidden = false
+			}
 		}
 		return nil
 	}, &b)

@@ -1,13 +1,12 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { publicCatalogText } from "../../server/src/model-catalog.js";
 import type { SettingsChange, SettingsView, ThinkingLevel } from "../../server/src/settings.js";
 import { replaceStoreJSON } from "./store-files.js";
 import { WireError } from "../../server/src/wire.js";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { BackendError } from "./config.js";
 import { hushDefaultModel, privateFile } from "./profile.js";
 
@@ -33,7 +32,7 @@ export async function readStandaloneSettings(agentDir: string): Promise<Record<s
 }
 
 // Pi-compatible global keys; existing threads retain their committed model.
-export function standaloneModelDefault(settings: Record<string, unknown>, runtime: ModelRuntime) {
+export function standaloneModelDefault(settings: Record<string, unknown>, runtime: Models) {
   const provider = settings.defaultProvider, modelId = settings.defaultModel;
   const thinking = settings.defaultThinkingLevel;
   if ((provider !== undefined && !publicCatalogText(provider)) ||
@@ -43,7 +42,7 @@ export function standaloneModelDefault(settings: Record<string, unknown>, runtim
   }
   if ((provider === undefined) !== (modelId === undefined)) throw new BackendError("configuration");
   const model = provider === undefined ? hushDefaultModel : { provider: provider as string, modelId: modelId as string };
-  const physical = runtime.getPhysicalModel(model.provider, model.modelId) && runtime.getModel(model.provider, model.modelId);
+  const physical = runtime.getModel(model.provider, model.modelId);
   if (!physical || thinking !== undefined &&
       !getSupportedThinkingLevels(physical).includes(thinking as ModelThinkingLevel)) {
     throw new BackendError("configuration");
@@ -51,7 +50,7 @@ export function standaloneModelDefault(settings: Record<string, unknown>, runtim
   return { model, thinkingLevel: (thinking ?? "off") as ModelThinkingLevel };
 }
 
-export function standaloneSettingsView(settings: Record<string, unknown>, runtime: ModelRuntime): SettingsView {
+export function standaloneSettingsView(settings: Record<string, unknown>, runtime: Models): SettingsView {
   const selected = standaloneModelDefault(settings, runtime);
   const display = settings.display;
   if (display !== undefined && (!display || typeof display !== "object" || Array.isArray(display))) {
@@ -67,7 +66,7 @@ export function standaloneSettingsView(settings: Record<string, unknown>, runtim
 // settings survive every update.
 export class StandaloneSettingsHost {
   #tail: Promise<void> = Promise.resolve();
-  constructor(private readonly agentDir: string, private readonly runtime: ModelRuntime,
+  constructor(private readonly agentDir: string, private readonly runtime: Models,
       private settings: Record<string, unknown>, private readonly changed: (settings: Record<string, unknown>) => void) {}
 
   async get(): Promise<SettingsView> {

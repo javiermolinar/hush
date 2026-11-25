@@ -30,9 +30,10 @@ The local build writes `dist/release/<os>-<arch>/hush`.
 
 ## Pick up a thread
 
-In the default Hush profile, pass a prompt with `hush --print '...'` or
+Pass a prompt with `hush --print '...'` or
 `hush -- '...'`, or pipe it to `hush` on stdin. Unknown commands aren’t sent
-as prompts.
+as prompts. `--json` formats native command output; Pi's JSON/RPC modes,
+profile, and session files are not supported.
 
 This is from a run against Hush’s scripted test model. I restarted the backend
 between the first prompt and `thread list`.
@@ -81,6 +82,13 @@ session this works before your first message, without creating a thread. `@~/` b
 backend’s home only after a separate `hush trust grant --scope home`, which does not
 permit tool execution.
 
+You can also type `~` or `~/` without `@` to browse the granted backend home.
+Type `/` after other text (for example, `Read /`) to choose a granted location.
+At the start of the prompt, `/` still opens the command menu; choose **Browse paths…**
+to see the same locations. An absolute path inside the recorded workspace can
+be completed directly. The `/` shortcut shows granted locations, not the
+filesystem root, and browsing stays within those grants.
+
 Open `?` → **Show loaded context** to see the instruction files the backend
 resolves for the active thread’s next submission. The inspector lists paths,
 not contents. Hush [discovers skills](backend/README.md#standalone-skills) from
@@ -123,10 +131,17 @@ choose one to open it. It also opens Hush, restarts or resumes the backend, and
 shows the service log. **Open In** picks Rex, Terminal, iTerm, Ghostty or the
 default app for `.command` files. The menu reads state only when you open it.
 
-To have the login item listed as Hush, install the service from the bundled CLI:
-`/Applications/Hush.app/Contents/MacOS/hush service install`. The app is signed ad
-hoc, so Login Items shows a generic icon; a Developer ID signature would show the
-Hush icon.
+To update a development install, let active runs finish, quit Hush from the menu
+bar, and run `mise run app:macos:install` from the checkout. It builds the backend
+and app, replaces `/Applications/Hush.app`, and restarts the login service if it
+was running. This disconnects open clients. The task refuses to replace an app
+with a service pinned elsewhere, and leaves an already paused service paused.
+Reopen Hush after the update.
+
+To register the login service for a development install, run
+`/Applications/Hush.app/Contents/MacOS/hush service install --backend "$PWD/dist/hush-backend.mjs"`
+from the checkout. The app is signed ad hoc, so Login Items shows a generic icon;
+a Developer ID signature would show the Hush icon.
 
 ## What it won’t do
 

@@ -5,10 +5,9 @@ import { parseCodemodeSource } from "@earendil-works/pi-codemode/source";
 import { defineTool, type Agent, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
 import { CODEMODE_TOOL_NAME, createCodemodeExtension, type CodemodeToolInput } from "@earendil-works/pi-durable/codemode";
 
-// Both assets are embedded by backend/bundle.mjs. The extracted backend file
-// need not still exist when a later tool call starts a worker.
-declare const HUSH_CODEMODE_WORKER: string;
-declare const HUSH_QUICKJS_WASM: string;
+import type { WasmAssets } from "./wasm-assets.js";
+
+declare const HUSH_CODEMODE_WORKER: string | undefined;
 
 const maxScriptBytes = 32 * 1024;
 const maxOutputTokens = 1500; // Pi's estimate, backed by the byte limit below.
@@ -67,11 +66,15 @@ function scriptAgent(agent: Agent): Agent {
   return { ...agent, callable: agent.callable.filter(tool => tool.name === inspectFile.name), extensions: [] };
 }
 
-export async function workspaceCodemode(): Promise<{ sandbox: CodemodeSandbox; extension: Extension }> {
-  const wasm = await WebAssembly.compile(Buffer.from(HUSH_QUICKJS_WASM, "base64"));
+export function workspaceCodemode(assets: WasmAssets | undefined) {
+  let wasm: Promise<WebAssembly.Module> | undefined;
   let workers = 0;
   const sandbox = new WorkspaceSandbox({
-    wasm, workerUrl: new URL(HUSH_CODEMODE_WORKER), memoryLimitBytes: 32 * 1024 * 1024,
+    // The worker launcher accesses this getter on the first execution, not
+    // when Durable registers the tool. Deduplicate concurrent first calls.
+    get wasm() { return assets && (wasm ??= assets.read("quickjs").then(bytes => WebAssembly.compile(bytes))); },
+    workerUrl: typeof HUSH_CODEMODE_WORKER === "undefined" ? undefined : new URL(HUSH_CODEMODE_WORKER),
+    memoryLimitBytes: 32 * 1024 * 1024,
     acquireWorker() {
       if (workers >= maxWorkers) throw new Error("Codemode worker limit reached");
       workers++;
@@ -112,5 +115,5 @@ export async function workspaceCodemode(): Promise<{ sandbox: CodemodeSandbox; e
       section.render({ ...input, agent: scriptAgent(input.agent) }, ctx),
     })),
   };
-  return { sandbox, extension };
+  return { sandbox, extension, toolName: CODEMODE_TOOL_NAME };
 }

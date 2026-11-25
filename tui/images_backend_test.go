@@ -55,6 +55,13 @@ func TestImageFromDropToModelAndFork(t *testing.T) {
 	if err := os.WriteFile(isolated, code, 0600); err != nil {
 		t.Fatal(err)
 	}
+	pack, err := os.ReadFile(bundle + ".wasm-pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(isolated+".wasm-pack", pack, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	profile := filepath.Join(dir, ".hush")
 	if err := os.Mkdir(profile, 0700); err != nil {
 		t.Fatal(err)

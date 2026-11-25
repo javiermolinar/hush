@@ -22,7 +22,7 @@ test('standalone skills isolate workspaces and bind a staged input to the live s
   const dir = await realpath(await mkdtemp('/tmp/hs-skill-')), a = join(dir, 'first workspace'), b = join(dir, 'second workspace');
   const agentDir = join(dir, '.hush'), dataDir = join(dir, 'data'), socket = join(dataDir, 'hush.sock');
   for (const path of [a, b, agentDir]) await mkdir(path, { mode: 0o700 });
-  const config = { profile: 'hush', cwd: a, agentDir, dataDir, socket, idleMs: 8000, ephemeral: false, faux: true };
+  const config = { cwd: a, agentDir, dataDir, socket, idleMs: 8000, ephemeral: false, faux: true };
   const host = await startBackend(config);
   let wire;
   t.after(async () => { wire?.close(); await host.close(); await rm(dir, { recursive: true, force: true }); });
@@ -94,7 +94,7 @@ test('fresh prompts discover standard roots without configuration and keep previ
   const cwd = join(repo, 'docs', 'nested folder'), other = join(dir, 'other workspace');
   for (const path of [home, agentDir, join(repo, '.git'), cwd, other]) await mkdir(path, { recursive: true, mode: 0o700 });
   const socket = join(dataDir, 'hush.sock');
-  const host = await startBackend({ profile: 'hush', cwd, agentDir, dataDir, socket, idleMs: 8000, ephemeral: false, faux: true });
+  const host = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 8000, ephemeral: false, faux: true });
   const wire = await dial(socket);
   t.after(async () => { wire.close(); await host.close(); await rm(dir, { recursive: true, force: true }); });
   assert.equal(ok(await wire.send('hello', { versions: [1], capabilities: { workspaceSkills: [2, 1] } })).capabilities.workspaceSkills, 2);
@@ -171,7 +171,7 @@ test('standalone model prompts advertise eligible skill descriptions, not skill 
   await addSkill(join(other, '.agents/skills'), 'other-only', 'Not in this checkout', 'OTHER-BODY-SENTINEL');
   const trust = new WorkspaceTrust(agentDir);
   for (const path of [cwd, other]) await trust.change(path, 'grant', AbortSignal.timeout(5000));
-  const host = await startBackend({ profile: 'hush', cwd, agentDir, dataDir, socket, idleMs: 8000, ephemeral: false, faux: true });
+  const host = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 8000, ephemeral: false, faux: true });
   let wire;
   t.after(async () => { wire?.close(); await host.close(); await rm(dir, { recursive: true, force: true }); });
   wire = await dial(socket);

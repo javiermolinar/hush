@@ -33,16 +33,17 @@ async function setup(t) {
   for (const dir of [cwd, tmp, agent, pi, join(cwd, ".hush"), join(cwd, ".pi")])
     await mkdir(dir, { mode: 0o700, recursive: true });
   await copyFile(bundle, entry);
+  await copyFile(new URL(bundle.href + ".wasm-pack"), entry + ".wasm-pack");
   const trust = new WorkspaceTrust(agent);
   await trust.change(cwd, "grant", AbortSignal.timeout(5000));
   const save = (path, data) => writeFile(path, data, { mode: 0o600 });
   async function settings(value, dir = agent) { await save(join(dir, "settings.json"), JSON.stringify({ codemode: value })); }
   const storage = join(agent, "runtime");
-  async function boot({ privateRun = false, profile = "hush", preload } = {}) {
-    const dataDir = profile === "hush" ? storage : join(pi, "hush");
-    const socket = privateRun ? join(tmp, "p.sock") : join(dataDir, "hush.sock");
+  async function boot({ privateRun = false, preload } = {}) {
+    const socket = privateRun ? join(tmp, "p.sock") : join(storage, "hush.sock");
     const args = [...(preload ? ["--import", pathToFileURL(preload).href] : []),
-      entry, "--profile", profile, "--faux", "--cwd", cwd, ...(privateRun ? ["--no-session", "--socket", socket] : [])];
+      entry, "--faux", "--cwd", cwd,
+      ...(privateRun ? ["--no-session", "--socket", socket] : [])];
     const child = spawn(process.execPath, args, { cwd, env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmp, NODE_NO_WARNINGS: "1" },
       stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
@@ -80,8 +81,8 @@ async function script(wire, threadId, code, requestId = "script") {
 const batch = `const parts = await Promise.all(['one.txt', 'two.txt'].map(path => tools.inspect_file({path})));\n` +
   `return parts.map(part => part.split('\\n')[1]).join(' ');`;
 
-test("host-only opt-in, private and Pi unchanged, and standalone workspace batching", { timeout: 20_000 }, async t => {
-  const { cwd, boot, save, settings, pi } = await setup(t);
+test("host-only opt-in, no private tools, and workspace batching", { timeout: 20_000 }, async t => {
+  const { cwd, boot, save, settings } = await setup(t);
   await settings(true, join(cwd, ".hush"));
   await settings(true, join(cwd, ".pi"));
   await save(join(cwd, "one.txt"), "not selected\none\n");
@@ -100,13 +101,6 @@ test("host-only opt-in, private and Pi unchanged, and standalone workspace batch
   assert.equal((await settle(privateRun.wire, privateId, submission.submissionId)).status, "done");
   assert.ok(!(await history(privateRun.wire, privateId)).some(e => e.kind === "pi.tool-result"));
   await privateRun.stop();
-
-  await settings(true, pi);
-  const compatible = await boot({ profile: "pi" });
-  const deniedPi = await script(compatible.wire, await thread(compatible.wire), batch);
-  assert.equal(deniedPi.isError, true);
-  assert.match(deniedPi.text, /not offered|not available/i);
-  await compatible.stop();
 
   const on = await boot();
   const result = await script(on.wire, id, batch, "enabled-on-existing-thread");

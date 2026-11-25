@@ -22,6 +22,7 @@ type frameMemo struct {
 	hasAbove, hasBelow, hasTranscript           bool
 	thumbStart, thumbEnd                        int
 	top                                         rowAnchor
+	copyToken                                   uint64
 	openActivity                                string
 	dialogToken                                 uint64
 	dialogX, dialogY, dialogWidth, dialogHeight int
@@ -94,6 +95,7 @@ func (m *Model) View() tea.View {
 	var dockCursor *tea.Cursor
 	f.slashStart, f.slashEnd = m.height, m.height
 	continuation, filePicker := false, false
+	var fileChoices int
 	configDock := m.sheet != nil && m.sheet.config != nil
 	chrome := m.chromeRows(t, w)
 	listEnd := m.height - len(chrome)
@@ -122,8 +124,8 @@ func (m *Model) View() tea.View {
 		f.dialogChoices = choices
 	} else if overlayRoom > 0 {
 		continuation = true // an overlay owns focus; hide background completion lists
-	} else if files := m.fileRows(w); len(files) > 0 {
-		below, filePicker = files, true
+	} else if files, n := m.fileRows(w); len(files) > 0 {
+		below, filePicker, fileChoices = files, true, n
 	} else if slash = m.slashMatches(); len(slash) > 0 {
 		below = m.slashSheet(slash, w)
 		f.slashStart, f.slashEnd = listEnd-len(below)+1, listEnd
@@ -192,14 +194,25 @@ func (m *Model) View() tea.View {
 			}
 		}
 	}
+	var copyLink string
+	copySweep := -1
+	if m.copied.token != 0 && m.copied.owner == m.active {
+		copyLink = codeCopyLink(m.copied.id)
+		if m.focusedDialog() == nil {
+			copySweep = m.copied.sweep
+		}
+	}
 	padding := strings.Repeat(" ", m.width)
 	add := func(y int, r displayRow) {
 		if y < 0 || y >= len(f.rows) {
 			return
 		}
-		if m.copied.token != 0 && m.copied.owner == m.active {
-			old := hyperlink("copy", "", "hush-copy:"+m.copied.id) + "    "
-			r.text = strings.Replace(r.text, old, paint(x.Good, "✓ copied"), 1)
+		if copyLink != "" && y < f.transcriptHeight {
+			var copied bool
+			if r.text, copied = paintCopiedCode(r.text, copyLink, copySweep); copied {
+				f.copyToken = m.copied.token
+				copyLink = ""
+			}
 		}
 		if target := moreActivityTarget(r); target != "" && target != f.openActivity {
 			if lead, ok := strings.CutSuffix(r.text, " · enter open"); ok {
@@ -304,7 +317,7 @@ func (m *Model) View() tea.View {
 	}
 	if !configDock {
 		f.ruleY = y
-		add(y, m.promptRule(t, w, paused, m.ruleHints(t, len(slash) > 0, filePicker)))
+		add(y, m.promptRule(t, w, paused, m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)))
 		y++
 		if cursor != nil && m.focused {
 			cursor.Position.X += len(margin)
@@ -332,7 +345,9 @@ func (m *Model) View() tea.View {
 		y++
 	}
 
-	if m.selection.dragging || m.selection.selected {
+	// A stationary press is not a selection. Highlighting it strips the
+	// hyperlink under the click before mouse-up can resolve the target.
+	if m.selection.selected || m.selection.dragging && m.selection.from != m.selection.to {
 		for i := 0; i < f.transcriptHeight; i++ {
 			if a, b, ok := m.selection.span(i, m.width-2); ok {
 				line := fit(f.rows[i], m.width)
@@ -571,7 +586,7 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	return out
 }
 
-func (m *Model) ruleHints(t *threadState, slashes, files bool) []string {
+func (m *Model) ruleHints(t *threadState, slashes, files bool, fileChoices int) []string {
 	if m.focusedDialog() != nil {
 		return nil
 	}
@@ -590,9 +605,13 @@ func (m *Model) ruleHints(t *threadState, slashes, files bool) []string {
 	}
 	if files {
 		hints := []string{m.keyHint("esc", "close")}
-		if m.files.query != "" && len(m.files.records) > 0 {
-			hints = append(hints, m.keyHint("tab", "complete"))
-			if len(m.files.records) > 1 {
+		if (m.files.kind != fileMention || m.files.query != "") && fileChoices > 0 {
+			if m.files.kind == fileRoots {
+				hints = append(hints, m.keyHint("enter", "open"))
+			} else {
+				hints = append(hints, m.keyHint("tab", "complete"))
+			}
+			if fileChoices > 1 {
 				hints = append(hints, m.keyHint("↑↓", "move"))
 			}
 		}
@@ -849,8 +868,14 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 		}
 		if p.Y >= f.transcriptHeight {
 			if h, ok := m.hitAt(p.X, p.Y); ok {
-				if i, known := m.host.byID[h.action.ID]; known && p.Y >= f.slashStart && p.Y < f.slashEnd && m.host.actions[i].action.Slash != nil {
-					return m.runSlash(m.host.actions[i])
+				if p.Y >= f.slashStart && p.Y < f.slashEnd {
+					if h.action.ID == browsePathsID {
+						m.openPathRoots()
+						return nil
+					}
+					if i, known := m.host.byID[h.action.ID]; known && m.host.actions[i].action.Slash != nil {
+						return m.runSlash(m.host.actions[i])
+					}
 				}
 				b := maxEffects
 				return m.invoke(m.route(m.active, coreID), h.action, &b)

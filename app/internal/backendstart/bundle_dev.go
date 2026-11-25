@@ -2,4 +2,4 @@
 
 package backendstart
 
-var releaseBackend []byte
+var releaseBackend, releaseWasmPack []byte

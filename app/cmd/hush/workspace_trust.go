@@ -14,9 +14,6 @@ import (
 )
 
 func workspaceTrustOptions(o headless.InteractiveOptions) *tui.WorkspaceTrustOptions {
-	if o.Profile != string(backendstart.Hush) {
-		return nil
-	}
 	// Sharing links with a socket peer doesn't authorize a local grant.
 	if o.Socket != "" || os.Getenv("HUSH_SOCKET") != "" || o.Local != nil && !*o.Local {
 		return &tui.WorkspaceTrustOptions{}
@@ -53,6 +50,6 @@ func runWorkspaceTrust(ctx context.Context, bundle string, args ...string) (out 
 	}
 	defer func() { err = errors.Join(err, cleanup()) }()
 	cmd := exec.CommandContext(ctx, node, append([]string{entry, "trust"}, args...)...)
-	cmd.Env = append(backendstart.RuntimeEnv(backendstart.Hush), "HUSH_PROFILE=hush")
+	cmd.Env = backendstart.RuntimeEnv()
 	return cmd.Output()
 }

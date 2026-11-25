@@ -35,7 +35,7 @@ async function measure(codemode, pair) {
   await writeFile(join(agentDir, "settings.json"), JSON.stringify({ codemode,
     defaultProvider: model.provider, defaultModel: model.modelId, defaultThinkingLevel: thinkingLevel,
   }), { mode: 0o600 });
-  const app = await startBackend({ profile: "hush", cwd, agentDir, dataDir, socket: join(dataDir, "hush.sock"),
+  const app = await startBackend({ cwd, agentDir, dataDir, socket: join(dataDir, "hush.sock"),
     ephemeral: false, faux: false, idleMs: 120_000 });
   try {
     const roundTrips = [];

@@ -141,7 +141,7 @@ async function verifyOwner(paths: Paths, state: State) {
 }
 
 async function retireRestore(paths: Paths, state: State): Promise<State> {
-  if (!markerMatches(await checkStoreProfile(paths.runtime, true, 1), state)) throw fail(recovery);
+  if (!markerMatches(await checkStoreProfile(paths.runtime, 1), state)) throw fail(recovery);
   const retired = { ...state, phase: "rolled-back" } as const;
   await replaceStoreJSON(paths.state, retired);
   return retired;
@@ -159,7 +159,7 @@ async function prepare(paths: Paths, from: string, targetBundle: string): Promis
     prior = await retireRestore(paths, prior);
   }
   if (prior && prior.phase !== "rolled-back") throw fail("A cutover is already recorded for this store; inspect it before proceeding.");
-  const original = await checkStoreProfile(paths.runtime, true, 1);
+  const original = await checkStoreProfile(paths.runtime, 1);
   if (prior && !markerMatches(original, prior)) throw fail(recovery);
   if (!original || !await privateFile(join(paths.runtime, "owner.sqlite"))) throw fail("No bound format-1 source store.");
   const allowed = new Set([markerName, historyName, bindingName, "owner.sqlite", "owner.sqlite-journal", "hush.sock", "hush.log",
@@ -242,12 +242,12 @@ async function finish(paths: Paths, action: "activate" | "rollback", targetBundl
   await verifyOwner(paths, state);
   const format = action === "rollback" ? 1 : storeFormat;
   if (state.phase === "rolled-back") {
-    if (action === "rollback" && markerMatches(await checkStoreProfile(paths.runtime, true, 1), state)) return state;
+    if (action === "rollback" && markerMatches(await checkStoreProfile(paths.runtime, 1), state)) return state;
     throw fail(recovery);
   }
   const marker = await readStoreJSON(paths.marker);
   if (!isFence(marker, state.transaction)) {
-    if (state.phase === "prepared" || !markerMatches(await checkStoreProfile(paths.runtime, true, format), state)) throw fail(recovery);
+    if (state.phase === "prepared" || !markerMatches(await checkStoreProfile(paths.runtime, format), state)) throw fail(recovery);
     return state.phase === "restored" ? retireRestore(paths, state) : state;
   }
   if (state.phase === "prepared") {
@@ -279,7 +279,7 @@ export async function runStoreCommand(argv: string[], entry: string) {
       const format = object(marker) && typeof marker.format === "number" ? marker.format : null;
       const interrupted = state ? isFence(marker, state.transaction) : format === 0;
       if (state) await verifyOwner(paths, state);
-      const matches = state && !interrupted && markerMatches(await checkStoreProfile(paths.runtime, true,
+      const matches = state && !interrupted && markerMatches(await checkStoreProfile(paths.runtime,
         state.phase === "committed" ? 2 : 1).catch(() => undefined), state);
       const verified = state && (interrupted ? state.phase !== "rolled-back" : matches && state.phase !== "prepared");
       const orphaned = marker !== undefined && (format !== 1 &&

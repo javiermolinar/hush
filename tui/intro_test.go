@@ -397,7 +397,7 @@ func TestIntroReviewOpensSwitcher(t *testing.T) {
 		t.Fatal("review click should only open the switcher and leave the draft intact")
 	}
 	press(m, tea.KeyEnter, 0)
-	if m.active != "7" || m.threads["1"].draft != "keep this draft" {
+	if m.active != "7" || m.threads["1"].draft.text != "keep this draft" {
 		t.Fatal("selecting the failed thread did not switch to it or preserve the original draft")
 	}
 }

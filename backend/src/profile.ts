@@ -30,12 +30,12 @@ export async function privateFile(path: string) {
   return !!info;
 }
 
-// The library handles credential mutations under its lock. Reserve the file
-// exclusively first: two first-time commands must not race to initialize it.
+// Reserve the file exclusively; concurrent first callers must not replace an
+// auth.json already created or updated by another process.
 export async function prepareAuthFile(path: string, create: boolean) {
   if (await privateFile(path)) return true;
   if (!create) return false;
-  // An empty file is an empty store to the library. Do not write even an
+  // An empty file is an empty credential store. Do not write even an
   // initial JSON object outside its lock after winning exclusive creation.
   const file = await open(path, "wx", 0o600).catch((err: NodeJS.ErrnoException) => {
     if (err.code !== "EEXIST") throw err;
@@ -66,13 +66,9 @@ const sameFile = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino ==
 // Inspect under the writer lock, before touching a stale socket or letting SQLite
 // open history (even read-only SQLite may touch WAL sidecars). Only a fresh
 // directory is eligible for initialization; incomplete bootstrap fails closed.
-export async function checkStoreProfile(dir: string, hush: boolean, expected: 1 | 2 | "either" = storeFormat): Promise<StoreManifest | undefined> {
+export async function checkStoreProfile(dir: string, expected: 1 | 2 | "either" = storeFormat): Promise<StoreManifest | undefined> {
   const marker = join(dir, markerName), history = join(dir, historyName);
   const manifest = await stat(marker);
-  if (!hush) {
-    if (manifest || await stat(join(dir, bindingName))) throw incompatible();
-    return;
-  }
   if (!manifest) {
     if ((await readdir(dir)).some(name => !["owner.sqlite", "owner.sqlite-journal", "hush.sock", "hush.log"].includes(name))) throw incompatible();
     return;

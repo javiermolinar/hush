@@ -1,5 +1,8 @@
-import AjvModule from "ajv/dist/2020.js";
-import schema from "../../protocol/v1/thread-directory.schema.json" with { type: "json" };
+import {
+  dirList as listShape, dirListV2 as listV2Shape, dirGet as getShape, dirNew as newShape, dirArchive as archiveShape,
+  dirWorkspace as listWorkspaceShape, dirWorkspaceSuccess as envelopeWorkspace, dirSearch as listSearchShape,
+  dirSearchSuccess as envelopeSearch, dirSuccess as envelope, dirSuccessV2 as envelopeV2,
+} from "./validators.js";
 import { durableID, WireError } from "./wire.js";
 
 export const threadDirectoryVersion = 1;
@@ -31,13 +34,6 @@ export interface ThreadDirectoryHost {
     archive(query: ThreadArchive, signal: AbortSignal): Promise<void>;
   };
 }
-
-const ajv = new AjvModule.Ajv2020({ strict: false, ownProperties: true }).addSchema(schema);
-const def = (name: keyof typeof schema.$defs) => ajv.compile({ $ref: schema.$id + "#/$defs/" + name });
-const listShape = def("list"), listV2Shape = def("listV2"), getShape = def("get"), newShape = def("newThread"), archiveShape = def("archive");
-const listWorkspaceShape = def("listWorkspace"), envelopeWorkspace = def("successWorkspace");
-const listSearchShape = def("listWorkspaceSearch"), envelopeSearch = def("successWorkspaceSearch");
-const envelope = def("successEnvelope"), envelopeV2 = def("successEnvelopeV2");
 
 export function parseThreadDirectoryQuery(params: Record<string, unknown>, version: ThreadDirectoryVersion, workspace?: ThreadWorkspaceVersion): ThreadDirectoryQuery {
   const shape = workspace === threadWorkspaceSearchVersion ? listSearchShape : workspace && Object.hasOwn(params, "workspace") ?

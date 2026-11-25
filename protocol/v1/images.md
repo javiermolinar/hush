@@ -2,8 +2,7 @@
 
 Offer `"images":[1]` in `hello.params.capabilities`. A host must install an image
 fitter to select it; a bare Harness, an unoffered connection, and the reference
-invocation-private host do not select it. No base frames change. This is separate
-from the Pi 1.6 RPC image-service capability.
+invocation-private host do not select it. No base frames change.
 
 | Request | Parameters | Result |
 | --- | --- | --- |

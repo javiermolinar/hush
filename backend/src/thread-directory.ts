@@ -13,7 +13,6 @@ import { threadWorkspaceSearchVersion, type ManagedThreadRow, type ThreadArchive
   type ThreadDirectoryPage, type ThreadDirectoryQuery, type ThreadDirectoryReport, type ThreadDirectoryRow, type ThreadDirectoryVersion,
   type ThreadLookup, type ThreadStatus, type ThreadWorkspaceVersion, type WorkspaceMatch } from "../../server/src/thread-directory.js";
 import { WireError } from "../../server/src/wire.js";
-import { ProfileDoc } from "./pi/projection.js";
 import { actionableFailure, displayTitle, threadActivity, ThreadPresentationDoc, threadLabel, topicTitle } from "./thread-presentation.js";
 import type { GenerateThreadTitle } from "./thread-title-model.js";
 import { existingDirectory, type ThreadWorktrees } from "./worktrees.js";
@@ -123,7 +122,8 @@ export class ThreadDirectory implements ThreadDirectoryHost {
   #failed = false;
 
   constructor(private readonly h: Harness, private readonly cwd: string, private readonly defaults: NonNullable<NativeHost["defaults"]>,
-      private readonly worktrees: ThreadWorktrees, private readonly generateTitle?: GenerateThreadTitle) {
+      private readonly worktrees: ThreadWorktrees, private readonly generateTitle?: GenerateThreadTitle,
+      private readonly readOnlyReason?: string) {
     this.#ctx = withAbortSignal(this.#life.signal, BACKGROUND_CONTEXT);
     this.#db.exec(`
       CREATE TABLE directory (id INTEGER PRIMARY KEY, parent INTEGER, title TEXT NOT NULL, last INTEGER NOT NULL,
@@ -152,7 +152,7 @@ export class ThreadDirectory implements ThreadDirectoryHost {
           }
           else if ((c.type === "document" || c.type === "document.copy") && c.conversationId !== undefined) {
             const kind = c.record.kind;
-            if (kind === ProfileDoc.definition.kind || kind === ThreadPresentationDoc.definition.kind || kind === AgentDoc.definition.kind ||
+            if (kind === ThreadPresentationDoc.definition.kind || kind === AgentDoc.definition.kind ||
                 kind === LiveDoc.definition.kind && (c.type !== "document" || c.kind !== "change" ||
                   c.ops.some(op => op[0] === "r" || Array.isArray(op[1]) && liveFields.has(String(op[1][0]))))) {
               this.#pending.add(c.conversationId);
@@ -284,11 +284,11 @@ export class ThreadDirectory implements ThreadDirectoryHost {
 
   async #refresh(record: ConversationRecord, candidate: boolean, bootstrap = false) {
     const { id } = record;
-    const [profile, presentation, agent, live] = await Promise.all([
-      this.h.snapshot(ProfileDoc, id, this.#ctx), this.h.snapshot(ThreadPresentationDoc, id, this.#ctx),
-      this.h.snapshot(AgentDoc, id, this.#ctx), this.h.snapshot(LiveDoc, id, this.#ctx),
+    const [presentation, agent, live] = await Promise.all([
+      this.h.snapshot(ThreadPresentationDoc, id, this.#ctx), this.h.snapshot(AgentDoc, id, this.#ctx),
+      this.h.snapshot(LiveDoc, id, this.#ctx),
     ]);
-    let title = displayTitle(presentation, profile?.name);
+    let title = displayTitle(presentation);
     let last = 0;
     let newest: EntryId | undefined, outcome: "idle" | "done" | undefined;
     await this.#find(id, "descending", entry => {
@@ -297,22 +297,23 @@ export class ThreadDirectory implements ThreadDirectoryHost {
       outcome ??= lastOutcome(entry);
       return last !== 0 && outcome !== undefined;
     });
-    const unnamed = !presentation?.title && !profile?.name;
+    const unnamed = !presentation?.title;
     const local = unnamed && !presentation?.topicTitle && (candidate || outcome === "done" || bootstrap && !!presentation?.autoTitle);
-    const remote = this.generateTitle && candidate && unnamed && !record.parent && !profile?.id &&
+    const remote = this.generateTitle && candidate && unnamed && !record.parent &&
       !presentation?.archived && !presentation?.titleAttempted && this.#titlesGenerating < 2;
     const exchange = local || remote ? await this.#firstExchange(id) : undefined;
     const topic = local && exchange ? topicTitle(exchange.user, exchange.answer) : "";
     // An unanswered thread (including a fork cut before the first answer)
     // can still be recognized by its provisional prompt topic.
     const prompt = !title && !topic ? await this.#find(id, "ascending", firstPrompt) : undefined;
-    if (topic || prompt) title = await this.h.commit(async tx => {
+    if (this.readOnlyReason) title ||= topic || (prompt && topicTitle(prompt));
+    else if (topic || prompt) title = await this.h.commit(async tx => {
       const doc = await tx.doc(ThreadPresentationDoc, id);
       if (!doc.title) {
         if (topic) doc.topicTitle ??= topic;
         else if (prompt) doc.autoTitle ??= prompt;
       }
-      return displayTitle(doc, profile?.name);
+      return displayTitle(doc);
     }, this.#ctx);
     const failure = live?.runFailure;
     const status = live?.run || live?.compactions?.length ? "running"
@@ -399,6 +400,12 @@ export class ThreadDirectory implements ThreadDirectoryHost {
 
   async #create(query: ThreadCreation, signal: AbortSignal): Promise<ManagedThreadRow> {
     signal.throwIfAborted();
+    // Reject before an optional worktree can move files or refs.
+    if (this.readOnlyReason) {
+      const error = new WireError("invalid_request");
+      error.message = this.readOnlyReason;
+      throw error;
+    }
     const title = query.title === undefined ? "" : threadLabel(query.title, 96);
     if (query.title !== undefined && !title) throw new WireError("invalid_request");
     const workspace = await existingDirectory(resolve(this.cwd, query.cwd ?? "."));

@@ -1,7 +1,6 @@
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { AgentState } from "@earendil-works/pi-durable";
-import AjvModule from "ajv/dist/2020.js";
-import schema from "../../protocol/v1/images.schema.json" with { type: "json" };
+import { imageSubmit, imageGet, imageSuccess } from "./validators.js";
 import { durableID, WireError } from "./wire.js";
 
 export const imagesVersion = 1;
@@ -20,10 +19,8 @@ export interface ImagesHost {
   }>;
 }
 
-const ajv = new AjvModule.Ajv2020({ strict: false, ownProperties: true }).addSchema(schema);
-const submit = ajv.compile<WireSubmission>({ $ref: schema.$id + "#/$defs/submit" });
-const get = ajv.compile<ImageRef>({ $ref: schema.$id + "#/$defs/get" });
-const reply = ajv.compile({ $ref: schema.$id + "#/$defs/successEnvelope" });
+const submit = imageSubmit as (value: unknown) => value is WireSubmission;
+const get = imageGet as (value: unknown) => value is ImageRef;
 
 export function parseImageSubmit(value: unknown): ImageSubmission {
   if (!submit(value) || !durableID(value.threadId)) throw new WireError("invalid_request");
@@ -45,7 +42,7 @@ export function parseImageRef(value: unknown): ImageRef {
 }
 
 export function imageReply(result: object) {
-  if (!reply(result)) throw new WireError("internal");
+  if (!imageSuccess(result)) throw new WireError("internal");
   return result;
 }
 

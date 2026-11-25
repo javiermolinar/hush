@@ -52,10 +52,7 @@ async function pageAll(wire, threadId, range, limit = 11) {
 }
 
 test("negotiation, strict frames, and uninstalled operations never touch the Harness", { timeout: 8000 }, async t => {
-  let called = 0;
-  const { h, path, threadId } = await fixture(t, { server: {
-    capabilities: { piEvents: { subscribe: async () => { called++; return {}; } } },
-  } });
+  const { h, path, threadId } = await fixture(t);
   const before = await h.commit(tx => tx.scanConversations({}, 10), context);
   const wire = await client(t, path);
   code(await wire.send("thread.new", {}), "not_negotiated");
@@ -76,7 +73,6 @@ test("negotiation, strict frames, and uninstalled operations never touch the Har
   code(await wire.send("thread.abort", { threadId: "9999999999999999" }), "invalid_request");
   assert.deepEqual(await h.commit(tx => tx.scanConversations({}, 10), context), before);
   assert.equal((await h.inspect(context)).submissions.length, 0);
-  assert.equal(called, 0);
 
   const bad = [
     '{"type":"request","id":"x","i\\u0064":"y","method":"hello","params":{"versions":[1]}}\n',

@@ -39,11 +39,12 @@ var frameTargets = map[string]struct {
 	limit     time.Duration
 	knownMiss string
 }{
-	"typing-1k":         {contractBudget, ""},
-	"typing-4k":         {contractBudget, ""},
-	"typing-16k":        {contractBudget, ""},
-	"replica-streaming": {contractBudget, ""},
-	"image-typing":      {contractBudget, ""},
+	"typing-1k":           {contractBudget, ""},
+	"typing-4k":           {contractBudget, ""},
+	"typing-16k":          {contractBudget, ""},
+	"typing-folded-paste": {contractBudget, ""},
+	"replica-streaming":   {contractBudget, ""},
+	"image-typing":        {contractBudget, ""},
 }
 
 var typingDrafts = map[string]int{"typing-1k": 1 << 10, "typing-4k": 4 << 10, "typing-16k": 16 << 10}
@@ -116,9 +117,9 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning",
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "path-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "image-preview", "queued-inputs", "expanded-reasoning",
 		// Contract cases; they run after the others so their garbage can't skew them.
-		"replica-streaming", "typing-1k", "typing-4k", "typing-16k", "image-typing"} {
+		"replica-streaming", "typing-1k", "typing-4k", "typing-16k", "typing-folded-paste", "image-typing"} {
 		t.Run(which, func(t *testing.T) {
 			opts := Options{ReducedMotion: true}
 			switch which {
@@ -181,9 +182,16 @@ func TestFrameBudget(t *testing.T) {
 				}
 			}
 			if size, ok := typingDrafts[which]; ok {
-				m.Update(tea.PasteMsg{Content: multilineDraft(size)})
+				m.editor.set(multilineDraft(size)) // exercise long visible drafts, not folded pastes
 				if len(m.editor.value()) != size {
 					t.Fatalf("draft has %d bytes, want %d", len(m.editor.value()), size)
+				}
+			}
+			if which == "typing-folded-paste" {
+				paste := multilineDraft(16 << 10)
+				m.Update(tea.PasteMsg{Content: paste})
+				if len(m.editor.pastes) != 1 || m.editor.expanded() != paste {
+					t.Fatal("missing folded paste")
 				}
 			}
 			var replica sdk.Replica
@@ -216,10 +224,18 @@ func TestFrameBudget(t *testing.T) {
 				m.options.WorkspaceTrust = workspaceTrustFixture("/work/" + strings.Repeat("wide界", 18) + "/project")
 				openWorkspaceTrustFixture(t, m)
 			}
-			if which == "file-picker" {
-				m.options.Services.Files = func(context.Context, x.ListFiles) ([]x.File, string, error) { return nil, "", nil }
-				m.editor.set("@zzzz")
-				m.files = filePicker{owner: m.active, generation: m.token()}
+			if which == "file-picker" || which == "path-picker" {
+				p := filePicker{owner: m.active}
+				if which == "path-picker" {
+					openBrowseScope(t, m, fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true}})
+					m.editor.set("/workspace/zzzz")
+					p.kind, p.base = fileAbsolute, "/workspace/"
+				} else {
+					m.options.Services.Files = func(context.Context, x.ListFiles) ([]x.File, string, error) { return nil, "", nil }
+					m.editor.set("@zzzz")
+				}
+				p.generation = m.token()
+				m.files = p
 				for i := range 400 {
 					m.files.records = append(m.files.records, x.File{Path: fmt.Sprintf("file %03d.go", i)})
 				}
@@ -338,7 +354,7 @@ func TestFrameBudget(t *testing.T) {
 					stream.WriteString("Check the next implementation detail.\n")
 					s.stream = detachStream(&sdk.Streaming{Blocks: []sdk.Block{{Type: "thinking", Text: stream.String()}}})
 					s.streamRevision++
-				case "typing", "typing-1k", "typing-4k", "typing-16k", "image-typing":
+				case "typing", "typing-1k", "typing-4k", "typing-16k", "typing-folded-paste", "image-typing":
 					msg = tea.KeyPressMsg{Code: 'a', Text: "a"}
 				case "motion":
 					msg = tea.MouseMotionMsg(tea.Mouse{X: 2 + i%10, Y: m.frame.transcriptHeight - 4})
@@ -366,7 +382,7 @@ func TestFrameBudget(t *testing.T) {
 						code = tea.KeyUp
 					}
 					msg = tea.KeyPressMsg{Code: code}
-				case "file-picker", "skill-slash", "skill-sheet":
+				case "file-picker", "path-picker", "skill-slash", "skill-sheet":
 					keys := [...]tea.KeyPressMsg{{Code: '0', Text: "0"}, {Code: tea.KeyBackspace}}
 					msg = keys[i%len(keys)]
 				case "loaded-context":

@@ -123,7 +123,7 @@ continuity error. Open a fresh TUI or SDK client, rediscover the intended thread
 and read current durable history and receipts before making a new admission. Do
 not copy previously admitted input into a new draft for automatic submission.
 
-Three contracts apply independently:
+Two contracts apply independently:
 
 1. **Native state** — patches apply only to their subscription, epoch and base
    revision. A gap, stale base or disconnect requires a fresh snapshot, not
@@ -136,24 +136,14 @@ Three contracts apply independently:
    `submission.wait` for the exact input. Same-key native retry is valid only
    within verified continuity with the same payload; never use an old key after
    restore.
-3. **Ordered Pi live delivery** — the ready fence, stream epoch and sequence
-   are separate. Overflow, producer loss or disconnect ends the stream; do
-   not replay RPC commands or fabricate a terminal event from history.
-   `agent_settled` is the profile drain boundary, not a substitute for a native
-   submission result. A new idle attachment starts a new stream, with no replay.
 
 ## Headless modes, private runs and remote attachment
 
 `store` refusal exits 1 with a diagnostic. `store inspect` emits JSON and can
 exit 0 with `phase: "unknown"`; check the fields. Native `--print` exits 0 on a
 completed answer, or 1 on a failed invocation; `--no-wait` can succeed at
-admission without an answer. For the opt-in Pi profile, JSON can exit 0 with an
-authoritative assistant error event. RPC returns command rejection in its
-correlated response without ending the invocation. Transport failure exits 1;
-a caught signal exits `128 + signal` (for example, SIGINT 130). See the pinned
-[Pi mode and compatibility matrix](../protocol/v1/pi-1.6/README.md#modes-flags-and-io)
-and [capability boundaries](../protocol/v1/pi-1.6/pi-events.md); do not expect Pi
-session import, Pi extensions or approvals.
+admission without an answer. Transport failure exits 1; a caught signal exits
+`128 + signal` (for example, SIGINT 130).
 
 `--no-session` starts a tool-free in-memory host tied to one CLI invocation. It
 will not continue a durable thread, create a transcript database, payload log,

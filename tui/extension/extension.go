@@ -42,7 +42,7 @@ type Registration struct {
 type Features uint64
 
 const (
-	// Catalog enables a model picker source, such as an opted-in SDK Pi catalog.
+	// Catalog enables the model picker using a native or host-supplied catalog.
 	Catalog Features = 1 << iota
 	// Files enables workspace file listing for the owning thread.
 	Files

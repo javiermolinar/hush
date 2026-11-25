@@ -78,6 +78,7 @@ func assertFrame(t testing.TB, m *Model) string {
 }
 
 func TestFrameGeometry(t *testing.T) {
+	t.Run("folded-paste", testFoldedPasteFrameGeometry)
 	t.Run("workspace-trust", testWorkspaceTrustFrameGeometry)
 	t.Run("file-picker", testFilePickerFrameGeometry)
 	t.Run("thread-picker", testThreadPickerFrameGeometry)
@@ -155,7 +156,7 @@ func TestPromptLayoutCacheTracksEdits(t *testing.T) {
 		return got
 	}
 	check()
-	m.Update(tea.PasteMsg{Content: strings.Repeat("line 界👩‍💻 é\n", 18) + "tail"})
+	m.editor.set(strings.Repeat("line 界👩‍💻 é\n", 18) + "tail") // keep the long textarea visible
 	before := check()
 	press(m, tea.KeyLeft, 0)
 	left := check()
@@ -519,7 +520,7 @@ func TestControlInkChecksContrast(t *testing.T) {
 			t.Fatalf("insufficient contrast with %v", colors.background)
 		}
 		s.info.Status = x.Running
-		for _, hint := range m.ruleHints(s, false, false) {
+		for _, hint := range m.ruleHints(s, false, false, 0) {
 			if strings.Contains(hint, "\x1b[2m") {
 				t.Fatalf("actionable key is faint: %q", hint)
 			}
@@ -612,6 +613,7 @@ func TestPasteLinkAndSelection(t *testing.T) {
 			clicked[key] = true
 			p := tea.Mouse{X: col, Y: y, Button: tea.MouseLeft}
 			m.mouse(tea.MouseClickMsg(p))
+			assertFrame(t, m)
 			cmd := m.mouse(tea.MouseReleaseMsg(p))
 			if cmd == nil {
 				t.Fatal("no open command", link)

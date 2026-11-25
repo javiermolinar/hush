@@ -6,7 +6,6 @@ import { fitImage } from "@earendil-works/pi-durable/images/fit";
 import type { ImageLimits } from "@earendil-works/pi-durable/tools";
 import type { ImageBytes } from "../../server/src/images.js";
 
-declare const HUSH_PHOTON_WASM: string | undefined;
 const MAX_AXIS = 8192;
 const MAX_PIXELS = 24_000_000;
 
@@ -63,11 +62,10 @@ function boundedImage(raw: ImageBytes): boolean {
   return w > 0 && h > 0 && w <= MAX_AXIS && h <= MAX_AXIS && w * h <= MAX_PIXELS;
 }
 
-export type FitJob = { images: readonly ImageBytes[]; limits: ImageLimits };
-async function run({ images, limits }: FitJob) {
+export type FitJob = { images: readonly ImageBytes[]; limits: ImageLimits; wasm?: Uint8Array<ArrayBuffer> };
+async function run({ images, limits, wasm }: FitJob) {
   if (!images.every(boundedImage)) return undefined;
-  const wasm = typeof HUSH_PHOTON_WASM !== "undefined" ? Buffer.from(HUSH_PHOTON_WASM, "base64")
-    : readFileSync(createRequire(import.meta.url).resolve("@silvia-odwyer/photon/photon_rs_bg.wasm"));
+  wasm ??= readFileSync(createRequire(import.meta.url).resolve("@silvia-odwyer/photon/photon_rs_bg.wasm"));
   const processor = createPhotonImages(wasm);
   const fitted = [];
   for (const input of images) {

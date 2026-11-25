@@ -14,9 +14,8 @@ import (
 
 // Local auth deliberately skips the managed daemon resolver and every socket path.
 func runAuth(ctx context.Context, o options, in, out, stderr *os.File) (result error) {
-	profile, err := backendstart.SelectProfile(o.ui.Profile, false)
-	if err != nil || profile != backendstart.Hush || os.Getenv("HUSH_SOCKET") != "" {
-		return errors.New("auth is local to the Hush backend host; unset HUSH_SOCKET and select the Hush profile")
+	if os.Getenv("HUSH_SOCKET") != "" {
+		return errors.New("auth is local to the Hush backend host; unset HUSH_SOCKET")
 	}
 	if o.authAction == "login" {
 		fd := int(in.Fd())
@@ -40,7 +39,7 @@ func runAuth(ctx context.Context, o options, in, out, stderr *os.File) (result e
 		args = append(args, o.authProvider)
 	}
 	cmd := exec.CommandContext(ctx, node, args...)
-	cmd.Env = backendstart.RuntimeEnv(backendstart.Hush)
+	cmd.Env = backendstart.RuntimeEnv()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, stderr
 	// Give the bundle time to abort the provider flow and restore tty mode.
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }

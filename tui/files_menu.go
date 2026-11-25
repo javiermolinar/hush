@@ -14,12 +14,32 @@ import (
 )
 
 const maxFileSuggestions = 5
+const browsePathsID x.ActionID = menusID + ".browse-paths"
+
+var browsePathsAction = registeredAction{action: x.Action{
+	ID: browsePathsID, Title: "Browse paths…", Slash: &x.Slash{},
+}}
+
+type fileTokenKind uint8
+
+const (
+	fileMention fileTokenKind = iota
+	fileHome
+	fileAbsolute
+	fileRoots
+)
+
+const (
+	workspaceRootChoice = "root:workspace"
+	homeRootChoice      = "root:home"
+)
 
 type filePicker struct {
 	owner                   sdk.ID
 	target                  sdk.WorkspaceFileTarget // the scope lease's, for native requests
 	navigation              uint64
-	prefix, query           string
+	prefix, query, base     string
+	kind                    fileTokenKind
 	start                   int
 	request                 context.Context
 	cancel                  context.CancelFunc
@@ -32,8 +52,9 @@ type filePicker struct {
 }
 
 type fileToken struct {
-	start, end int
-	dir, query string
+	start, end       int
+	dir, query, base string // dir is the listing prefix; base restores an absolute workspace path
+	kind             fileTokenKind
 }
 
 func fileTokenAt(text string, at int) (fileToken, bool) {
@@ -42,25 +63,26 @@ func fileTokenAt(text string, at int) (fileToken, bool) {
 	}
 	before := text[:at]
 	line := strings.LastIndexByte(before, '\n') + 1
-	quote := strings.LastIndex(before[line:], `@"`)
-	start, end, tail := 0, at, ""
+	start, end, tail := 0, len(text), ""
 	quoted := false
-	if quote >= 0 {
-		start = line + quote
+	if i := strings.LastIndexByte(before[line:], '"'); i >= 0 {
+		quote := line + i
+		start = quote
+		if quote > line && before[quote-1] == '@' {
+			start--
+		}
 		prev, _ := utf8.DecodeLastRuneInString(before[:start])
-		quoted = (start == 0 || unicode.IsSpace(prev)) && !strings.ContainsRune(before[start+2:], '"')
+		tail = before[quote+1:]
+		quoted = (start == 0 || unicode.IsSpace(prev)) &&
+			(start < quote || strings.HasPrefix(tail, "/") || strings.HasPrefix(tail, "~"))
 	}
 	if quoted {
-		tail = before[start+2:]
 		suffix := text[at:]
-		i := strings.IndexAny(suffix, "\"\n")
-		switch {
-		case i < 0:
-			end = len(text)
-		case suffix[i] == '"':
-			end = at + i + 1
-		default:
+		if i := strings.IndexAny(suffix, "\"\n"); i >= 0 {
 			end = at + i
+			if suffix[i] == '"' {
+				end++
+			}
 		}
 	} else {
 		start = strings.LastIndexFunc(before, unicode.IsSpace) + 1
@@ -68,27 +90,47 @@ func fileTokenAt(text string, at int) (fileToken, bool) {
 		for start < at && !byteBoundary(text, start) {
 			start++
 		}
-		if start >= at || text[start] != '@' {
+		if start >= at {
 			return fileToken{}, false
 		}
-		tail = before[start+1:]
+		tail = before[start:]
+	}
+	kind := fileMention
+	switch {
+	case text[start] == '@':
+		if !quoted {
+			tail = tail[1:]
+		}
+		if strings.HasPrefix(tail, "/") {
+			return fileToken{}, false
+		}
+	case tail == "~" || strings.HasPrefix(tail, "~/"):
+		kind = fileHome
+		if tail == "~" {
+			tail = "~/"
+		}
+	case strings.HasPrefix(tail, "/"):
+		kind = fileAbsolute
+	default:
+		return fileToken{}, false
+	}
+	if strings.ContainsAny(tail, "\\\"@:") || hasControl(tail) {
+		return fileToken{}, false
+	}
+	if !quoted {
 		if i := strings.IndexFunc(text[at:], unicode.IsSpace); i >= 0 {
 			end = at + i
-		} else {
-			end = len(text)
 		}
-	}
-	if strings.ContainsAny(tail, "\\\"@:") || strings.HasPrefix(tail, "/") || hasControl(tail) {
-		return fileToken{}, false
 	}
 	dir, query := "", tail
 	if i := strings.LastIndexByte(tail, '/'); i >= 0 {
 		dir, query = tail[:i+1], tail[i+1:]
 	}
-	if dir != "" && !validFileRef(strings.TrimSuffix(dir, "/")) {
+	// Absolute tokens are checked after removing the known workspace prefix.
+	if kind != fileAbsolute && dir != "" && !validFileRef(strings.TrimSuffix(dir, "/")) {
 		return fileToken{}, false
 	}
-	return fileToken{start, end, dir, query}, true
+	return fileToken{start: start, end: end, dir: dir, query: query, kind: kind}, true
 }
 
 func validFileRef(p string) bool {
@@ -96,8 +138,68 @@ func validFileRef(p string) bool {
 		!hasControl(p) && !strings.ContainsAny(p, "\\\"@:") && len(p) <= 2048
 }
 
+func (m *Model) pathRootsAvailable() bool {
+	// Extension file providers do not advertise separate root grants.
+	scope := m.currentFileScope()
+	return m.options.Services.Files == nil && (scope.Workspace || scope.Home)
+}
+
+func (m *Model) workspaceBrowsePath() string {
+	if !m.currentFileScope().Workspace {
+		return ""
+	}
+	cwd := m.fileScope.target.CWD
+	if m.active != "" {
+		cwd = m.threads[m.active].info.Workspace
+	}
+	if cwd == "/" || !validWorkspaceDirectory(cwd) || path.Clean(cwd) != cwd || strings.ContainsAny(cwd, "\\\"@:") || hasControl(cwd) {
+		return ""
+	}
+	return cwd + "/"
+}
+
+func (m *Model) currentFileToken() (fileToken, bool) {
+	text := m.editor.value()
+	v, ok := fileTokenAt(text, m.editor.cursorByte())
+	if !ok || m.editor.overlapsPaste(v.start, v.end) || v.kind != fileMention && !m.pathRootsAvailable() {
+		return fileToken{}, false
+	}
+	if v.kind == fileAbsolute {
+		if v.dir == "/" && v.query == "" {
+			// A leading unquoted slash is for commands unless the user chose
+			// the Browse paths row. Never interpret it as a filesystem root.
+			p := &m.files
+			if v.start == 0 && text[0] == '/' &&
+				(p.kind != fileRoots || p.sourceText != text || p.owner != m.active || p.navigation != m.navigation) {
+				return fileToken{}, false
+			}
+			v.kind, v.dir = fileRoots, ""
+			return v, true
+		}
+		base := m.workspaceBrowsePath()
+		dir, inside := strings.CutPrefix(v.dir, base)
+		// Only the relative directory is sent to the backend. A top-level
+		// tilde is reserved for the separately granted home listing.
+		if base == "" || !inside || strings.HasPrefix(dir, "~/") || dir != "" && !validFileRef(strings.TrimSuffix(dir, "/")) {
+			return fileToken{}, false
+		}
+		v.base, v.dir = base, dir
+	}
+	return v, m.fileAvailable(v.dir)
+}
+
+func (m *Model) openPathRoots() {
+	if m.focusedDialog() != nil || m.slashHidden || m.editor.value() != "/" || !m.editor.atEnd() || !m.pathRootsAvailable() {
+		return
+	}
+	m.stopFileRequest()
+	m.slashHidden = true
+	m.files = filePicker{kind: fileRoots, sourceText: "/", owner: m.active, navigation: m.navigation}
+	m.refreshFilePicker()
+}
+
 func (m *Model) fileSearchQuery(v fileToken) string {
-	if v.dir != "" || !m.nativeFileSearch || m.options.Services.Files != nil || !m.currentFileScope().Workspace {
+	if v.kind != fileMention || v.dir != "" || !m.nativeFileSearch || m.options.Services.Files != nil || !m.currentFileScope().Workspace {
 		return ""
 	}
 	q := strings.TrimSpace(v.query)
@@ -111,9 +213,12 @@ func (m *Model) fileSuggestions() (fileToken, []x.File, bool) {
 	if m.files.generation == 0 || m.files.hidden || m.files.owner != m.active || m.files.navigation != m.navigation {
 		return fileToken{}, nil, false
 	}
-	v, ok := fileTokenAt(m.editor.value(), m.editor.cursorByte())
-	if !ok || v.start != m.files.start || v.dir != m.files.prefix || !m.fileAvailable(v.dir) || m.fileSearchQuery(v) != m.files.query {
+	v, ok := m.currentFileToken()
+	if !ok || !m.files.matches(v, m.fileSearchQuery(v)) {
 		return fileToken{}, nil, false
+	}
+	if v.kind == fileRoots {
+		return v, m.files.records, true
 	}
 	if m.files.query != "" {
 		return v, m.files.records, true // the backend matched and ranked these paths
@@ -134,20 +239,27 @@ func (m *Model) fileSuggestions() (fileToken, []x.File, bool) {
 	return v, choices, true
 }
 
+func (p *filePicker) matches(v fileToken, query string) bool {
+	return p.start == v.start && p.prefix == v.dir && p.query == query && p.kind == v.kind && p.base == v.base
+}
+
 func (m *Model) refreshFilePicker() tea.Cmd {
-	if m.focusedDialog() != nil || !strings.ContainsRune(m.editor.value(), '@') {
-		m.stopFileRequest()
-		return nil
-	}
-	v, ok := fileTokenAt(m.editor.value(), m.editor.cursorByte())
+	text := m.editor.value()
+	var v fileToken
+	var ok bool
 	// Before the first message only a prospective native scope can authorize
 	// the picker (see fileTarget). Typing never creates a thread.
-	if !ok || m.active == "" && m.options.Services.Files != nil || !m.fileAvailable(v.dir) {
-		m.stopFileRequest()
-		return nil
+	if m.focusedDialog() == nil && (m.active != "" || m.options.Services.Files == nil) && m.fileAvailable("") && strings.ContainsAny(text, "@~/") {
+		v, ok = m.currentFileToken()
 	}
 	p := &m.files
-	text := m.editor.value()
+	if !ok {
+		m.stopFileRequest()
+		if p.kind != fileMention && p.sourceText != text {
+			*p = filePicker{}
+		}
+		return nil
+	}
 	if p.sourceText != text {
 		p.hidden = false
 		p.sourceText = text
@@ -157,20 +269,31 @@ func (m *Model) refreshFilePicker() tea.Cmd {
 		return nil
 	}
 	query := m.fileSearchQuery(v)
-	if p.generation != 0 && p.owner == m.active && p.navigation == m.navigation && p.start == v.start && p.prefix == v.dir && p.query == query {
+	if p.generation != 0 && p.owner == m.active && p.navigation == m.navigation && p.matches(v, query) {
 		return nil
 	}
 	m.stopFileRequest()
 	generation := m.token()
 	*p = filePicker{owner: m.active, target: m.fileScope.target, navigation: m.navigation, start: v.start, prefix: v.dir, query: query,
-		sourceText: text, waiting: true, generation: generation}
+		kind: v.kind, base: v.base, sourceText: text, generation: generation}
+	if v.kind == fileRoots {
+		scope := m.currentFileScope()
+		if scope.Workspace {
+			p.records = append(p.records, x.File{Path: workspaceRootChoice, Directory: true})
+		}
+		if scope.Home {
+			p.records = append(p.records, x.File{Path: homeRootChoice, Directory: true})
+		}
+		return nil
+	}
+	p.waiting = true
 	if m.options.Services.Files == nil {
 		if query != "" {
 			p.request, p.cancel = context.WithCancel(m.fileScope.ctx)
 			return m.searchNativeFiles()
 		}
 		scope := m.currentFileScope()
-		if v.dir == "" && scope.Home {
+		if v.kind == fileMention && v.dir == "" && scope.Home {
 			p.records = []x.File{{Path: "~", Directory: true}}
 			if !scope.Workspace {
 				p.waiting = false
@@ -243,15 +366,20 @@ func (m *Model) replaceFile(target string) tea.Cmd {
 		return nil
 	}
 	f := choices[selected]
-	value := f.Path
+	value := v.base + f.Path
 	if f.Directory {
 		value += "/"
+	}
+	if v.kind == fileRoots {
+		value = m.rootChoicePath(f.Path)
 	}
 	quoted := strings.IndexFunc(value, unicode.IsSpace) >= 0
 	if quoted {
 		value = `"` + value + `"`
 	}
-	value = "@" + value
+	if v.kind == fileMention {
+		value = "@" + value
+	}
 	cursor := len(value)
 	if f.Directory && quoted {
 		cursor-- // remain inside the existing quotes without eating a suffix
@@ -261,16 +389,36 @@ func (m *Model) replaceFile(target string) tea.Cmd {
 	}
 	m.editor.replaceAt(v.start, v.end, value, cursor)
 	m.editor.resetHistory()
+	if !f.Directory && v.kind != fileMention {
+		// The caret can still be next to a path when there is text after it.
+		// Don't consume the next Enter by suggesting the same file again.
+		m.files.hidden, m.files.sourceText = true, m.editor.value()
+		m.stopFileRequest()
+		return nil
+	}
 	return m.refreshFilePicker()
 }
 
-func (m *Model) fileRows(w int) []displayRow {
+func (m *Model) rootChoicePath(choice string) string {
+	if choice == homeRootChoice {
+		return "~/"
+	}
+	if base := m.workspaceBrowsePath(); base != "" {
+		return base
+	}
+	return "@" // a host need not supply an absolute workspace path
+}
+
+func (m *Model) fileRows(w int) ([]displayRow, int) {
 	_, choices, ok := m.fileSuggestions()
 	if !ok {
-		return nil
+		return nil, 0
 	}
 	heading := "Workspace files"
-	if strings.HasPrefix(m.files.prefix, "~/") {
+	switch {
+	case m.files.kind == fileRoots:
+		heading = "Granted locations"
+	case strings.HasPrefix(m.files.prefix, "~/"):
 		heading = "Backend home files"
 	}
 	switch {
@@ -291,11 +439,24 @@ func (m *Model) fileRows(w int) []displayRow {
 		if item.Directory {
 			label += "/"
 		}
+		hint := "complete " + m.files.base + label
+		switch m.files.kind {
+		case fileMention:
+			hint = "complete @" + label
+		case fileHome, fileAbsolute:
+			label = strings.TrimPrefix(label, m.files.prefix)
+		case fileRoots:
+			name := "Workspace"
+			if item.Path == homeRootChoice {
+				name = "Backend home"
+			}
+			label, hint = name+" · "+m.rootChoicePath(item.Path), "browse "+name
+		}
 		pref, tone := "  ", x.Plain
 		if i == m.files.selected {
 			pref, tone = "› ", x.Accent
 		}
-		out = append(out, displayRow{text: paint(tone, pref+label), hits: []spanHit{{0, min(w, 2+stringWidth(label)), x.ActionRef{ID: filePickID, Target: item.Path}, "complete @" + label}}})
+		out = append(out, displayRow{text: paint(tone, pref+label), hits: []spanHit{{0, min(w, 2+stringWidth(label)), x.ActionRef{ID: filePickID, Target: item.Path}, hint}}})
 	}
 	if len(out) == 1 {
 		label := "No matches"
@@ -309,5 +470,5 @@ func (m *Model) fileRows(w int) []displayRow {
 		}
 		out = append(out, displayRow{text: paint(x.Muted, "  "+label)})
 	}
-	return out
+	return out, len(choices)
 }

@@ -1,20 +1,90 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import providers from "../../app/internal/authproviders/providers.json" with { type: "json" };
+import { credentialAdvice, hushCredentialStore } from "../../dist/backend/src/credentials.js";
 
 const exec = promisify(execFile);
 const bundle = fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url));
 
 test("the Hush picker offers the pinned Pi built-in OAuth providers", async () => {
-  const runtime = await ModelRuntime.create({ credentials: {}, modelsPath: null, refreshOnCreate: false });
+  const runtime = builtinModels();
   assert.deepEqual(providers.map(p => p.id).sort(), runtime.getProviders().filter(p => p.auth.oauth).map(p => p.id).sort());
   assert.equal(providers[0].id, "openai-codex");
+});
+
+test("file auth waits for an older process to rotate a credential before reading it", { timeout: 10_000 }, async t => {
+  const dir = await mkdtemp("/tmp/hush-legacy-auth-");
+  const path = join(dir, "auth.json");
+  const original = { type: "oauth", access: "original", refresh: "original-refresh", expires: 1 };
+  const rotated = { ...original, refresh: "rotated-refresh", issuedByOldBuild: true };
+  await writeFile(path, JSON.stringify({ fixture: original }), { mode: 0o600 });
+  const holder = spawn(process.execPath, ["--input-type=module", "-e", `
+    import lockfile from ${JSON.stringify(import.meta.resolve("proper-lockfile"))};
+    import { writeFile } from 'node:fs/promises';
+    import { once } from 'node:events';
+    const path = process.argv[1];
+    const unlock = await lockfile.lock(path, { stale: 30_000 });
+    const rotate = once(process.stdin, 'data');
+    console.log('held');
+    await rotate;
+    await writeFile(path, process.argv[2]);
+    await unlock();
+    process.stdin.pause();
+  `, path, JSON.stringify({ fixture: rotated })], {
+    env: { HOME: dir, PATH: dirname(process.execPath), NODE_NO_WARNINGS: "1" }, stdio: ["pipe", "pipe", "inherit"],
+  });
+  const ended = once(holder, "exit");
+  t.after(async () => {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+    await ended;
+    await rm(dir, { recursive: true, force: true });
+  });
+  const output = createInterface({ input: holder.stdout });
+  assert.equal((await output[Symbol.asyncIterator]().next()).value, "held");
+  output.close();
+  const { credentials } = await hushCredentialStore(dir, { createFile: false });
+  await assert.rejects(credentials.modify("fixture", async () => {
+    assert.fail("ran the provider exchange while an older writer owned auth.json");
+  }, { signal: AbortSignal.timeout(200) }), { name: "TimeoutError" });
+  const updated = { ...rotated, access: "accepted-new-access" };
+  const update = credentials.modify("fixture", async record => {
+    assert.deepEqual(record, rotated);
+    return updated;
+  }, { signal: AbortSignal.timeout(3_000) });
+  holder.stdin.end("rotate");
+  assert.deepEqual(await ended, [0, null]);
+  assert.deepEqual(await update, updated);
+  assert.deepEqual(await credentials.read("fixture"), updated);
+  await assert.rejects(stat(path + ".lock"), { code: "ENOENT" });
+});
+
+test("file auth refuses publication after losing lock ownership, without touching the next lock", async t => {
+  const dir = await mkdtemp("/tmp/hush-auth-lock-");
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "auth.json"), lock = path + ".lock";
+  const initial = '{"fixture":{"type":"api_key","key":"before\\nsecond-line"}}';
+  await writeFile(path, initial, { mode: 0o600 });
+  const { credentials } = await hushCredentialStore(dir, { createFile: false });
+  await assert.rejects(credentials.read("fixture"), error => {
+    assert.match(credentialAdvice(error), /API key.*single-line/);
+    assert.doesNotMatch(credentialAdvice(error), /second-line|lock/);
+    return true;
+  });
+  await assert.rejects(credentials.modify("fixture", async () => {
+    await rename(lock, lock + ".lost");
+    await mkdir(lock, { mode: 0o700 });
+    return { type: "api_key", key: "never-written" };
+  }), /Could not lock/);
+  assert.equal(await readFile(path, "utf8"), initial);
+  assert.equal((await stat(lock)).isDirectory(), true);
 });
 
 // Drive only a local, offline login. Secrets sent at the hidden prompt must

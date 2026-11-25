@@ -9,7 +9,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -22,35 +21,7 @@ const (
 	pollInterval = 40 * time.Millisecond
 )
 
-type Profile string
-
-const (
-	Hush Profile = "hush"
-	Pi   Profile = "pi"
-)
-
-func SelectProfile(value string, needPi bool) (Profile, error) {
-	if value == "" {
-		if needPi {
-			return Pi, nil
-		}
-		value = os.Getenv("HUSH_PROFILE")
-	}
-	switch Profile(value) {
-	case "", Hush:
-		if needPi {
-			return "", errors.New("Pi modes and options require the Pi profile")
-		}
-		return Hush, nil
-	case Pi:
-		return Pi, nil
-	default:
-		return "", errors.New("profile must be hush or pi")
-	}
-}
-
 type Options struct {
-	Profile    Profile
 	Socket     string // requested external Unix socket, if any
 	Bundle     string // trusted local Node entry point to use only on a cold start
 	AttachOnly bool   // resolve the path without sending hello or starting a process (raw relay)
@@ -60,9 +31,8 @@ type Options struct {
 }
 
 type target struct {
-	socket  string
-	agent   string // empty for an explicit socket or attach-only mode
-	profile Profile
+	socket string
+	agent  string // empty for an explicit socket
 }
 
 func resolveTarget(opts Options) (target, error) {
@@ -76,23 +46,15 @@ func resolveTarget(opts Options) (target, error) {
 		}
 		return target{socket: socket}, nil
 	}
-	profile, err := SelectProfile(string(opts.Profile), false)
-	if err != nil {
-		return target{}, err
-	}
-	agent, subdir, err := profile.directory()
+	agent, err := hushDirectory()
 	if err != nil {
 		return target{}, fmt.Errorf("resolve default backend (or use --socket): %w", err)
 	}
-	socket = filepath.Join(agent, subdir, "hush.sock")
-	if opts.AttachOnly {
-		return target{socket: socket, profile: profile}, nil
-	}
-	return target{socket: socket, agent: agent, profile: profile}, nil
+	return target{socket: filepath.Join(agent, "runtime", "hush.sock"), agent: agent}, nil
 }
 
 func (t target) clientOptions(opts sdk.ClientOptions) sdk.ClientOptions {
-	if t.profile == Hush {
+	if t.agent != "" {
 		opts.RequiredCapabilities = maps.Clone(opts.RequiredCapabilities)
 		if opts.RequiredCapabilities == nil {
 			opts.RequiredCapabilities = make(map[string]uint64, 1)
@@ -107,7 +69,7 @@ func (t target) clientOptions(opts sdk.ClientOptions) sdk.ClientOptions {
 // HUSH_SOCKET) is attach-only; its caller performs the application's handshake.
 func Resolve(ctx context.Context, opts Options) (string, error) {
 	t, err := resolveTarget(opts)
-	if err == nil && t.agent != "" {
+	if err == nil && t.agent != "" && !opts.AttachOnly {
 		err = t.ensure(ctx, opts.Bundle)
 	}
 	if err != nil {
@@ -141,18 +103,16 @@ func (t target) ensure(ctx context.Context, bundlePath string) error {
 	}
 	startup, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
-	if t.profile == Hush {
-		if installed, err := serviceInstalled(t.agent); err != nil {
-			return err
-		} else if installed {
-			return t.waitSupervisor(startup)
-		}
+	if installed, err := serviceInstalled(t.agent); err != nil {
+		return err
+	} else if installed {
+		return t.waitSupervisor(startup)
 	}
-	node, bundle, err := LocalRuntime(startup, bundlePath)
+	node, bundle, version, err := localRuntime(startup, bundlePath)
 	if err != nil {
 		return err
 	}
-	err = launch(startup, node, bundle, t)
+	err = launch(startup, node, bundle, version, t)
 	if errors.Is(err, errSupervised) { // An install raced the pre-launch probe.
 		return t.waitSupervisor(startup)
 	}
@@ -167,31 +127,15 @@ func (t target) ensure(ctx context.Context, bundlePath string) error {
 	return nil
 }
 
-func (profile Profile) directory() (path, subdir string, err error) {
-	if profile == Hush {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", "", err
-		}
-		if !filepath.IsAbs(home) {
-			return "", "", errors.New("HOME must be an absolute path")
-		}
-		return filepath.Join(home, ".hush"), "runtime", nil
+func hushDirectory() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
-	dir := os.Getenv("PI_CODING_AGENT_DIR")
-	if dir == "" || dir == "~" || strings.HasPrefix(dir, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", "", err
-		}
-		if dir == "" {
-			dir = filepath.Join(home, ".pi", "agent")
-		} else {
-			dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
-		}
+	if !filepath.IsAbs(home) {
+		return "", errors.New("HOME must be an absolute path")
 	}
-	path, err = filepath.Abs(dir)
-	return path, "hush", err
+	return filepath.Join(home, ".hush"), nil
 }
 
 func (t target) hello(ctx context.Context) error {

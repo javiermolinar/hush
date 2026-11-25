@@ -1,6 +1,6 @@
 # Release redistribution inventory
 
-The RC1 archives carry the Hush license and `THIRD_PARTY_NOTICES/` from this
+The standalone release archives carry the Hush license and `THIRD_PARTY_NOTICES/` from this
 directory. Its index gives a version, source and the applicable original
 license or attribution for each identified component. SHA-256 filenames
 deduplicate identical text. The notices do not claim that every compiled
@@ -10,8 +10,8 @@ input was retained by the linker. See [WASM rebuilds](../wasm/README.md).
   including platform-specific D-Bus and dynamic-loading modules.
   The npm lock and esbuild byte-contributor maps cover the main bundle and
   both workers. Separate entries account for generated/vendored code, data,
-  fonts, the six embedded WASM payloads and their runtime notices. Node.js
-  and build-only executables are not distributed.
+  the embedded WASM pack and other WASM payloads with their runtime notices.
+  Node.js and build-only executables are not distributed.
 - Pass through the exact copyright, permission, disclaimer and applicable
   notice texts for identified MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0,
   ISC, BlueOak-1.0.0, Unicode-3.0, Unicode-DFS-2016, and Apache-2.0 with LLVM

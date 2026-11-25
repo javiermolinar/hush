@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -119,6 +119,7 @@ try {
     seedFiles(work, 'documents', 80), seedFiles(work, 'many files', 3800),
   ]);
   await put(entry, `process.env.NODE_NO_WARNINGS = '1';\nif (process.argv.includes('--supervisor')) process.argv.push('--faux');\n${await readFile(bundle, 'utf8')}`);
+  await copyFile(bundle + '.wasm-pack', entry + '.wasm-pack');
   const token = randomUUID();
   await invoke(process.execPath, [entry, '--hush-internal-service-claim', token]);
   for (const cwd of [work, sub]) await cli('trust', 'grant', '--cwd', cwd);

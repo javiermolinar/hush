@@ -14,12 +14,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-
-	"github.com/javiermolinar/hush/app/internal/filelist"
-	"github.com/javiermolinar/hush/app/internal/keyring"
 	"syscall"
 	"time"
 
+	"github.com/javiermolinar/hush/app/internal/filelist"
+	"github.com/javiermolinar/hush/app/internal/keyring"
 	"github.com/javiermolinar/hush/sdk"
 )
 
@@ -45,15 +44,16 @@ func findBundle(path string) (string, error) {
 		}
 		return entry, nil
 	}
+	name := "hush-backend.mjs"
 	if len(releaseBackend) != 0 {
 		return embeddedBundle, nil
 	}
 	if executable, err := os.Executable(); err == nil {
 		if real, err := filepath.EvalSymlinks(executable); err == nil {
 			bin := filepath.Dir(real)
-			paths := []string{filepath.Join(bin, "hush-backend.mjs")}
+			paths := []string{filepath.Join(bin, name)}
 			if filepath.Base(bin) == "bin" {
-				paths = append(paths, filepath.Join(filepath.Dir(bin), "dist", "hush-backend.mjs"))
+				paths = append(paths, filepath.Join(filepath.Dir(bin), "dist", name))
 			}
 			for _, entry := range paths {
 				if info, err := os.Stat(entry); err == nil && info.Mode().IsRegular() {
@@ -68,31 +68,31 @@ func findBundle(path string) (string, error) {
 
 var nodeVersion = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.[0-9]+$`)
 
-func findNode(ctx context.Context) (string, error) {
-	path, err := exec.LookPath("node")
+func findNode(ctx context.Context) (path, version string, err error) {
+	path, err = exec.LookPath("node")
 	if err != nil {
-		return "", errors.New("starting a local backend requires Node.js 22.19.0 or newer on PATH")
+		return "", "", errors.New("starting a local backend requires Node.js 22.19.0 or newer on PATH")
 	}
 	check, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(check, path, "--version").Output()
 	if err != nil {
-		return "", fmt.Errorf("check Node.js version: %w", err)
+		return "", "", fmt.Errorf("check Node.js version: %w", err)
 	}
-	version := strings.TrimSpace(string(out))
+	version = strings.TrimSpace(string(out))
 	match := nodeVersion.FindStringSubmatch(version)
 	if match == nil {
-		return "", errors.New("could not read the Node.js version (requires 22.19.0 or newer)")
+		return "", "", errors.New("could not read the Node.js version (requires 22.19.0 or newer)")
 	}
 	major, majorErr := strconv.Atoi(match[1])
 	minor, minorErr := strconv.Atoi(match[2])
 	if majorErr != nil || minorErr != nil {
-		return "", errors.New("could not read the Node.js version (requires 22.19.0 or newer)")
+		return "", "", errors.New("could not read the Node.js version (requires 22.19.0 or newer)")
 	}
 	if major < 22 || major == 22 && minor < 19 {
-		return "", fmt.Errorf("starting a local backend requires Node.js 22.19.0 or newer; found %s", version)
+		return "", "", fmt.Errorf("starting a local backend requires Node.js 22.19.0 or newer; found %s", version)
 	}
-	return path, nil
+	return path, version, nil
 }
 
 var errContended = errors.New("another backend holds the data-directory lock")
@@ -106,9 +106,14 @@ type startupRecord struct {
 
 // LocalRuntime selects the installed backend and checks the minimum Node version.
 func LocalRuntime(ctx context.Context, bundle string) (node, entry string, err error) {
+	node, entry, _, err = localRuntime(ctx, bundle)
+	return
+}
+
+func localRuntime(ctx context.Context, bundle string) (node, entry, version string, err error) {
 	entry, err = findBundle(bundle)
 	if err == nil {
-		node, err = findNode(ctx)
+		node, version, err = findNode(ctx)
 	}
 	return
 }
@@ -123,8 +128,7 @@ func LocalInvocation(ctx context.Context, bundle string) (node, entry string, cl
 	return
 }
 
-// Each launch gets a fresh private directory. No existing executable content
-// is reused and the entry isn't passed to Node until the write has closed.
+// Foreground and uncached launches get a unique private directory.
 func materialize(entry string) (string, func() error, error) {
 	if entry != embeddedBundle {
 		return entry, func() error { return nil }, nil
@@ -147,53 +151,58 @@ func materialize(entry string) (string, func() error, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("create backend bundle directory: %w", err)
 	}
-	cleanup := func() error { return os.RemoveAll(dir) }
-	entry = filepath.Join(dir, "hush-backend.mjs")
-	// O_EXCL with O_CREATE refuses even a dangling symlink.
-	file, err := os.OpenFile(entry, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o400)
-	if err == nil {
-		_, err = file.Write(releaseBackend)
-		err = errors.Join(err, file.Close())
+	return extractEmbedded(dir, func() error { return os.RemoveAll(dir) })
+}
+
+// Never reuse existing executable contents, even when the directory's name
+// is stable. O_EXCL refuses even a dangling symlink.
+func extractEmbedded(dir string, cleanup func() error) (string, func() error, error) {
+	entry := filepath.Join(dir, "hush-backend.mjs")
+	write := func(path string, data []byte) error {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o400)
+		if err != nil {
+			return err
+		}
+		_, err = file.Write(data)
+		return errors.Join(err, file.Close())
 	}
-	if err != nil {
+	if err := write(entry, releaseBackend); err != nil {
 		return "", nil, fmt.Errorf("extract embedded backend: %w", errors.Join(err, cleanup()))
+	}
+	if err := write(entry+".wasm-pack", releaseWasmPack); err != nil {
+		return "", nil, fmt.Errorf("extract embedded WASM pack: %w", errors.Join(err, cleanup()))
 	}
 	return entry, cleanup, nil
 }
 
-// RuntimeEnv removes inherited Pi session/settings selectors for the standalone
-// child. Provider-specific environment credentials remain an explicit alternative.
-func RuntimeEnv(profile Profile) []string {
+// RuntimeEnv isolates the Hush profile and pins the trusted host helpers.
+func RuntimeEnv() []string {
 	env := os.Environ()
-	if profile == Hush {
-		out := env[:0]
-		for _, item := range env {
-			if !strings.HasPrefix(item, "PI_") && !strings.HasPrefix(item, keyring.HelperEnv+"=") && !strings.HasPrefix(item, filelist.HelperEnv+"=") {
-				out = append(out, item)
-			}
+	out := env[:0]
+	for _, item := range env {
+		if !strings.HasPrefix(item, "PI_") && !strings.HasPrefix(item, "HUSH_PROFILE=") &&
+			!strings.HasPrefix(item, keyring.HelperEnv+"=") && !strings.HasPrefix(item, filelist.HelperEnv+"=") {
+			out = append(out, item)
 		}
-		// The trusted backend can call the installed binary without PATH
-		// lookup. No provider credential is passed in argv or the environment.
-		if exe, err := os.Executable(); err == nil {
-			out = append(out, keyring.HelperEnv+"="+exe, filelist.HelperEnv+"="+exe)
-		}
-		env = out
 	}
-	return env
+	if exe, err := os.Executable(); err == nil {
+		out = append(out, keyring.HelperEnv+"="+exe, filelist.HelperEnv+"="+exe)
+	}
+	return out
 }
 
-func launch(ctx context.Context, node, bundle string, t target) (resultErr error) {
+func launch(ctx context.Context, node, bundle, version string, t target) (resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	entry, cleanup, err := materialize(bundle)
+	entry, cache, cleanup, err := managedInvocation(bundle, node, version, t)
 	if err != nil {
 		return err
 	}
-	// The startup record (or EOF) follows evaluation of the single-file
-	// module. There are no later loads of this entry or adjacent assets.
+	// The startup record (or EOF) follows module evaluation and pinning the
+	// asset pack's file descriptor. Neither path is needed after ready.
 	defer func() {
-		if err := cleanup(); err != nil {
+		if err := cleanup(resultErr == nil); err != nil {
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
@@ -203,14 +212,9 @@ func launch(ctx context.Context, node, bundle string, t target) (resultErr error
 	}
 	defer reader.Close()
 	defer writer.Close()
-	args := []string{entry, "--data-dir", filepath.Dir(t.socket), "--startup-fd", "3"}
-	if t.profile == Pi {
-		args = append(args, "--agent-dir", t.agent, "--pi-events")
-	} else {
-		args = append(args, "--profile", string(Hush))
-	}
+	args := []string{entry, "--data-dir", filepath.Dir(t.socket), "--startup-fd", "3", "--profile", "hush"}
 	cmd := exec.Command(node, args...)
-	cmd.Env = RuntimeEnv(t.profile)
+	cmd.Env = managedRuntimeEnv(cache)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.ExtraFiles = []*os.File{writer}
 	// Deliberately leave all three standard streams at /dev/null. The backend
@@ -255,6 +259,10 @@ func readStartup(r io.Reader, socket string) error {
 			return fmt.Errorf("could not start backend (%s); run 'hush store inspect' on the backend host: %w", status.Error, sdk.ErrStoreIncompatible)
 		case "credential_configuration":
 			return errors.New("set ~/.hush/credential-store to file or keyring (private, mode 600), then restart the Hush backend")
+		case "models_configuration":
+			return errors.New("invalid ~/.hush/models.json; check ~/.hush/runtime/hush.log, fix the file and restart Hush")
+		case "wasm_pack":
+			return errors.New("backend .wasm-pack is missing or invalid; rebuild or reinstall the paired backend files")
 		case "configuration", "socket_directory", "socket_unavailable", "startup_failed", "shutdown_failed":
 			return fmt.Errorf("could not start backend (%s)", status.Error)
 		}

@@ -48,9 +48,9 @@ type threadState struct {
 	status                                                   map[string]extension.SetStatus
 	lastAnswer                                               string
 	lastAnswerID                                             sdk.ID
-	draft                                                    string
+	draft                                                    promptDraft
 	stagedSkill                                              stagedSkill
-	history                                                  []string
+	history                                                  []promptDraft
 	aborting, sending                                        bool
 	activeRun, observed                                      bool
 	hasImages, attaching                                     bool

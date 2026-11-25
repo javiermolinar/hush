@@ -1,6 +1,6 @@
 # Standalone MVP candidate baseline
 
-`standalone-rc-2026-11-23` is the initial test baseline for native store cutover. It is an unpublished, unsigned candidate, not a released predecessor. The reproducible clean-install path for the candidate uses the bundled backend, Hush-owned login and model catalog, and system Node.js 22.19.0. It does not require a Pi installation, profile, or `piEvents`.
+`standalone-rc-2026-11-23` is the initial test baseline for native store cutover. It is an unpublished, unsigned candidate, not a released predecessor. The reproducible clean-install path for the candidate uses the bundled backend, Hush-owned login and model catalog, and system Node.js 22.19.0. It does not require a Pi installation.
 
 | Artifact | SHA-256 |
 | --- | --- |

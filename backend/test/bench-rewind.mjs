@@ -37,7 +37,7 @@ test("preview and confirm a 100k-file rewind while another peer streams", { time
   await git("add", ".");
   await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "100k files");
   await run(process.execPath, [fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url)), "trust", "grant", "--cwd", cwd], { cwd, env });
-  const app = await startBackend({ cwd, agentDir, dataDir, socket, profile: "hush", idleMs: 30_000, ephemeral: false, faux: true });
+  const app = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
   let peer, streamer;
   const histogram = monitorEventLoopDelay({ resolution: 1 });
   try {

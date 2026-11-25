@@ -3,7 +3,6 @@ package tui
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -38,11 +37,6 @@ type MenuServices struct {
 type helloBackend interface {
 	Hello(context.Context) (sdk.Hello, error)
 }
-type piCatalogBackend interface {
-	helloBackend
-	PiCatalog(context.Context) ([]json.RawMessage, error)
-}
-
 type modelCatalogBackend interface {
 	helloBackend
 	ModelCatalog(context.Context, sdk.ID) (sdk.ModelCatalog, error)
@@ -131,8 +125,6 @@ func (m *Model) receiveMenuProbeFailure(token uint64) tea.Cmd {
 // retry. Update paths use retryMenuProbe to keep one in flight.
 func (m *Model) menuProbe() tea.Cmd {
 	backend, ok := m.backend.(helloBackend)
-	_, catalog := m.backend.(piCatalogBackend)
-	_, intro := m.backend.(introBackend)
 	_, titles := m.backend.(renameBackend)
 	_, directory := m.backend.(directoryWatchBackend)
 	_, worktrees := m.backend.(worktreeBackend)
@@ -151,9 +143,8 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, search := m.backend.(modelCatalogSearchBackend)
 	_, draft := m.backend.(modelCatalogDraftBackend)
 	_, settings := m.backend.(settingsBackend)
-	catalog = catalog && m.options.Services.Models == nil
 	native = native && m.options.Services.Models == nil
-	if !ok || !native && !catalog && !intro && !titles && !directory && !worktrees && !archive &&
+	if !ok || !native && !titles && !directory && !worktrees && !archive &&
 		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings {
 		return nil
 	}
@@ -184,14 +175,7 @@ func (m *Model) menuProbe() tea.Cmd {
 		if settings && hello.Capabilities["settings"] == sdk.SettingsVersion {
 			f |= x.Settings
 		}
-		if catalog && hello.Capabilities["piEvents"] == sdk.PiEventsVersion {
-			f |= x.Catalog
-		}
-		version := hello.Capabilities["intro"]
-		if intro && hello.Capabilities["piEvents"] == sdk.PiEventsVersion && (version == sdk.IntroVersion || version == sdk.IntroActionsVersion) {
-			f |= x.Skills
-		}
-		if titles && version == sdk.IntroActionsVersion {
+		if titles && hello.Capabilities["intro"] == sdk.IntroActionsVersion {
 			f |= x.Titles
 		}
 		managed := hello.Capabilities["threadDirectory"] == sdk.ThreadManagementVersion
@@ -252,28 +236,6 @@ func (m *Model) menuFeatures() x.Features {
 }
 
 var levels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
-
-func modelsFromPi(ctx context.Context, backend piCatalogBackend) ([]x.CatalogModel, error) {
-	data, err := backend.PiCatalog(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]x.CatalogModel, 0, len(data))
-	for _, raw := range data {
-		var model struct {
-			Provider, ID, Name string
-			ContextWindow      uint64
-		}
-		if json.Unmarshal(raw, &model) != nil || model.Provider == "" || model.ID == "" {
-			continue
-		}
-		// The public Pi catalog does not include each model's thinking-level
-		// map. Offer the portable 'off' setting here; do not infer provider tiers.
-		out = append(out, x.CatalogModel{Model: sdk.Model{Provider: model.Provider, ModelID: model.ID}, Label: model.Name,
-			ContextWindow: model.ContextWindow, ThinkingLevels: []string{"off"}})
-	}
-	return out, nil
-}
 
 func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Context) x.ClientResult, bool) {
 	if job, ok := m.settingsJob(operation); ok {
@@ -348,9 +310,6 @@ func (m *Model) menuJob(r ownerRoute, operation x.Operation) (func(context.Conte
 				}
 				return nativeModels(catalog, op)
 			}, true
-		}
-		if backend, ok := m.backend.(piCatalogBackend); hook == nil && ok && features.Has(x.Catalog) {
-			hook = func(ctx context.Context) ([]x.CatalogModel, error) { return modelsFromPi(ctx, backend) }
 		}
 		if hook != nil {
 			return func(ctx context.Context) x.ClientResult {

@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import type { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { Models } from "@earendil-works/pi-ai";
 import { AgentDoc, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import type { NativeHost } from "../../server/src/index.js";
 import { modelCatalogLimit, modelKey, publicCatalogText, type Catalog, type CatalogRow, type ModelCatalogHost,
@@ -10,7 +10,7 @@ import { WireError } from "../../server/src/wire.js";
 const projectRef = ({ provider, modelId }: ModelRef): ModelRef => ({ provider, modelId });
 const publicRef = (ref: ModelRef) => publicCatalogText(ref.provider) && publicCatalogText(ref.modelId);
 
-export function nativeModelCatalog(h: Harness, runtime: ModelRuntime, registry: ModelRegistry,
+export function nativeModelCatalog(h: Harness, runtime: Models,
     defaultModel: () => ModelRef): ModelCatalogHost {
   async function list(threadId: string | undefined, signal: AbortSignal, query = ""): Promise<Catalog> {
     let current: ModelRef | null = null;
@@ -43,7 +43,7 @@ export function nativeModelCatalog(h: Harness, runtime: ModelRuntime, registry: 
       const key = modelKey(ref);
       if (seen.has(key) || !publicRef(ref)) return;
       seen.add(key);
-      const physical = runtime.getPhysicalModel(ref.provider, ref.modelId) && runtime.getModel(ref.provider, ref.modelId);
+      const physical = runtime.getModel(ref.provider, ref.modelId);
       const label = publicCatalogText(physical?.name) ? physical.name : ref.modelId;
       if (!matches(ref, label)) return;
       if (!physical) {
@@ -68,7 +68,7 @@ export function nativeModelCatalog(h: Harness, runtime: ModelRuntime, registry: 
     await add(fallback, true);
     // Cap matching rows, not the inventory. Check credentials only for
     // matching providers and preserve runtime order within each bucket.
-    for (const model of registry.getAll()) {
+    for (const model of runtime.getModels()) {
       if (priority.length + usable.length >= modelCatalogLimit) break;
       await add({ provider: model.provider, modelId: model.id }, false);
     }
@@ -79,10 +79,10 @@ export function nativeModelCatalog(h: Harness, runtime: ModelRuntime, registry: 
     draft: (query, signal) => list(undefined, signal, query) };
 }
 
-export function nativeSelectionValidator(runtime: ModelRuntime, requireModel: NativeHost["requireModel"]):
+export function nativeSelectionValidator(runtime: Models, requireModel: NativeHost["requireModel"]):
     NonNullable<NativeHost["validateSelection"]> {
   return async (ref, level) => {
-    const model = ref && runtime.getPhysicalModel(ref.provider, ref.modelId) && runtime.getModel(ref.provider, ref.modelId);
+    const model = ref && runtime.getModel(ref.provider, ref.modelId);
     if (!model || !getSupportedThinkingLevels(model).some(tier => tier === level)) {
       const error = new WireError("invalid_request");
       error.message = model ? "Thinking level is not supported by the selected model. Reopen /thinking or /model." :
