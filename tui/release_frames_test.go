@@ -169,6 +169,11 @@ func TestReleaseFrames(t *testing.T) {
 
 			enableGitDiffFixture(m, s)
 			s.info.Branch = s.gitDiff.summary.Branch
+			m.runAction(m.host.byID[usageID], "")
+			if body := shot("usage-details"); !strings.Contains(body, "Current context: 26000 of 100000 tokens") {
+				t.Fatal("usage details did not show current context")
+			}
+			press(m, tea.KeyEscape, 0)
 			m.openGitDiff(m.route(m.active, coreID))
 			if body := shot("git-diff-scope"); !strings.Contains(body, "/work/project/src  ⎇ feature/review") {
 				t.Fatal("Git review did not show its workspace and branch")

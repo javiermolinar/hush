@@ -25,6 +25,7 @@ type dialog struct {
 	route                       ownerRoute
 	budget                      *int
 	placement                   x.Placement
+	anchorBottom                bool
 	title, message, query       string
 	choices                     []x.Choice
 	filtered                    []int
@@ -92,9 +93,8 @@ func (m *Model) openDialog(r ownerRoute, e x.Effect, budget *int) tea.Cmd {
 			}
 		}
 	case x.ReviewDialog:
-		d.title, d.review = oneLine(v.Title), true
-		d.output = newOutputViewer(limitText(v.Text, 64<<10))
-		d.output.reflowReview(m.dialogWidth(d) - 4)
+		d.title = oneLine(v.Title)
+		m.setReviewText(d, v.Text)
 		if v.Done != nil {
 			d.done = func(c x.Context, _ any, ok bool) x.Outcome {
 				return v.Done(c, x.Reply[bool]{Value: ok, Accepted: ok})
@@ -146,6 +146,12 @@ func (m *Model) openDialog(r ownerRoute, e x.Effect, budget *int) tea.Cmd {
 		}
 	}
 	return tea.Batch(out, cmd)
+}
+
+func (m *Model) setReviewText(d *dialog, text string) {
+	d.review = true
+	d.output = newOutputViewer(limitText(text, 64<<10))
+	d.output.reflowReview(m.dialogWidth(d) - 4)
 }
 
 func (m *Model) pushDialog(d *dialog) tea.Cmd {

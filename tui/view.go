@@ -351,7 +351,7 @@ func (m *Model) View() tea.View {
 			anchorSpace = max(0, f.transcriptHeight-paletteMaxHeight)
 		}
 		top := min(space, anchorSpace/3+2*i)
-		if d.git != nil && !d.git.patch {
+		if d.anchorBottom {
 			top = space
 		}
 		for j, row := range rows {

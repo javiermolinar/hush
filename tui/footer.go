@@ -173,6 +173,9 @@ func contextLimit(t x.Thread) uint64 {
 }
 
 func (m *Model) openUsage(r ownerRoute, t *threadState, budget *int) tea.Cmd {
+	if !m.foreground(r) {
+		return nil
+	}
 	thread := m.footerThread(t)
 	usage := thread.Usage
 	text := fmt.Sprintf("Total tokens: %d\nSpend: $%.2f", usage.TotalTokens, usage.CostUSD)
@@ -183,7 +186,9 @@ func (m *Model) openUsage(r ownerRoute, t *threadState, budget *int) tea.Cmd {
 		}
 		text += fmt.Sprintf("\n\nCurrent context: %s of %d tokens", used, contextLimit(thread))
 	}
-	return m.openDialog(r, x.ReviewDialog{Title: "Usage details", Text: text}, budget)
+	d := &dialog{route: r, token: m.token(), budget: budget, title: "Usage details", anchorBottom: true}
+	m.setReviewText(d, text)
+	return m.pushDialog(d)
 }
 
 func tokenLabel(n uint64) string {

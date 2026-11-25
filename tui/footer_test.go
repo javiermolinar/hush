@@ -84,6 +84,9 @@ func TestFooterUsageDetails(t *testing.T) {
 			t.Fatalf("missing %q:\n%s", want, frame)
 		}
 	}
+	if got := m.frame.dialogY + m.frame.dialogHeight; got != m.frame.transcriptHeight {
+		t.Fatalf("usage popover bottom = %d, want transcript bottom %d", got, m.frame.transcriptHeight)
+	}
 	press(m, tea.KeyEscape, 0)
 	if m.focusedDialog() != nil {
 		t.Fatal("usage dialog did not close")
