@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
 import { basename, dirname, join } from 'node:path';
@@ -282,7 +282,7 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
     import { isMainThread } from 'node:worker_threads';
     if (isMainThread) {
       const entry = process.argv[1];
-      appendFileSync(${JSON.stringify(log)}, JSON.stringify({ pid: process.pid, entry, args: process.argv.slice(2),
+      appendFileSync(${JSON.stringify(log)}, JSON.stringify({ pid: process.pid, ppid: process.ppid, entry, args: process.argv.slice(2),
         version: process.version, mode: lstatSync(entry).mode & 0o777, dirMode: lstatSync(dirname(entry)).mode & 0o777,
         compileCache: getCompileCacheDir(), sha: createHash('sha256').update(readFileSync(entry)).digest('hex') }) + '\\n');
     }
@@ -566,6 +566,18 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
     assert.equal(r.sha, digest, 'extracted bytes differ from lockfile-built artifact');
     assert.equal(r.mode, 0o400);
     assert.equal(r.dirMode, 0o700);
-    await absent(dirname(r.entry));
+    const dir = dirname(r.entry);
+    try {
+      await absent(dir);
+    } catch (error) {
+      t.diagnostic(JSON.stringify({ remainingNode: { pid:r.pid, ppid:r.ppid, args:r.args, compileCache:!!r.compileCache }, directory: dir,
+        matches: records.filter(row => dirname(row.entry) === dir).map(row => ({ pid:row.pid, ppid:row.ppid, args:row.args })),
+        members: await readdir(dir).catch(e => e.code),
+        liveAtFailure: await stat('/proc/'+r.pid).then(() => true, () => false) }));
+      await delay(1000);
+      t.diagnostic(JSON.stringify({ after1000ms: await readdir(dir).catch(e => e.code),
+        liveAfter1000ms: await stat('/proc/'+r.pid).then(() => true, () => false) }));
+      throw error;
+    }
   }
 });

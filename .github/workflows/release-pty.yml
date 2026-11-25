@@ -19,7 +19,7 @@ defaults:
 jobs:
   walkthrough:
     name: Walk through TUI login and model selection (Linux amd64)
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/verify/rc2-pty-diagnostic-a200d123'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -55,7 +55,8 @@ jobs:
           printf 'run_id=%s\nsha=%s\nartifact=%s\n' "$RUN_ID" "$sha" "$artifact" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.candidate.outputs.sha }}
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
@@ -72,6 +73,7 @@ jobs:
           SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
           HUSH_PERF_MODE: report
         run: |
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
           archive_dir="$RUNNER_TEMP/hush-release-artifact"
           evidence="$archive_dir/evidence/candidate.txt"
           grep -Fx "commit: $SOURCE_SHA" "$evidence"
