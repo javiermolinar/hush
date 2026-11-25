@@ -215,8 +215,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const fauxPlan = planEnabled && config.faux;
     const browser = trust && config.dataDir ? await workspaceFileHelper() : undefined;
     const planFiles = planEnabled && !config.faux && !modelIssue && browser && trust && config.dataDir
-      ? await PlanFiles.open(browser, trust, [config.agentDir, config.dataDir], cwd => {
-        gitDiff?.invalidate(cwd);
+      ? await PlanFiles.open(browser, trust, [config.agentDir, config.dataDir], () => {
+        gitDiff?.invalidate();
         workspaceFiles?.invalidateSearch();
       }) : undefined;
     const author = planEnabled ? planAuthor(() => h!, cwd => resources.directory(cwd), fauxPlan, planFiles) : undefined;
