@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -31,18 +32,19 @@ func (m *Model) ProgramOptions() []tea.ProgramOption {
 // retains ownership of backend. No app CLI or backend launch policy is implied.
 func (m *Model) Run(options ...tea.ProgramOption) error {
 	defer m.Close()
-	// Embedded programs can override Tea's output and window size. Only
-	// enable motion when Run owns the default stdout terminal.
+	// Embedded programs can override Tea's output and window size.
+	fd := os.Stdout.Fd()
+	ownsTTY := len(options) == 0 && term.IsTerminal(fd)
 	if m.intro != nil && len(options) == 0 {
 		m.intro.profile = colorprofile.Env(os.Environ())
-		if fd := os.Stdout.Fd(); term.IsTerminal(fd) {
+		if ownsTTY {
 			if w, h, err := term.GetSize(fd); err == nil && w > 0 && h > 0 {
 				m.intro.tty, m.width, m.height = true, w, h
 				m.resizeEditors()
 			}
 		}
 	}
-	if len(options) == 0 && m.images.mode == ImageKitty && term.IsTerminal(os.Stdout.Fd()) {
+	if ownsTTY && m.images.mode == ImageKitty {
 		out := &imageOutput{File: os.Stdout, events: make(chan imageScreen, 1)}
 		if kittyTerminal() {
 			out.painted = make(chan imagePainted, previewCacheSize)
@@ -50,7 +52,21 @@ func (m *Model) Run(options ...tea.ProgramOption) error {
 		m.images.output = out
 		options = append(options, tea.WithOutput(out))
 	}
-	_, err := tea.NewProgram(m, append(options, m.ProgramOptions()...)...).Run()
+	options = append(options, m.ProgramOptions()...)
+	var size atomic.Pointer[tea.WindowSizeMsg]
+	if ownsTTY {
+		options = append(options, tea.WithFilter(func(model tea.Model, msg tea.Msg) tea.Msg {
+			if v, ok := msg.(tea.WindowSizeMsg); ok {
+				size.Store(&v)
+			}
+			return motionFilter(model, msg)
+		}))
+	}
+	program := tea.NewProgram(m, options...)
+	if ownsTTY {
+		go watchTerminalSize(m.ctx, fd, &size, program.Send)
+	}
+	_, err := program.Run()
 	if m.host.startupErr != nil {
 		return m.host.startupErr
 	}
@@ -58,6 +74,29 @@ func (m *Model) Run(options ...tea.ProgramOption) error {
 		return nil
 	}
 	return err
+}
+
+// A pane's PTY can change size without delivering SIGWINCH. Keep Tea's
+// normal resize handling as the fast path and reconcile against the PTY off
+// the UI loop. Send only on a mismatch so idle panes don't repaint.
+func watchTerminalSize(ctx context.Context, fd uintptr, size *atomic.Pointer[tea.WindowSizeMsg], send func(tea.Msg)) {
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			w, h, err := term.GetSize(fd)
+			if err != nil || w <= 0 || h <= 0 {
+				continue
+			}
+			current := tea.WindowSizeMsg{Width: w, Height: h}
+			if last := size.Load(); last == nil || *last != current {
+				send(current)
+			}
+		}
+	}
 }
 
 type interceptedKeys map[string]bool
