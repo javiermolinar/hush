@@ -8,13 +8,16 @@ import (
 )
 
 const (
-	GitDiffVersion    = 1
-	GitDiffHead       = "head"
-	GitDiffCheckpoint = "checkpoint"
-	gitDiffCapability = "gitDiff"
-	gitDiffPrefix     = "ext.gitDiff."
-	gitDiffFileLimit  = 128
-	gitDiffLineLimit  = 1500
+	GitDiffVersion         = 1
+	GitDiffWatchVersion    = 1
+	GitDiffHead            = "head"
+	GitDiffCheckpoint      = "checkpoint"
+	gitDiffCapability      = "gitDiff"
+	gitDiffWatchCapability = "gitDiffWatch"
+	gitDiffWaitMethod      = "ext.gitDiffWatch.wait"
+	gitDiffPrefix          = "ext.gitDiff."
+	gitDiffFileLimit       = 128
+	gitDiffLineLimit       = 1500
 )
 
 // GitDiffNeedsTrust reports the gitDiff:1 workspace-trust denial, not a
@@ -102,26 +105,79 @@ func (c *Client) GitDiffSummary(ctx context.Context, thread ID, baseline string)
 	if !thread.Valid() || baseline != GitDiffHead && baseline != GitDiffCheckpoint {
 		return GitDiffSummary{}, ErrProtocol
 	}
-	// Cancellation closes the passive connection, rather than leaving a Git
-	// command running on the chat/abort connection after switching threads.
-	out, err := waitOnCapability[GitDiffSummary](ctx, c, gitDiffPrefix+"summary",
+	// The lease is exclusive and cancellation closes it, leaving the
+	// command connection and other metadata requests alone.
+	out, err := metadataRead[GitDiffSummary](ctx, c, gitDiffPrefix+"summary",
 		map[string]any{"threadId": thread, "range": baseline}, gitDiffCapability, GitDiffVersion)
 	if err != nil {
 		return GitDiffSummary{}, err
 	}
-	if !scheduleID.MatchString(out.Revision) || out.Range != baseline || !gitCommit.MatchString(out.Commit) ||
-		baseline == GitDiffCheckpoint && !out.Checkpoint || out.Files == nil || len(out.Files) > gitDiffFileLimit ||
-		len(out.Branch) > 1024 || strings.ContainsFunc(out.Branch, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+	if !out.valid(baseline) {
 		return GitDiffSummary{}, ErrProtocol
 	}
-	seen := make(map[string]bool, len(out.Files))
-	for _, f := range out.Files {
+	return out, nil
+}
+
+func (s GitDiffSummary) valid(baseline string) bool {
+	if !scheduleID.MatchString(s.Revision) || s.Range != baseline || !gitCommit.MatchString(s.Commit) ||
+		baseline == GitDiffCheckpoint && !s.Checkpoint || s.Files == nil || len(s.Files) > gitDiffFileLimit ||
+		len(s.Branch) > 1024 || strings.ContainsFunc(s.Branch, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return false
+	}
+	seen := make(map[string]bool, len(s.Files))
+	for _, f := range s.Files {
 		if !f.valid() || seen[f.Path] {
-			return GitDiffSummary{}, ErrProtocol
+			return false
 		}
 		seen[f.Path] = true
 	}
-	return out, nil
+	return true
+}
+
+// GitDiffUpdate is an observed HEAD summary or availability error. A
+// nonempty Revision identifies the observed state; it is not a file locator.
+// An Err without Revision is a failed request or lost connection.
+type GitDiffUpdate struct {
+	Revision string
+	Summary  GitDiffSummary
+	Err      error
+}
+
+// WatchGitDiff observes the thread's HEAD summary on a dedicated connection.
+// Offer gitDiff:1 and gitDiffWatch:1. Cancel ctx when leaving the thread.
+func (c *Client) WatchGitDiff(ctx context.Context, thread ID) <-chan GitDiffUpdate {
+	w := workspaceWatch{method: gitDiffWaitMethod, capability: gitDiffWatchCapability, version: GitDiffWatchVersion,
+		base: gitDiffCapability, baseVersions: []uint64{GitDiffVersion}}
+	if thread.Valid() {
+		w.params = map[string]any{"threadId": thread}
+	}
+	return watchWorkspace(ctx, c, w, decodeGitDiffUpdate, func(err error) GitDiffUpdate { return GitDiffUpdate{Err: err} })
+}
+
+func decodeGitDiffUpdate(raw any) (GitDiffUpdate, string, error) {
+	v, err := decode[struct {
+		Revision string          `json:"revision"`
+		Summary  *GitDiffSummary `json:"summary,omitempty"`
+		Error    *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}](raw)
+	fields, ok := raw.(map[string]any)
+	if err != nil || !ok || len(fields) != 2 || (v.Summary == nil) == (v.Error == nil) {
+		return GitDiffUpdate{}, "", ErrProtocol
+	}
+	if v.Summary != nil && v.Summary.valid(GitDiffHead) {
+		return GitDiffUpdate{Revision: v.Revision, Summary: *v.Summary}, v.Revision, nil
+	}
+	if v.Error != nil && v.Error.Message != "" && len(v.Error.Message) <= 512 {
+		switch v.Error.Code {
+		case "invalid_request", "invalid_cursor", "not_found", "limit", "internal":
+			e := &ServerError{Code: v.Error.Code, Message: v.Error.Message}
+			return GitDiffUpdate{Revision: v.Revision, Err: e}, v.Revision, nil
+		}
+	}
+	return GitDiffUpdate{}, "", ErrProtocol
 }
 
 // GitDiffFile fetches one zero-based file from a summary in the same thread.
@@ -129,7 +185,7 @@ func (c *Client) GitDiffFile(ctx context.Context, thread ID, revision string, fi
 	if !thread.Valid() || !scheduleID.MatchString(revision) || file < 0 || file >= gitDiffFileLimit {
 		return GitDiffPatch{}, ErrProtocol
 	}
-	out, err := waitOnCapability[GitDiffPatch](ctx, c, gitDiffPrefix+"file",
+	out, err := metadataRead[GitDiffPatch](ctx, c, gitDiffPrefix+"file",
 		map[string]any{"threadId": thread, "revision": revision, "file": file}, gitDiffCapability, GitDiffVersion)
 	if err != nil {
 		return GitDiffPatch{}, err

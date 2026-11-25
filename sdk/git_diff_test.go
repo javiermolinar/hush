@@ -22,39 +22,42 @@ func TestGitDiffNegotiationAndScope(t *testing.T) {
 					caps[gitDiffCapability] = GitDiffVersion
 				}
 				reply(c, q, Hello{Version: 1, Epoch: "git-diff-fixture", Capabilities: caps})
-				q, err = readReq(r)
-				if mode == "unnegotiated" {
-					if err == nil {
+				for {
+					q, err = readReq(r)
+					if err != nil {
+						return
+					}
+					if mode == "unnegotiated" {
 						t.Errorf("unnegotiated Git operation sent: %+v", q)
+						return
 					}
-					return
-				}
-				if err != nil || q.Params["threadId"] != "1" || len(q.Params) > 3 {
-					t.Errorf("unexpected Git request: %+v, %v", q, err)
-					return
-				}
-				switch q.Method {
-				case gitDiffPrefix + "summary":
-					if q.Params["range"] != GitDiffHead {
-						t.Errorf("unexpected range %+v", q.Params)
+					if q.Params["threadId"] != "1" || len(q.Params) > 3 {
+						t.Errorf("unexpected Git request: %+v, %v", q, err)
+						return
 					}
-					branch := ""
-					if mode == "negotiated" {
-						branch = "feature/review"
+					switch q.Method {
+					case gitDiffPrefix + "summary":
+						if q.Params["range"] != GitDiffHead {
+							t.Errorf("unexpected range %+v", q.Params)
+						}
+						branch := ""
+						if mode == "negotiated" {
+							branch = "feature/review"
+						}
+						reply(c, q, GitDiffSummary{Revision: revision, Range: GitDiffHead, Commit: "1111111111111111111111111111111111111111",
+							Branch: branch, Files: []GitDiffFile{{Path: "src/main.go", Status: "M", Text: true}}})
+					case gitDiffPrefix + "file":
+						if q.Params["revision"] != revision || q.Params["file"] != float64(0) {
+							t.Errorf("unexpected file selector %+v", q.Params)
+						}
+						patch := GitDiffPatch{Revision: revision, File: 0, Lines: []GitDiffLine{{Kind: "add", NewLine: 10, Text: "updated"}}}
+						if mode == "wrong patch" {
+							patch.File++
+						}
+						reply(c, q, patch)
+					default:
+						t.Errorf("unexpected operation %s", q.Method)
 					}
-					reply(c, q, GitDiffSummary{Revision: revision, Range: GitDiffHead, Commit: "1111111111111111111111111111111111111111",
-						Branch: branch, Files: []GitDiffFile{{Path: "src/main.go", Status: "M", Text: true}}})
-				case gitDiffPrefix + "file":
-					if q.Params["revision"] != revision || q.Params["file"] != float64(0) {
-						t.Errorf("unexpected file selector %+v", q.Params)
-					}
-					patch := GitDiffPatch{Revision: revision, File: 0, Lines: []GitDiffLine{{Kind: "add", NewLine: 10, Text: "updated"}}}
-					if mode == "wrong patch" {
-						patch.File++
-					}
-					reply(c, q, patch)
-				default:
-					t.Errorf("unexpected operation %s", q.Method)
 				}
 			})
 			client := NewClient(path, ClientOptions{Capabilities: map[string][]uint64{gitDiffCapability: {GitDiffVersion}}})

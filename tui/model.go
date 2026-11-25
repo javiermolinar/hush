@@ -101,6 +101,8 @@ type Model struct {
 	fileScope                 fileScopeLease
 	nativeFiles               bool
 	nativeFileSearch          bool
+	fileScopePush             bool
+	gitDiffPush               bool
 	nativeSkills              bool
 	nativeSkillDraft          bool
 	nativeContext             bool
@@ -326,6 +328,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menuFeaturesFromBackend = v.features
 		m.directoryEnabled, m.nativeContext = v.directory, v.context
 		m.nativeFiles, m.nativeFileSearch = v.files, v.fileSearch
+		m.fileScopePush, m.gitDiffPush = v.scopeWatch, v.gitWatch
 		m.nativeSkills, m.nativeSkillDraft = v.skills, v.skillDraft
 		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff())
 	case menuProbeFailed:
@@ -339,8 +342,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.receiveSkills(v)
 	case fileScopeMsg:
 		cmd = m.receiveFileScope(v)
+	case fileScopeWatchMsg:
+		cmd = m.receiveFileScopeWatch(v)
 	case renewFileScope:
-		if uint64(v) == m.fileScope.generation {
+		if uint64(v) == m.fileScope.generation && !m.fileScope.pushed {
 			cmd = m.fileScopeCommand()
 		}
 	case nativeFilePage:
@@ -357,6 +362,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case gitDiffSummaryMsg:
 		cmd = m.receiveGitSummary(v)
+	case gitDiffWatchMsg:
+		cmd = m.receiveGitDiffWatch(v)
 	case gitDiffPatchMsg:
 		cmd = m.receiveGitPatch(v)
 	case workspaceTrustMsg:

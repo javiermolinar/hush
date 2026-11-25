@@ -12,10 +12,10 @@ import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
-import { gitDiffVersion, parseGitDiff, type GitDiffHost } from "./git-diff.js";
+import { gitDiffVersion, gitDiffWatchVersion, parseGitDiff, parseGitDiffWatch, type GitDiffHost } from "./git-diff.js";
 import { parseLoadedContext, loadedContextAgentsVersion, loadedContextVersion, type LoadedContextHost, type LoadedContextVersion } from "./loaded-context.js";
-import { parseWorkspaceFiles, parseWorkspaceFileSearch, workspaceFilesVersion, workspaceFileSearchVersion,
-  workspaceFileProjectPathsVersion, type WorkspaceFilesHost } from "./workspace-files.js";
+import { parseWorkspaceFiles, parseWorkspaceFileSearch, parseWorkspaceScopeWatch, workspaceFilesVersion, workspaceFileSearchVersion,
+  workspaceFileProjectPathsVersion, workspaceScopeWatchVersion, type WorkspaceFilesHost } from "./workspace-files.js";
 import { parseWorkspaceSkillList, parseWorkspaceSkillSubmit, workspaceSkillDraftVersion, workspaceSkillsVersion,
   type WorkspaceSkillsHost, type WorkspaceSkillsVersion } from "./workspace-skills.js";
 import { PiPeer, piEventsVersion, type PiEventsHost } from "./pi-events.js";
@@ -170,8 +170,10 @@ class Peer {
   #checkpoints?: CheckpointsHost;
   #gitDiff?: GitDiffHost;
   #gitDiffPending = false;
+  #gitDiffWatch = false;
   #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
+  #workspaceScopeWatch = false;
   #workspaceSkills?: { host: WorkspaceSkillsHost; version: WorkspaceSkillsVersion };
   readonly #pendingMetadata = new Set<string>();
   #modelCatalog?: { host: ModelCatalogHost; version: ModelCatalogVersion };
@@ -304,6 +306,13 @@ class Peer {
           this.#metadata(req, parts[1], () => host.get(threadId, version, this.#abort.signal));
           return;
         }
+        if (parts[1] === "workspaceScopeWatch" && this.#workspaceScopeWatch) {
+          if (parts[2] !== "wait") throw new WireError("unknown_method");
+          const { host, version } = this.#workspaceFiles!;
+          const query = parseWorkspaceScopeWatch(req.params, version);
+          this.#metadata(req, parts[1], () => host.waitScope!(query, this.#abort.signal));
+          return;
+        }
         if (parts[1] === "workspaceFiles" && this.#workspaceFiles) {
           const { host, version } = this.#workspaceFiles;
           if (parts[2] === "search" && version >= workspaceFileSearchVersion && host.search) {
@@ -313,6 +322,12 @@ class Peer {
             const query = parseWorkspaceFiles(parts[2]!, req.params, version);
             this.#metadata(req, parts[1], () => host.call(query, this.#abort.signal));
           }
+          return;
+        }
+        if (parts[1] === "gitDiffWatch" && this.#gitDiffWatch) {
+          if (parts[2] !== "wait") throw new WireError("unknown_method");
+          const query = parseGitDiffWatch(req.params);
+          this.#metadata(req, parts[1], () => this.#gitDiff!.wait!(query, this.#abort.signal));
           return;
         }
         if (parts[1] === "gitDiff" && this.#gitDiff) {
@@ -526,11 +541,19 @@ class Peer {
           if (version !== undefined) {
             capabilities.workspaceFiles = version;
             this.#workspaceFiles = { host: files, version };
+            if (files.waitScope && req.params.capabilities?.workspaceScopeWatch?.includes(workspaceScopeWatchVersion)) {
+              capabilities.workspaceScopeWatch = workspaceScopeWatchVersion;
+              this.#workspaceScopeWatch = true;
+            }
           }
         }
         if (this.capabilities?.gitDiff && req.params.capabilities?.gitDiff?.includes(gitDiffVersion)) {
           capabilities.gitDiff = gitDiffVersion;
           this.#gitDiff = this.capabilities.gitDiff;
+          if (this.#gitDiff.wait && req.params.capabilities?.gitDiffWatch?.includes(gitDiffWatchVersion)) {
+            capabilities.gitDiffWatch = gitDiffWatchVersion;
+            this.#gitDiffWatch = true;
+          }
         }
         if (this.capabilities?.schedules && req.params.capabilities?.schedules?.includes(schedulesVersion)) {
           capabilities.schedules = schedulesVersion;

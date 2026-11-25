@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { dial } from "../../server/test/client.mjs";
 import { startBackend } from "../../dist/hush-backend.mjs";
 
@@ -77,7 +78,7 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     assert.equal(worktree.checkpoint, true);
     assert.deepEqual(worktree.files.map(f => f.path), ["main", `src/${literal}`, "src/blob", "src/link"]);
     assert.deepEqual(worktree.files[0], { path: "main", status: "M", staged: true, text: true, added: 2, removed: 1 });
-    assert.deepEqual(worktree.files[1], { path: `src/${literal}`, status: "?", staged: false, text: true, added: 1, removed: 0 });
+    assert.deepEqual(worktree.files[1], { path: `src/${literal}`, status: "?", staged: false, text: false });
     const file = (s, index) => call("ext.gitDiff.file", { threadId, revision: s.revision, file: index });
     const fromHead = (await file(worktree, 0)).lines;
     assert.deepEqual(fromHead.filter(l => l.kind === "remove"), [{ kind: "remove", oldLine: 1, text: "later commit" }]);
@@ -114,4 +115,110 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     await app?.close();
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test("Git watches share one linked-worktree scan and observe tool writes, index and HEAD", { timeout: 15_000 }, async t => {
+  const home = await realpath(await mkdtemp("/tmp/hush-git-watch-"));
+  const agentDir = join(home, ".hush"), dataDir = join(agentDir, "runtime"), socket = join(dataDir, "hush.sock");
+  const primary = join(home, "project"), cwd = join(home, "linked"), sub = join(cwd, "sub");
+  const bin = join(home, "bin"), trace = join(home, "git-spawns");
+  const originalPath = process.env.PATH;
+  const env = { HOME: home, PATH: originalPath, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+  const git = async (dir, ...args) => (await run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args],
+    { cwd: dir, env })).stdout.trim();
+  const trust = (op, dir) => run(process.execPath, [bundle, "trust", op, "--cwd", dir], { cwd, env });
+  let app, a, b, legacy;
+  t.after(async () => {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    a?.close(); b?.close(); legacy?.close();
+    await app?.close();
+    await rm(home, { recursive: true, force: true });
+  });
+
+  await mkdir(primary);
+  await mkdir(bin);
+  await git(primary, "init", "-q", "-b", "main");
+  await mkdir(join(primary, "sub"));
+  await writeFile(join(primary, "sub", "tracked"), "base\n");
+  await git(primary, "add", ".");
+  await git(primary, "commit", "-qm", "seed");
+  await git(primary, "worktree", "add", "-qb", "review", cwd);
+  const realGit = (await run("which", ["git"], { env })).stdout.trim();
+  const quote = str => "'" + str.replaceAll("'", "'\\''") + "'";
+  await writeFile(join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quote(trace)}\nexec ${quote(realGit)} "$@"\n`, { mode: 0o700 });
+  const spawns = async () => (await readFile(trace, "utf8")).trimEnd().split("\n");
+  const scans = rows => rows.filter(row => row.includes(" --raw --numstat "));
+  await trust("grant", cwd);
+  await trust("grant", sub);
+  process.env.PATH = bin + delimiter + originalPath;
+  app = await startBackend({ profile: "hush", cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
+
+  a = await dial(socket);
+  b = await dial(socket);
+  legacy = await dial(socket);
+  const method = "ext.gitDiffWatch.wait";
+  for (const peer of [a, b]) {
+    assert.deepEqual(ok(await peer.send("hello", { versions: [1], capabilities: { gitDiff: [1], gitDiffWatch: [1] } })).capabilities,
+      { gitDiff: 1, gitDiffWatch: 1 });
+  }
+  assert.deepEqual(ok(await legacy.send("hello", { versions: [1], capabilities: { gitDiff: [1] } })).capabilities, { gitDiff: 1 });
+  const { id: threadId } = ok(await a.send("thread.new", { cwd }));
+  const { id: sameTree } = ok(await a.send("thread.new", { cwd: sub }));
+  assert.equal((await legacy.send(method, { threadId })).error.capability, "gitDiffWatch");
+  assert.equal((await a.send(method, { threadId, after: "" })).error.code, "invalid_request");
+  let [left, right] = (await Promise.all([a.send(method, { threadId }), b.send(method, { threadId: sameTree })])).map(ok);
+  assert.deepEqual(left.summary.files, []);
+  assert.equal(left.summary.branch, "review");
+  assert.deepEqual(right.summary.files, []);
+  assert.notEqual(left.summary.revision, right.summary.revision);
+  const attach = await spawns();
+  assert.equal(scans(attach).length, 1, attach.join("\n"));
+  t.diagnostic(`two clients/threads on one linked worktree: ${scans(attach).length} stats scan, ${attach.length} Git spawns including both authority checks`);
+
+  const arm = () => {
+    const aWait = a.send(method, { threadId, after: left.revision });
+    const bWait = b.send(method, { threadId: sameTree, after: right.revision });
+    // Attaching independent rejection handlers keeps fixture failures local.
+    return Promise.all([aWait, bWait]).then(result => result.map(ok));
+  };
+  let change = arm();
+  await sleep(180);
+  assert.equal((await a.send(method, { threadId })).error.code, "limit");
+  const priorWrite = (await spawns()).length;
+  const started = performance.now();
+  const { submissionId } = ok(await a.send("submit", { threadId, text: "!workspace-write", requestId: "git-watch-write", whenBusy: "reject" }));
+  [left, right] = await change;
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 1_500, `tool update took ${elapsed} ms`);
+  assert.deepEqual(left.summary.files, [{ path: "workspace-marker.txt", status: "?", staged: false, text: false }]);
+  assert.deepEqual(right.summary.files, left.summary.files);
+  assert.equal(ok(await a.send("submission.wait", { threadId, submissionId })).status, "done");
+  const writes = (await spawns()).slice(priorWrite);
+  assert.equal(scans(writes).length, 1, writes.join("\n"));
+  t.diagnostic(`tool write through both replies: ${elapsed.toFixed(0)} ms, ${writes.length} Git spawns total`);
+  assert.equal((await b.send("ext.gitDiff.file", { threadId: sameTree, revision: left.summary.revision, file: 0 })).error.code, "invalid_cursor");
+  assert.ok(ok(await a.send("ext.gitDiff.file", { threadId, revision: left.summary.revision, file: 0 })).lines
+    .some(line => line.kind === "add" && line.text === "Written by the faux tool."));
+
+  change = arm();
+  await git(cwd, "add", "workspace-marker.txt");
+  [left, right] = await change;
+  assert.ok(left.summary.files[0].staged);
+  assert.deepEqual(left.summary.files, right.summary.files);
+  change = arm();
+  const commit = await git(cwd, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "move only current ref");
+  await git(cwd, "update-ref", "refs/heads/review", commit);
+  [left, right] = await change;
+  assert.equal(left.summary.commit, commit);
+  assert.equal(right.summary.commit, commit);
+  const revoke = b.send(method, { threadId: sameTree, after: right.revision });
+  await trust("revoke", sub);
+  const denied = ok(await revoke);
+  // Sharing the same checkout must not let a different cwd borrow trust.
+  assert.deepEqual(denied.error, needsTrust);
+  assert.equal(ok(await a.send(method, { threadId })).summary.commit, commit);
+  const regrant = b.send(method, { threadId: sameTree, after: denied.revision });
+  await trust("grant", sub);
+  assert.equal(ok(await regrant).summary.commit, commit);
 });

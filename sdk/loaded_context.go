@@ -26,7 +26,7 @@ func (c *Client) LoadedContext(ctx context.Context, thread ID) ([]InstructionSou
 	if !thread.Valid() {
 		return nil, ErrProtocol
 	}
-	out, version, err := waitOnVersionedCapability[struct {
+	out, version, err := versionedMetadataRead[struct {
 		Sources []InstructionSource `json:"sources"`
 	}](ctx, c, loadedContextGet,
 		map[string]ID{"threadId": thread}, loadedContextCapability, LoadedContextAgentsVersion, LoadedContextVersion)

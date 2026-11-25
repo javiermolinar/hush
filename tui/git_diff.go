@@ -25,6 +25,12 @@ type gitDiffBackend interface {
 	GitDiffFile(context.Context, sdk.ID, string, int) (sdk.GitDiffPatch, error)
 }
 
+type gitDiffWatchBackend interface {
+	WatchGitDiff(context.Context, sdk.ID) <-chan sdk.GitDiffUpdate
+}
+
+var _ gitDiffWatchBackend = (*sdk.Client)(nil)
+
 type gitDiffState struct {
 	summary sdk.GitDiffSummary
 	err     error
@@ -86,12 +92,19 @@ func (m *Model) gitDiffBadgeRow(t *threadState, room int) displayRow {
 
 type gitDiffPoll struct {
 	feedLease
+	pushed  bool
 	tick    uint64
 	pending bool
 	last    time.Time
 }
 
 type gitDiffTick uint64
+type gitDiffWatchMsg struct {
+	lease  uint64
+	source <-chan sdk.GitDiffUpdate
+	update sdk.GitDiffUpdate
+	ok     bool
+}
 type gitDiffSummaryMsg struct {
 	lease, dialog, request uint64
 	value                  sdk.GitDiffSummary
@@ -116,19 +129,57 @@ func (m *Model) syncGitDiff() tea.Cmd {
 		m.stopGitDiff()
 		return nil
 	}
-	if f.owner == m.active {
+	watcher, hasWatch := m.backend.(gitDiffWatchBackend)
+	pushed := m.gitDiffPush && hasWatch
+	if f.owner == m.active && f.pushed == pushed {
 		return nil
 	}
 	m.stopGitDiff()
 	ctx, cancel := context.WithCancel(m.ctx)
-	m.gitDiffFeed = gitDiffPoll{feedLease: feedLease{token: m.token(), owner: m.active, ctx: ctx, cancel: cancel}}
-	return m.scanGitDiff()
+	lease := feedLease{token: m.token(), owner: m.active, ctx: ctx, cancel: cancel}
+	m.gitDiffFeed = gitDiffPoll{feedLease: lease, pushed: pushed}
+	if !pushed {
+		return m.scanGitDiff()
+	}
+	return func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return awaitGitDiffWatch(lease, watcher.WatchGitDiff(ctx, lease.owner))()
+	}
+}
+
+func awaitGitDiffWatch(f feedLease, source <-chan sdk.GitDiffUpdate) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case <-f.ctx.Done():
+			return nil
+		case v, ok := <-source:
+			return gitDiffWatchMsg{f.token, source, v, ok}
+		}
+	}
+}
+
+func (m *Model) receiveGitDiffWatch(msg gitDiffWatchMsg) tea.Cmd {
+	f := m.gitDiffFeed
+	if f.token == 0 || !f.pushed || msg.lease != f.token || f.owner != m.active {
+		return nil
+	}
+	if sdk.IsCode(msg.update.Err, "unsupported_capability") {
+		m.gitDiffPush = false
+		return m.syncGitDiff()
+	}
+	if !msg.ok {
+		return nil
+	}
+	m.applyGitSummary(f.owner, msg.update.Summary, msg.update.Err)
+	return awaitGitDiffWatch(f.feedLease, msg.source)
 }
 
 func (m *Model) scanGitDiff() tea.Cmd {
 	backend, ok := m.backend.(gitDiffBackend)
 	f := m.gitDiffFeed.feedLease
-	if !ok || f.token == 0 || m.gitDiffFeed.pending {
+	if !ok || f.token == 0 || m.gitDiffFeed.pending || m.gitDiffFeed.pushed {
 		return nil
 	}
 	m.gitDiffFeed.pending, m.gitDiffFeed.tick, m.gitDiffFeed.last = true, 0, time.Now()
@@ -173,22 +224,26 @@ func (m *Model) receiveGitSummary(msg gitDiffSummaryMsg) tea.Cmd {
 		return nil
 	}
 	f := m.gitDiffFeed
-	if f.token == 0 || msg.lease != f.token || f.owner != m.active {
+	if f.token == 0 || f.pushed || msg.lease != f.token || f.owner != m.active {
 		return nil
 	}
 	m.gitDiffFeed.pending = false
-	t := m.threads[f.owner]
-	t.gitDiff = gitDiffSnapshot(msg.value, msg.err)
-	if d := m.focusedDialog(); d != nil && d.git != nil && !d.git.patch && d.git.rangeName == sdk.GitDiffHead && d.git.cancel == nil {
-		d.git.apply(msg.value, msg.err)
-	}
+	m.applyGitSummary(f.owner, msg.value, msg.err)
 	interval := 10 * time.Second
-	if msg.err == nil && threadBusy(t) {
+	if msg.err == nil && threadBusy(m.threads[f.owner]) {
 		interval = 1200 * time.Millisecond
 	}
 	tick := m.token()
 	m.gitDiffFeed.tick = tick
 	return tea.Tick(interval, func(time.Time) tea.Msg { return gitDiffTick(tick) })
+}
+
+func (m *Model) applyGitSummary(owner sdk.ID, summary sdk.GitDiffSummary, err error) {
+	m.threads[owner].gitDiff = gitDiffSnapshot(summary, err)
+	if d := m.focusedDialog(); d != nil && d.route.owner == owner && d.git != nil && !d.git.patch &&
+		d.git.rangeName == sdk.GitDiffHead && d.git.cancel == nil {
+		d.git.apply(summary, err)
+	}
 }
 
 type gitReview struct {
@@ -238,8 +293,9 @@ func (m *Model) openGitDiff(r ownerRoute) tea.Cmd {
 	if m.focusedDialog() != d {
 		return open
 	}
-	if sdk.GitDiffNeedsTrust(state.err) {
-		// The operator may have trusted this workspace since the last poll.
+	if m.gitDiffFeed.pushed || sdk.GitDiffNeedsTrust(state.err) {
+		// A badge snapshot may have been unchanged long enough for its
+		// file locator to expire. Open the sheet with a fresh observation.
 		return m.fetchGitSummary(d)
 	}
 	if m.gitDiffFeed.token == 0 {

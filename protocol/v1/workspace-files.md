@@ -74,3 +74,22 @@ The Go CLI passes the absolute helper when launching Hush. The backend keeps one
 private helper process warm once a granted root is available; every page still
 reauthorizes and rescans the exact directory. A custom standalone
 launch can set `HUSH_FILE_LIST_HELPER` to the matching installed `hush` executable.
+
+## Push updates (`workspaceScopeWatch:1`)
+
+Offer `workspaceScopeWatch:[1]` alongside `workspaceFiles`. When both are
+selected, `ext.workspaceScopeWatch.wait` takes `{threadId, after?}`, or
+`{cwd, after?}` with `workspaceFiles:2` or later. It returns
+`{revision, workspace, home}`. An unavailable target reports two false
+booleans; it does not create a thread or grant access.
+
+The `revision` is an opaque 64-character lowercase hexadecimal token scoped
+to this backend boot and target. Omit `after` for the first snapshot or on
+reconnect. A current token waits for a changed observation; a stale token
+gets the current snapshot. Grant changes made by the backend-host CLI wake the
+wait; the host revalidates the bindings before replying (and periodically
+internally in case a filesystem notification was missed). A replaced binding
+can change the revision even if the two booleans are unchanged. There is at
+most one outstanding scope wait per connection. Close the passive connection
+to cancel it. Older hosts can still be polled via `ext.workspaceFiles.scope`.
+The [Go SDK](../../sdk/workspace_files.go) exposes `WatchWorkspaceFileScope`.

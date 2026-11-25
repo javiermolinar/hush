@@ -10,6 +10,9 @@ import (
 
 const (
 	WorkspaceFilesVersion            = 1
+	WorkspaceScopeWatchVersion       = 1
+	workspaceScopeWatchCapability    = "workspaceScopeWatch"
+	workspaceScopeWaitMethod         = "ext.workspaceScopeWatch.wait"
 	WorkspaceFileSearchVersion       = 2
 	WorkspaceFileProjectPathsVersion = 3
 	WorkspaceFileSearchLimit         = 32
@@ -66,7 +69,7 @@ func (c *Client) WorkspaceFileScope(ctx context.Context, target WorkspaceFileTar
 	}
 	var zero WorkspaceFileScope
 	params, versions := target.params()
-	out, err := waitOnCapability[struct {
+	out, err := metadataRead[struct {
 		Workspace *bool `json:"workspace"`
 		Home      *bool `json:"home"`
 	}](ctx, c, workspaceFilesPrefix+"scope", params, workspaceFilesCapability, versions...)
@@ -79,6 +82,35 @@ func (c *Client) WorkspaceFileScope(ctx context.Context, target WorkspaceFileTar
 	return WorkspaceFileScope{*out.Workspace, *out.Home}, nil
 }
 
+// WorkspaceFileScopeUpdate reports the current authorized roots. Revision
+// changes when their binding changes, including replacement of a grant.
+type WorkspaceFileScopeUpdate struct {
+	Revision string
+	Scope    WorkspaceFileScope
+	Err      error
+}
+
+// WatchWorkspaceFileScope observes scope changes until ctx is canceled.
+// Offer workspaceScopeWatch:1 and the appropriate workspaceFiles version.
+func (c *Client) WatchWorkspaceFileScope(ctx context.Context, target WorkspaceFileTarget) <-chan WorkspaceFileScopeUpdate {
+	w := workspaceWatch{method: workspaceScopeWaitMethod, capability: workspaceScopeWatchCapability,
+		version: WorkspaceScopeWatchVersion, base: workspaceFilesCapability}
+	if target.valid() {
+		w.params, w.baseVersions = target.params()
+	}
+	return watchWorkspace(ctx, c, w, func(raw any) (WorkspaceFileScopeUpdate, string, error) {
+		v, err := decode[struct {
+			Revision  string `json:"revision"`
+			Workspace *bool  `json:"workspace"`
+			Home      *bool  `json:"home"`
+		}](raw)
+		if err != nil || v.Workspace == nil || v.Home == nil {
+			return WorkspaceFileScopeUpdate{}, "", ErrProtocol
+		}
+		return WorkspaceFileScopeUpdate{Revision: v.Revision, Scope: WorkspaceFileScope{*v.Workspace, *v.Home}}, v.Revision, nil
+	}, func(err error) WorkspaceFileScopeUpdate { return WorkspaceFileScopeUpdate{Err: err} })
+}
+
 func validBrowseName(s string, includeGitHub bool) bool {
 	if includeGitHub && s == githubDirectory {
 		return true
@@ -88,7 +120,7 @@ func validBrowseName(s string, includeGitHub bool) bool {
 }
 
 // ListWorkspaceFiles lists immediate children of a relative directory in the
-// authorized workspace or backend home. Its passive connection closes on cancel.
+// authorized workspace or backend home. Cancellation closes its metadata lease.
 // The opaque cursor may be reused only with the same request fields and boot.
 func (c *Client) ListWorkspaceFiles(ctx context.Context, target WorkspaceFileTarget, root, directory string, limit int, cursor string) (WorkspaceFilePage, error) {
 	var zero WorkspaceFilePage
@@ -104,7 +136,7 @@ func (c *Client) ListWorkspaceFiles(ctx context.Context, target WorkspaceFileTar
 	if cursor != "" {
 		params["cursor"] = cursor
 	}
-	out, version, err := waitOnVersionedCapability[struct {
+	out, version, err := versionedMetadataRead[struct {
 		Entries []struct {
 			Name      string `json:"name"`
 			Directory *bool  `json:"directory"`
@@ -155,7 +187,7 @@ type WorkspaceFileSearchResult struct {
 }
 
 // SearchWorkspaceFiles returns ranked paths below the target's authorized
-// workspace. It requires workspaceFiles:2 or later and uses a cancelable passive connection.
+// workspace. It requires workspaceFiles:2 or later and uses a cancelable metadata lease.
 func (c *Client) SearchWorkspaceFiles(ctx context.Context, target WorkspaceFileTarget, query string, limit int) (WorkspaceFileSearchResult, error) {
 	var zero WorkspaceFileSearchResult
 	if !target.valid() || len(query) > WorkspaceFileSearchQueryBytes || !utf8.ValidString(query) || strings.TrimSpace(query) == "" ||
@@ -165,7 +197,7 @@ func (c *Client) SearchWorkspaceFiles(ctx context.Context, target WorkspaceFileT
 	}
 	params, _ := target.params()
 	params["query"], params["limit"] = query, limit
-	out, version, err := waitOnVersionedCapability[struct {
+	out, version, err := versionedMetadataRead[struct {
 		Matches []struct {
 			Path      string `json:"path"`
 			Directory *bool  `json:"directory"`

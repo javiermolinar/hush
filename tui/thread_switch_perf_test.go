@@ -60,7 +60,12 @@ func (l *programLoop) deliver(msg tea.Msg) string {
 // until delivers messages until a frame satisfies done.
 func (l *programLoop) until(what string, done func(frame string) bool) {
 	l.t.Helper()
-	deadline := time.After(10 * time.Second)
+	l.untilTimeout(10*time.Second, what, done)
+}
+
+func (l *programLoop) untilTimeout(timeout time.Duration, what string, done func(frame string) bool) {
+	l.t.Helper()
+	deadline := time.After(timeout)
 	for {
 		select {
 		case msg := <-l.msgs:
@@ -148,13 +153,13 @@ func delayCopy(dst, src net.Conn, d time.Duration) {
 
 // startSwitchFixture starts the native faux backend for the whole test; the
 // shared fixture's 15 s deadline is too short for two timed scenarios.
-func startSwitchFixture(t *testing.T, root, cwd string) (context.Context, string) {
+func startSwitchFixture(t *testing.T, root, cwd string, env ...string) (context.Context, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	t.Cleanup(cancel)
 	grantStandaloneFixture(t, root, cwd)
 	cmd := exec.CommandContext(ctx, "node", os.Getenv("HUSH_TEST_BACKEND"), "--faux")
-	cmd.Dir, cmd.Env, cmd.Stderr = cwd, standaloneFixtureEnv(root), os.Stderr
+	cmd.Dir, cmd.Env, cmd.Stderr = cwd, append(standaloneFixtureEnv(root), env...), os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)

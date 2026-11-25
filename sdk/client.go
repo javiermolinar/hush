@@ -21,8 +21,9 @@ type ClientOptions struct {
 	// Requiring the standalone hushProfile also requires storeIdentity:1.
 	RequiredCapabilities map[string]uint64
 	// DialUnix optionally opens each connection, including dedicated watches.
-	// It must honor the context and be safe for concurrent use. The SDK owns
-	// hello and independently verifies store continuity across these connections.
+	// It must honor the context and be safe for concurrent use, including
+	// background replacements for canceled metadata calls. The SDK owns
+	// hello and independently verifies store continuity across connections.
 	DialUnix func(context.Context, string) (net.Conn, error)
 }
 
@@ -35,17 +36,19 @@ type Client struct {
 	close    context.CancelFunc
 	gate     chan struct{}
 	session  *session // guarded by gate
+	metadata metadataPool
 
 	storeMu      sync.Mutex
 	storePin     storeProof
-	storeChanged bool
+	storeInvalid chan struct{} // closed under storeMu on a proof mismatch
 	verified     map[*session]struct{}
 }
 
 // NewClient connects lazily. A client is bound to one socket and data store.
 // It can be shared across goroutines. Close cancels its transport and state feeds.
 func NewClient(socketPath string, options ClientOptions) *Client {
-	c := &Client{path: socketPath, required: maps.Clone(options.RequiredCapabilities), dialUnix: options.DialUnix, gate: make(chan struct{}, 1)}
+	c := &Client{path: socketPath, required: maps.Clone(options.RequiredCapabilities), dialUnix: options.DialUnix,
+		gate: make(chan struct{}, 1), metadata: newMetadataPool(), storeInvalid: make(chan struct{})}
 	if c.required["hushProfile"] == 1 {
 		if _, explicit := c.required[storeIdentityCap]; !explicit {
 			c.required[storeIdentityCap] = StoreIdentityVersion
@@ -133,42 +136,26 @@ func invoke[T any](ctx context.Context, c *Client, method string, params any) (T
 // A passive wait has its own connection: cancelling it actually releases the server's
 // waiter without closing other calls or withdrawing an already-admitted input.
 func waitOn[T any](ctx context.Context, c *Client, method string, params any) (T, error) {
-	return waitOnCapability[T](ctx, c, method, params, "")
-}
-
-func waitOnCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, versions ...uint64) (T, error) {
-	out, _, err := waitOnVersionedCapability[T](ctx, c, method, params, capability, versions...)
-	return out, err
-}
-
-// Payloads that differ by version must be checked against the hello on this
-// passive connection, not the client's shared connection.
-func waitOnVersionedCapability[T any](ctx context.Context, c *Client, method string, params any, capability string, versions ...uint64) (T, uint64, error) {
 	var zero T
 	if c.life.Err() != nil {
-		return zero, 0, ErrClosed
+		return zero, ErrClosed
 	}
 	life, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(c.life, cancel)
 	defer func() { stop(); cancel() }()
 	s, err := c.dial(life, life, c.offered, nil)
 	if err != nil {
-		return zero, 0, err
+		return zero, err
 	}
 	defer s.fail(ErrClosed)
-	version := s.hello.Capabilities[capability]
-	if capability != "" && !slices.Contains(versions, version) {
-		return zero, 0, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: capability}
-	}
 	v, err := s.call(life, method, params, nil)
 	if ctx.Err() != nil {
-		return zero, version, ctx.Err()
+		return zero, ctx.Err()
 	}
 	if err != nil {
-		return zero, version, err
+		return zero, err
 	}
-	out, err := decode[T](v)
-	return out, version, err
+	return decode[T](v)
 }
 
 type NewThread struct {

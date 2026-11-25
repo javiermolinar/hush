@@ -7,8 +7,10 @@ import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/cho
 import type { CredentialStore } from "@earendil-works/pi-ai";
 import { ModelRegistry, ModelRuntime, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
-  AgentDoc, createRegistry, Harness, MemoryStorage, type AgentChange, type Conversation, type Cursor, type Extension, type HarnessSettings,
+  AgentDoc, createRegistry, Harness, hook, MemoryStorage, ToolTask, type AgentChange, type Conversation, type Cursor,
+  type Extension, type HarnessSettings,
 } from "@earendil-works/pi-durable";
+import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createCoreServer, type NativeHost } from "../../server/src/index.js";
@@ -47,6 +49,7 @@ import { ProfileDoc } from "./pi/projection.js";
 import { PiSources } from "./pi/source.js";
 
 const codingOrder = ["read", "bash", "edit", "write"];
+const workspaceWriters = new Set(["write", "edit", "bash", CODEMODE_TOOL_NAME]);
 const coding: Extension = { ...CodingTools, tools: [...(CodingTools.tools ?? [])].sort(
   (a, b) => codingOrder.indexOf(a.name) - codingOrder.indexOf(b.name)) };
 const standaloneCoding: Extension = { ...coding, tools: coding.tools?.map(tool => tool.name === "edit"
@@ -121,6 +124,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
   let threadDirectory: ThreadDirectory | undefined;
   let images: ImageFitter | undefined;
   let workspaceFiles: WorkspaceFiles | undefined;
+  let gitDiff: GitDiffService | undefined;
+  let stopGrantWatch: (() => void) | undefined;
   let codemode: Awaited<ReturnType<typeof workspaceCodemode>> | undefined;
   let h: Harness | undefined, resources: ProjectResources | undefined, server: ReturnType<typeof createCoreServer> | undefined;
   let models: Awaited<ReturnType<typeof loadModels>> | undefined;
@@ -135,6 +140,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       () => intro?.close(),
       () => server?.close(),
       () => images?.close(),
+      () => stopGrantWatch?.(),
+      () => gitDiff?.close(),
       () => workspaceFiles?.close(),
       () => threadDirectory?.close(),
       () => h?.close(context),
@@ -181,10 +188,18 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const authorizeWork = trust && ((cwd: string | undefined, ctx: Context) =>
       trust.require(dirs.directory(cwd), ctx.abortSignal));
     const prompt = dirs.extension(() => h, !!trust);
+    // Use the existing prompt extension name so persisted threads get the
+    // hook too. Observe every write-capable result, including failed tools
+    // that may have changed files before reporting the failure.
+    const withWorkspaceChanges: Extension = trust ? { ...prompt, hooks: [...prompt.hooks ?? [], hook(ToolTask, {
+      afterTool: (call, _result, api) => {
+        if (workspaceWriters.has(call.name)) gitDiff?.toolFinished(api.conversationId);
+      },
+    })] } : prompt;
     const tap = (ext: Extension): Extension => sources ? { ...ext, tools: ext.tools?.map(sources.tapTool) } : ext;
     const builtin = tap(standalone ? standaloneCoding : coding), fauxExtension = tap(fauxTools);
     if (standalone && config.dataDir && localSettings.codemode === true) codemode = await workspaceCodemode();
-    const base = config.ephemeral ? [prompt] : [prompt, builtin,
+    const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, builtin,
       ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxExtension] : [])];
     const ordered = sources?.extensions(() => h!) ?? [];
     const schedules = standalone && config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork) : undefined;
@@ -357,9 +372,13 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       images = new ImageFitter(runtime);
     }
     const modelCatalog = standalone ? nativeModelCatalog(harness, runtime, modelRegistry, nativeDefault) : undefined;
-    const gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
+    gitDiff = trust && checkpoints ? new GitDiffService(harness, trust, checkpoints) : undefined;
     const browser = trust && config.dataDir ? await workspaceFileHelper() : undefined;
     workspaceFiles = trust && browser ? new WorkspaceFiles(harness, trust, browser) : undefined;
+    if (gitDiff || workspaceFiles) stopGrantWatch = trust?.watchGrants(() => {
+      gitDiff?.invalidate();
+      workspaceFiles?.grantsChanged();
+    });
     const loadedContext = trust && config.dataDir ? new LoadedContext(harness, dirs, trust) : undefined;
     const settingsHost = standalone && config.dataDir && !config.faux && !config.model
       ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;

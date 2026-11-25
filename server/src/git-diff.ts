@@ -1,6 +1,8 @@
 import { durableID, object, WireError } from "./wire.js";
+import { watchRevision } from "./workspace-watch.js";
 
 export const gitDiffVersion = 1;
+export const gitDiffWatchVersion = 1;
 export const gitDiffFiles = 128;
 export const gitDiffLines = 1500;
 export type GitDiffRange = "head" | "checkpoint";
@@ -20,8 +22,20 @@ export type GitDiffSummary = {
   revision: string; range: GitDiffRange; commit: string; checkpoint: boolean; branch?: string; files: GitDiffFile[];
 };
 export type GitDiffPatch = { revision: string; file: number; lines: GitDiffLine[]; truncated: boolean };
+export type GitDiffWatch = { threadId: string; after?: string };
+export type GitDiffUpdate = { revision: string } & (
+  { summary: GitDiffSummary } | { error: { code: string; message: string } }
+);
 export interface GitDiffHost {
   call(query: GitDiffRequest, signal: AbortSignal): Promise<GitDiffSummary | GitDiffPatch>;
+  wait?(query: GitDiffWatch, signal: AbortSignal): Promise<GitDiffUpdate>;
+}
+
+export function parseGitDiffWatch(fields: Record<string, unknown>): GitDiffWatch {
+  const { threadId, after } = fields;
+  if (!durableID(threadId) || after !== undefined && !watchRevision(after) ||
+      Object.keys(fields).some(key => key !== "threadId" && key !== "after")) throw new WireError("invalid_request");
+  return { threadId, after: after as string | undefined };
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

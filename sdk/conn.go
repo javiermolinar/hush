@@ -286,6 +286,17 @@ func (s *session) receive(f map[string]any) error {
 		}); err != nil {
 			return err
 		}
+	} else if ok && (method == gitDiffWaitMethod || method == workspaceScopeWaitMethod) {
+		capability, expected := gitDiffWatchCapability, uint64(GitDiffWatchVersion)
+		if method == workspaceScopeWaitMethod {
+			capability, expected = workspaceScopeWatchCapability, WorkspaceScopeWatchVersion
+		}
+		s.mu.Lock()
+		version := s.hello.Capabilities[capability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, expected); err != nil {
+			return err
+		}
 	} else if ok && (method == workspaceFilesPrefix+"scope" || method == workspaceFilesPrefix+"list" || method == workspaceFileSearchMethod) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[workspaceFilesCapability]

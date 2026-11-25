@@ -1,15 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { lstat, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import { gitDiffFiles, gitDiffLines, type GitDiffFile, type GitDiffHost, type GitDiffLine, type GitDiffRange,
-  type GitDiffRequest } from "../../server/src/git-diff.js";
+  type GitDiffRequest, type GitDiffSummary, type GitDiffUpdate, type GitDiffWatch } from "../../server/src/git-diff.js";
 import { WireError } from "../../server/src/wire.js";
 import type { CheckpointService } from "./checkpoints.js";
 import { checkFilters } from "./rewind-git.js";
-import { workspaceGit, type WorkspaceTrust, type GitWorkspaceIdentity } from "./workspace-trust.js";
+import { workspaceGit, type DirectoryIdentity, type WorkspaceTrust, type GitWorkspaceIdentity } from "./workspace-trust.js";
 import { inspectWorkspaceText } from "./workspace-file.js";
+import { ChangePulse, observe, WorkspaceRevisions } from "./workspace-changes.js";
 
 const maxObservations = 128;
+const maxWatchThreads = 64;
+const checkEvery = 500;
+const fallback = 20_000;
 const lifetime = 2 * 60_000;
 const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const maxLine = 2048;
@@ -111,20 +117,264 @@ async function untrackedText(root: string, path: string, signal: AbortSignal) {
   catch { signal.throwIfAborted(); return undefined; }
 }
 
+type Summary = Omit<GitDiffSummary, "revision">;
 type Observation = { threadId: string; cwd: string; identity: GitWorkspaceIdentity; range: GitDiffRange;
   commit: string; files: GitDiffFile[]; expires: number };
+type WorktreeSnapshot = Pick<Summary, "commit" | "files" | "branch"> & { stamp: string; expires: number };
+type Worktree = { identity: GitWorkspaceIdentity; version: number; value?: WorktreeSnapshot;
+  flight?: Promise<WorktreeSnapshot> };
+type ThreadSnapshot = { revision: string } & ({ summary: Summary; cwd: string; identity: GitWorkspaceIdentity } |
+  { error: { code: string; message: string } });
+type WatchedThread = { peers: number; changes: ChangePulse; stop: AbortController; cwd?: string; tree?: Worktree;
+  read?: Promise<ThreadSnapshot> };
+
+const directoryKey = (dir: DirectoryIdentity) => [dir.path, String(dir.device), String(dir.inode), String(dir.birth)];
+const treeKey = (id: GitWorkspaceIdentity) => JSON.stringify([directoryKey(id.root), directoryKey(id.gitDir), directoryKey(id)]);
+const inside = (root: string, cwd: string) => {
+  const path = relative(root, cwd);
+  return !isAbsolute(path) && path !== ".." && !path.startsWith(".." + sep);
+};
+
+async function treeStamp({ root, gitDir, path: common }: GitWorkspaceIdentity, branch?: string) {
+  // HEAD and index belong to the linked checkout; the current ref and
+  // packed-refs may live in the shared repository. Only stat metadata here.
+  const paths = [join(root.path, ".git"), join(gitDir.path, "HEAD"), join(gitDir.path, "index"),
+    join(gitDir.path, "logs/HEAD"), join(gitDir.path, "config.worktree"), join(common, "packed-refs"),
+    join(common, "config"), join(common, "reftable/tables.list")];
+  if (branch && validPath(branch)) paths.push(join(common, "refs/heads", branch));
+  return (await Promise.all(paths.map(async path => {
+    const s = await lstat(path, { bigint: true }).catch(() => undefined);
+    return s ? `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : "-";
+  }))).join("/");
+}
 
 export class GitDiffService implements GitDiffHost {
   readonly #seen = new Map<string, Observation>();
+  readonly #trees = new Map<string, Worktree>();
+  readonly #watching = new Map<string, WatchedThread>();
+  readonly #revisions = new WorkspaceRevisions();
+  readonly #stop = new AbortController();
+  // Bound subprocess fanout on a change affecting many checkouts at once.
+  readonly #lanes = Array.from({ length: 4 }, () => Promise.resolve());
+  #nextLane = 0;
+  #queued = 0;
   #active = 0;
+  #timer?: NodeJS.Timeout;
+  #probing = false;
+  #nextFallback = 0;
 
   constructor(private readonly h: Harness, private readonly trust: WorkspaceTrust, private readonly checkpoints: CheckpointService) {}
 
-  async #base(id: ConversationId, cwd: string, root: string, range: GitDiffRange, ctx: Context, signal: AbortSignal) {
-    const snapshot = await this.checkpoints.latestFileSnapshot(id, ctx);
+  close() {
+    clearInterval(this.#timer);
+    this.#stop.abort();
+    this.#trees.clear();
+    this.#seen.clear();
+  }
+
+  toolFinished(id: ConversationId) {
+    if (!this.#watching.size && !this.#trees.size) return;
+    const signal = AbortSignal.any([this.#stop.signal, AbortSignal.timeout(4_000)]);
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    // Read off the tool hook; neither Git nor disk metadata waits on a tool result.
+    void this.h.snapshot(AgentDoc, id, ctx).then(async agent => {
+      const cwd = agent?.cwd;
+      const path = cwd ? await realpath(cwd).catch(() => cwd) : undefined;
+      if (!signal.aborted) this.invalidate(path);
+    }).catch(() => { if (!this.#stop.signal.aborted) this.invalidate(); });
+  }
+
+  invalidate(cwd?: string) {
+    for (const tree of this.#trees.values()) {
+      if (cwd === undefined || inside(tree.identity.root.path, cwd)) this.#dirty(tree);
+    }
+    for (const thread of this.#watching.values()) {
+      if (!thread.tree && (cwd === undefined || !thread.cwd || thread.cwd === cwd)) thread.changes.emit();
+    }
+  }
+
+  #dirty(tree: Worktree) {
+    tree.version++;
+    tree.value = undefined;
+    for (const thread of this.#watching.values()) if (thread.tree === tree) thread.changes.emit();
+  }
+
+  async #probe() {
+    if (this.#probing || !this.#watching.size) return;
+    if (Date.now() >= this.#nextFallback) {
+      this.#nextFallback = Date.now() + fallback;
+      // Tree edits that don't touch Git metadata (including external editors)
+      // have no reliable portable notification; refresh once per worktree.
+      this.invalidate();
+      return;
+    }
+    this.#probing = true;
+    try {
+      const trees = new Set([...this.#watching.values()].flatMap(t => t.tree ? [t.tree] : []));
+      await Promise.all([...trees].map(async tree => {
+        const value = tree.value;
+        if (!value) return;
+        const stamp = await treeStamp(tree.identity, value.branch);
+        if (!this.#stop.signal.aborted && tree.value === value && value.stamp !== stamp) this.#dirty(tree);
+      }));
+    } finally { this.#probing = false; }
+  }
+
+  async wait({ threadId, after }: GitDiffWatch, peer: AbortSignal): Promise<GitDiffUpdate> {
+    const signal = AbortSignal.any([peer, this.#stop.signal]);
+    signal.throwIfAborted();
+    let thread = this.#watching.get(threadId);
+    if (!thread) {
+      if (this.#watching.size >= maxWatchThreads) throw new WireError("limit");
+      thread = { peers: 0, changes: new ChangePulse(), stop: new AbortController() };
+      this.#watching.set(threadId, thread);
+    }
+    if (!this.#timer) {
+      this.#nextFallback = Date.now() + fallback;
+      this.#timer = setInterval(() => { void this.#probe(); }, checkEvery).unref();
+    }
+    thread.peers++;
+    try {
+      for (;;) {
+        const generation = thread.changes.generation;
+        const view = await observe(this.#watchSnapshot(threadId, thread), signal);
+        signal.throwIfAborted();
+        if (generation !== thread.changes.generation) continue;
+        if (view.revision !== after) {
+          if ("error" in view) return view;
+          const { revision, summary, cwd, identity } = view;
+          return { revision, summary: this.#remember(threadId, cwd, identity, summary) };
+        }
+        await thread.changes.wait(generation, signal);
+      }
+    } finally {
+      if (--thread.peers === 0) {
+        thread.stop.abort();
+        this.#watching.delete(threadId);
+      }
+      if (!this.#watching.size) {
+        clearInterval(this.#timer);
+        this.#timer = undefined;
+      }
+    }
+  }
+
+  #watchSnapshot(threadId: string, thread: WatchedThread) {
+    if (thread.read) return thread.read;
+    if (this.#queued >= maxWatchThreads) throw new WireError("limit");
+    this.#queued++;
+    const lane = this.#nextLane++ % this.#lanes.length;
+    const read = this.#lanes[lane]!.then(() => this.#readWatch(threadId, thread)).finally(() => {
+      thread.read = undefined;
+      this.#queued--;
+    });
+    this.#lanes[lane] = read.then(() => {}, () => {});
+    return thread.read = read;
+  }
+
+  async #readWatch(threadId: string, thread: WatchedThread): Promise<ThreadSnapshot> {
+    const life = AbortSignal.any([thread.stop.signal, this.#stop.signal]);
+    const signal = AbortSignal.any([life, AbortSignal.timeout(4_000)]);
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT), id = Number(threadId) as ConversationId;
+    try {
+      const cwd = thread.cwd = await this.#cwd(id, ctx);
+      // Each thread must still authorize its own exact directory. A shared
+      // checkout, or a cached successful observation, is not a grant.
+      const identity = await this.trust.withGit(cwd, signal, value => value);
+      const key = treeKey(identity), tree = thread.tree = this.#worktree(key, identity);
+      const [{ commit, files, branch }, checkpoint] = await Promise.all([
+        this.#headStats(tree, signal), this.checkpoints.latestFileSnapshot(id, ctx),
+      ]);
+      await this.#verify(id, cwd, identity, ctx, signal);
+      const summary: Summary = { range: "head", commit, checkpoint: checkpoint !== undefined, files,
+        ...(branch && { branch }) };
+      return { revision: this.#revisions.of([threadId, cwd, key, summary]), summary, cwd, identity };
+    } catch (failure) {
+      life.throwIfAborted();
+      thread.tree = undefined;
+      const e = signal.aborted ? new WireError("limit") : failure instanceof WireError ? failure : new WireError("internal");
+      const error = { code: e.code, message: e.message };
+      return { revision: this.#revisions.of([threadId, error]), error };
+    }
+  }
+
+  #worktree(key: string, identity: GitWorkspaceIdentity) {
+    const cached = this.#trees.get(key);
+    if (cached) {
+      this.#trees.delete(key);
+      this.#trees.set(key, cached);
+      return cached;
+    }
+    if (this.#trees.size >= maxObservations) {
+      const attached = new Set([...this.#watching.values()].map(t => t.tree));
+      for (const [old, tree] of this.#trees) {
+        if (tree.flight || attached.has(tree)) continue;
+        this.#trees.delete(old);
+        break;
+      }
+      if (this.#trees.size >= maxObservations) throw new WireError("limit");
+    }
+    const tree: Worktree = { identity, version: 0 };
+    this.#trees.set(key, tree);
+    return tree;
+  }
+
+  async #headStats(tree: Worktree, signal: AbortSignal) {
+    for (;;) {
+      signal.throwIfAborted();
+      if (tree.value && tree.value.expires > Date.now()) return tree.value;
+      const version = tree.version;
+      // Reuse the flight even if a write dirtied it, then refresh instead of
+      // launching overlapping Git processes for the same worktree.
+      const flight = tree.flight ??= this.#computeHead(tree.identity).then(result => {
+        if (tree.version === version) tree.value = result;
+        return result;
+      }).finally(() => { tree.flight = undefined; });
+      // The peer's wait is already abortable. Keep the worker lane until
+      // the shared Git work settles so rapid disconnects can't fan out scans.
+      await flight;
+      signal.throwIfAborted();
+      if (tree.value) return tree.value; // only the current generation publishes
+
+    }
+  }
+
+  async #computeHead(identity: GitWorkspaceIdentity): Promise<WorktreeSnapshot> {
+    const signal = AbortSignal.any([this.#stop.signal, AbortSignal.timeout(4_000)]);
+    const root = identity.root.path;
+    await checkFilters(root, signal);
+    const branch = await this.#branch(root, signal);
+    const stamp = await treeStamp(identity, branch);
+    const commit = await this.#head(root, signal);
+    const files = await this.#files(root, commit, commit, signal);
+    return { commit, files, branch, stamp, expires: Date.now() + fallback };
+  }
+
+  async #cwd(id: ConversationId, ctx: Context) {
+    const cwd = await this.h.commit(async tx => {
+      const source = await tx.conversation(id);
+      if (!source || source.owner) throw new WireError("not_found");
+      return (await tx.doc(AgentDoc, id)).cwd;
+    }, ctx);
+    if (!cwd) unavailable("This thread has no worktree.");
+    return cwd;
+  }
+
+  async #verify(id: ConversationId, cwd: string, identity: GitWorkspaceIdentity, ctx: Context, signal: AbortSignal) {
+    if ((await this.h.snapshot(AgentDoc, id, ctx))?.cwd !== cwd) throw new WireError("invalid_cursor");
+    await this.trust.withGit(cwd, signal, () => {}, identity);
+  }
+
+  async #head(root: string, signal: AbortSignal) {
     const out = await git(root, signal, "rev-parse", "--verify", "HEAD^{commit}");
     const head = out.slice(0, -1);
     if (!out.endsWith("\n") || !oid.test(head)) unavailable("Git review needs a committed HEAD.");
+    return head;
+  }
+
+  async #base(id: ConversationId, cwd: string, root: string, range: GitDiffRange, ctx: Context, signal: AbortSignal) {
+    const snapshot = await this.checkpoints.latestFileSnapshot(id, ctx);
+    const head = await this.#head(root, signal);
     if (range === "head") return { head, commit: head, checkpoint: snapshot !== undefined };
     if (!snapshot) unavailable("No file checkpoint on this thread.");
     const commit = await this.checkpoints.comparisonCommit(cwd, snapshot, signal);
@@ -140,20 +390,11 @@ export class GitDiffService implements GitDiffHost {
       const input = q.op === "file" ? this.#seen.get(q.revision) : undefined;
       if (q.op === "file" && (input?.threadId !== q.threadId || input.expires < Date.now() || !input.files[q.file]))
         throw new WireError("invalid_cursor");
-      const cwd = await this.h.commit(async tx => {
-        const source = await tx.conversation(id);
-        if (!source || source.owner) throw new WireError("not_found");
-        return (await tx.doc(AgentDoc, id)).cwd;
-      }, ctx);
-      if (!cwd) unavailable("This thread has no worktree.");
+      const cwd = await this.#cwd(id, ctx);
       if (input && cwd !== input.cwd) throw new WireError("invalid_cursor");
       const identity = await this.trust.withGit(cwd, signal, value => value, input?.identity);
       const root = identity.root.path;
       await checkFilters(root, signal);
-      const finish = async <T>(result: T) => {
-        if ((await this.h.snapshot(AgentDoc, id, ctx))?.cwd !== cwd) throw new WireError("invalid_cursor");
-        return this.trust.withGit(cwd, signal, () => result, identity);
-      };
       const range = input?.range ?? (q.op === "summary" ? q.range : "head");
       const { commit, head, checkpoint } = await this.#base(id, cwd, root, range, ctx, signal);
       if (q.op === "file" && input) {
@@ -161,39 +402,51 @@ export class GitDiffService implements GitDiffHost {
         const file = input.files[q.file]!;
         const patch = file.status === "?" ? await this.#untrackedPatch(root, file.path, signal)
           : await this.#trackedPatch(root, commit, file.path, signal);
-        return await finish({ revision: q.revision, file: q.file, ...boundedPatch(patch) });
-      }
-      const [diff, index, others, ref] = await Promise.all([
-        git(root, signal, "diff", ...diffFlags, "--raw", "--numstat", "-z", commit, "--"),
-        git(root, signal, "diff", ...diffFlags, "--cached", "--name-only", "-z", head, "--"),
-        git(root, signal, "ls-files", "--others", "--exclude-standard", "-z", "--"),
-        git(root, signal, "rev-parse", "--symbolic-full-name", "HEAD").catch(() => ""),
-      ]);
-      // Detached HEAD is not a local branch. Treat unavailable metadata as optional.
-      const branch = /^refs\/heads\/([^\x00-\x20\x7f]+)\n$/.exec(ref)?.[1];
-      const rows = parseRows(diff, new Set(nulList(index)));
-      for (const path of nulList(others)) {
-        if (rows.has(path)) continue;
-        if (rows.size >= gitDiffFiles) throw new WireError("limit");
-        if (!validPath(path)) unavailable();
-        const content = await untrackedText(root, path, signal);
-        rows.set(path, { path, status: "?", staged: false, text: content !== undefined,
-          ...(content !== undefined && { added: textLines(content).length, removed: 0 }) });
-      }
-      const files = [...rows.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0), revision = randomUUID();
-      return await finish({ revision, range, commit, checkpoint, files,
-        ...(branch && Buffer.byteLength(branch) <= 1024 && { branch }),
-      }).then(result => {
-        while (this.#seen.size >= maxObservations) this.#seen.delete(this.#seen.keys().next().value!);
-        this.#seen.set(revision, { threadId: q.threadId, cwd, identity, range, commit, files, expires: Date.now() + lifetime });
+        const result = { revision: q.revision, file: q.file, ...boundedPatch(patch) };
+        await this.#verify(id, cwd, identity, ctx, signal);
         return result;
-      });
+      }
+      const [files, branch] = await Promise.all([this.#files(root, commit, head, signal), this.#branch(root, signal)]);
+      await this.#verify(id, cwd, identity, ctx, signal);
+      return this.#remember(q.threadId, cwd, identity, { range, commit, checkpoint, files, ...(branch && { branch }) });
     } catch (error) {
       peer.throwIfAborted();
       if (signal.aborted) throw new WireError("limit");
       if (error instanceof WireError) throw error;
       unavailable();
     } finally { this.#active--; }
+  }
+
+  #remember(threadId: string, cwd: string, identity: GitWorkspaceIdentity, summary: Summary): GitDiffSummary {
+    const revision = randomUUID(), { range, commit, files } = summary;
+    while (this.#seen.size >= maxObservations) this.#seen.delete(this.#seen.keys().next().value!);
+    this.#seen.set(revision, { threadId, cwd, identity, range, commit, files, expires: Date.now() + lifetime });
+    return { revision, ...summary };
+  }
+
+  async #branch(root: string, signal: AbortSignal) {
+    const ref = await git(root, signal, "rev-parse", "--symbolic-full-name", "HEAD").catch(() => "");
+    // Detached HEAD is not a local branch. Treat unavailable metadata as optional.
+    const branch = /^refs\/heads\/([^\x00-\x20\x7f]+)\n$/.exec(ref)?.[1];
+    return branch && Buffer.byteLength(branch) <= 1024 ? branch : undefined;
+  }
+
+  async #files(root: string, commit: string, head: string, signal: AbortSignal) {
+    const [diff, index, others] = await Promise.all([
+      git(root, signal, "diff", ...diffFlags, "--raw", "--numstat", "-z", commit, "--"),
+      git(root, signal, "diff", ...diffFlags, "--cached", "--name-only", "-z", head, "--"),
+      git(root, signal, "ls-files", "--others", "--exclude-standard", "-z", "--"),
+    ]);
+    const rows = parseRows(diff, new Set(nulList(index)));
+    for (const path of nulList(others)) {
+      if (rows.has(path)) continue;
+      if (rows.size >= gitDiffFiles) throw new WireError("limit");
+      if (!validPath(path)) unavailable();
+      // Don't read file contents for a badge or list. The file endpoint
+      // verifies that this is still an untracked, safe text path on demand.
+      rows.set(path, { path, status: "?", staged: false, text: false });
+    }
+    return [...rows.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   }
 
   async #trackedPatch(root: string, commit: string, path: string, signal: AbortSignal): Promise<Iterable<GitDiffLine>> {

@@ -65,7 +65,18 @@ Offer `workspaceSkills: [2, 1]` for `ListWorkspaceSkills` and, on version 2,
 `PreviewWorkspaceSkills` for a prospective checkout without creating a thread.
 Offer `loadedContext: [2, 1]` for `LoadedContext` on an existing thread. Version 2
 also reports personal `AGENTS.md` and workspace `.agents/AGENTS.md` sources.
-Metadata reads run on cancelable passive connections.
+File scope/list/search, skills discovery, loaded context, Git review, and
+thread picker searches reuse up to three lazily opened, store-verified
+metadata connections per client. Each read takes an exclusive lease; on
+cancellation or timeout the SDK closes that connection to release the
+server's wait and tries to replace it in the background. A newly detected
+store mismatch invalidates idle and active leases. Native waits and long-lived
+watches still have dedicated connections.
+
+Offer [`workspaceScopeWatch:1`](../protocol/v1/workspace-files.md#push-updates-workspacescopewatch1)
+for `WatchWorkspaceFileScope`, and [`gitDiffWatch:1`](../protocol/v1/git-diff.md#push-updates-gitdiffwatch1)
+alongside `gitDiff:1` for `WatchGitDiff`. They resnapshot on reconnect and release
+the passive server wait when canceled.
 
 When submitting a selected standalone skill,
 set `Input.SkillToken` to its opaque selection token and use its

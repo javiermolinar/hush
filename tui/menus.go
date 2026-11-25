@@ -61,8 +61,10 @@ type menuCapabilities struct {
 	token      uint64
 	features   x.Features
 	directory  bool
+	gitWatch   bool
 	files      bool
 	fileSearch bool
+	scopeWatch bool
 	skills     bool
 	skillDraft bool
 	context    bool
@@ -138,8 +140,10 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, schedules := m.backend.(scheduleBackend)
 	_, checkpoints := m.backend.(checkpointBackend)
 	_, gitDiff := m.backend.(gitDiffBackend)
+	_, gitWatch := m.backend.(gitDiffWatchBackend)
 	_, files := m.backend.(fileBrowseBackend)
 	_, fileSearch := m.backend.(fileSearchBackend)
+	_, scopeWatch := m.backend.(fileScopeWatchBackend)
 	_, skills := m.backend.(workspaceSkillsBackend)
 	_, skillDraft := m.backend.(workspaceSkillDraftBackend)
 	_, loadedContext := m.backend.(loadedContextBackend)
@@ -210,6 +214,8 @@ func (m *Model) menuProbe() tea.Cmd {
 		contextVersion := hello.Capabilities["loadedContext"]
 		searchable := fileVersion == sdk.WorkspaceFileSearchVersion || fileVersion == sdk.WorkspaceFileProjectPathsVersion
 		return menuCapabilities{token: token, features: f, directory: managed && directory,
+			gitWatch:   f.Has(x.GitDiff) && gitWatch && hello.Capabilities["gitDiffWatch"] == sdk.GitDiffWatchVersion,
+			scopeWatch: scopeWatch && hello.Capabilities["workspaceScopeWatch"] == sdk.WorkspaceScopeWatchVersion,
 			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || searchable),
 			fileSearch: files && fileSearch && searchable,
 			skills:     skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),

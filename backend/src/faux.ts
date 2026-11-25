@@ -37,6 +37,9 @@ export function makeFaux(ephemeral: boolean) {
         fauxToolCall("codemode", { code: text.slice("!codemode\n".length) }, { id: "codemode-fixture-" + faux.state.callCount }), { stopReason: "toolUse" });
       if (text === "!workspace-read") return fauxAssistantMessage(
         fauxToolCall("read", { path: "workspace-marker.txt" }, { id: "workspace-read" }), { stopReason: "toolUse" });
+      if (text === "!workspace-write") return fauxAssistantMessage(
+        fauxToolCall("write", { path: "workspace-marker.txt", content: "Written by the faux tool.\n" },
+          { id: "workspace-write" }), { stopReason: "toolUse" });
       if (text === "!fast-tool") return fauxAssistantMessage([
         fauxThinking("fixture thinking"), fauxText("calling the fixture"), fauxToolCall("hush_fixture_fast", {}, { id: "fast-call" }),
       ], { stopReason: "toolUse" });

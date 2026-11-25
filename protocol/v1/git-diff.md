@@ -36,9 +36,11 @@ for untracked), `staged` (index differs from HEAD on this path), and `text`.
 When line statistics are available, both nonnegative `added` and `removed`
 are present. Counts describe the net comparison, not the sum of two diffs.
 Renames appear as additions and deletions. Ignored untracked files, nested
-submodule changes, and Git metadata are not reviewed. Only small, regular,
-single-link UTF-8 untracked files have text previews. Binary and special files
-can be listed without a preview or line counts.
+submodule changes, and Git metadata are not reviewed. The standalone host
+does not read untracked file contents for a summary: these rows have no line
+counts and `text:false` (older hosts can supply counts).
+Opening an untracked row checks whether it is still untracked and a small,
+regular, single-link UTF-8 file. Other files return a no-preview note.
 
 `revision` is a backend-boot, thread-scoped UUID v4 locator for that bounded
 summary. It does not freeze live files. File requests read the current patch
@@ -58,3 +60,29 @@ or conditional Git includes make review unavailable. Workers and cached
 summaries are bounded; callers must handle failures and cancel slow reads or
 reads for a thread they no longer display. File mutation, snapshot capture,
 last-turn attribution, and line comments are not part of version 1.
+
+## Push updates (`gitDiffWatch:1`)
+
+Offer `gitDiffWatch:[1]` alongside `gitDiff:[1]`. When both are selected,
+`ext.gitDiffWatch.wait` accepts `{threadId, after?}`. It returns
+`{revision, summary}`, with a HEAD summary in the shape above, or
+`{revision, error:{code,message}}` for an observed unavailable state (for
+example a missing grant). An error inside the result advances the watch just
+like a summary; malformed requests or admission limits can still fail the RPC.
+
+The outer `revision` is an opaque 64-character lowercase hexadecimal token,
+scoped to this backend boot and target. It is **not** the file locator in
+`summary.revision`. Omit `after` for the first snapshot or after reconnecting.
+With the current token the request waits for a different observation; a stale
+token gets the current snapshot. There is at most one outstanding wait per
+connection. Close the passive connection to cancel it. Clients can use
+`ext.gitDiff.summary` when this capability is absent, or to get a fresh file
+locator or compare against a checkpoint.
+
+The standalone host shares the expensive comparison across clients of the
+same verified worktree. A write-capable tool result or changes to HEAD or the
+index trigger a refresh. Other outside edits are picked up on a 20-second
+host-side fallback. No reply is sent when the observation is unchanged.
+Workspace grants and the thread's checkout are rechecked before each
+published snapshot; a cached comparison is not authorization. The
+[Go SDK](../../sdk/git_diff.go) exposes `WatchGitDiff`.

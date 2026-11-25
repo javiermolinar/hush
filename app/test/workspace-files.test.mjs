@@ -21,9 +21,9 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   const env = { HOME: home, PATH: dirname(process.execPath) + ':/usr/bin:/bin', LANG: 'C' };
   const cli = (...args) => invoke(executable, ['--backend', bundle, ...args], { cwd: workspace, env, timeout: 12_000 });
   const stop = () => invoke(executable, ['stop'], { cwd: workspace, env, timeout: 12_000 });
-  let client, older, listOnly, project;
+  let client, older, listOnly, project, watcher;
   t.after(async () => {
-    client?.close(); older?.close(); listOnly?.close(); project?.close();
+    client?.close(); older?.close(); listOnly?.close(); project?.close(); watcher?.close();
     await stop();
     await rm(dir, { recursive: true, force: true });
   });
@@ -70,7 +70,21 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   assert.deepEqual(ok(await scope()), { workspace: false, home: false });
   denied(await list(), 'not_found'); // old browse-only consent is not promoted
   denied(await search(), 'not_found');
+  watcher = await dial(socket);
+  assert.deepEqual(ok(await watcher.send('hello', { versions: [1], capabilities: { workspaceFiles: [2], workspaceScopeWatch: [1] } })).capabilities,
+    { workspaceFiles: 2, workspaceScopeWatch: 1 });
+  const waitMethod = 'ext.workspaceScopeWatch.wait';
+  const watchDraft = after => watcher.send(waitMethod, { cwd: workspace, ...(after && { after }) }).then(ok);
+  denied(await older.send(waitMethod, { threadId: id }), 'unsupported_capability');
+  denied(await watcher.send(waitMethod, { cwd: workspace, threadId: id }), 'invalid_request');
+  const { revision: beforeGrant, ...untrusted } = await watchDraft();
+  assert.deepEqual(untrusted, { workspace: false, home: false });
+  const pendingGrant = watchDraft(beforeGrant);
+  denied(await watcher.send(waitMethod, { cwd: workspace }), 'limit');
   await cli('trust', 'grant', '--cwd', workspace);
+  const { revision: afterGrant, ...trusted } = await pendingGrant;
+  assert.notEqual(beforeGrant, afterGrant);
+  assert.deepEqual(trusted, { workspace: true, home: false });
   assert.deepEqual(ok(await scope()), { workspace: true, home: false });
   assert.deepEqual(ok(await scope(outside)), { workspace: false, home: false });
   assert.deepEqual(ok(await listOnly.send('ext.workspaceFiles.scope', { threadId: id })), { workspace: true, home: false });
@@ -135,13 +149,20 @@ test('file browsing uses current host grants and a thread/root/directory/boot cu
   assert.deepEqual(ok(await client.send('ext.workspaceSkills.list', { cwd: workspace })), { skills: [] });
   assert.deepEqual(await threads(), known);
 
+  const pendingHome = watchDraft(afterGrant);
   await cli('trust', 'grant', '--scope', 'home');
+  const { revision: afterHome, ...trustedHome } = await pendingHome;
+  assert.deepEqual(trustedHome, { workspace: true, home: true });
   assert.deepEqual(ok(await scope()), { workspace: true, home: true });
   assert.deepEqual(ok(await list({ root: 'home', limit: 100 })).entries, [{ name: 'home notes.txt', directory: false }]);
   assert.deepEqual(ok(await projectList({ root: 'home' })).entries, [{ name: 'home notes.txt', directory: false }]);
   denied(await projectList({ root: 'home', directory: '.github' }), 'invalid_request');
   denied(await list({ root: 'home', cursor: first.nextCursor }), 'invalid_cursor');
+  const pendingRevoke = watchDraft(afterHome);
   await cli('trust', 'revoke', '--cwd', workspace);
+  const { revision: afterRevoke, ...revoked } = await pendingRevoke;
+  assert.notEqual(afterRevoke, afterHome);
+  assert.deepEqual(revoked, { workspace: false, home: true });
   denied(await list({ cursor: first.nextCursor }), 'invalid_cursor');
   denied(await list(), 'not_found');
   denied(await search(), 'not_found'); // a home grant does not admit recursive search

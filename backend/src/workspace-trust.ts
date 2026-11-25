@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync,
-  writeFileSync } from "node:fs";
+  watch, writeFileSync, type FSWatcher } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseArgs, promisify } from "node:util";
 import { WireError } from "../../server/src/wire.js";
 import { hushDirectory } from "./config.js";
@@ -231,6 +231,47 @@ export class WorkspaceTrust {
   private readonly agentDir: string;
 
   constructor(agentDir: string) { this.agentDir = trustDirectory(agentDir); }
+
+  // The CLI publishes/removes grant files in another process. Watch names,
+  // including the area directories themselves (first grant or replacement).
+  // A notification is only a hint to re-read the authoritative binding.
+  watchGrants(change: () => void): () => void {
+    const watchers: FSWatcher[] = [];
+    let pending: NodeJS.Immediate | undefined, closed = false;
+    const disarm = () => { for (const watcher of watchers.splice(0)) watcher.close(); };
+    const pulse = () => {
+      if (closed || pending) return;
+      pending = setImmediate(() => {
+        pending = undefined;
+        arm();
+        change();
+      });
+    };
+    const add = (path: string, matches: (name: string) => boolean) => {
+      try {
+        const watcher = watch(path, { persistent: false }, (_event, name) => {
+          if (name === null || matches(name)) pulse();
+        });
+        // Filesystems without watch support still get server-side refreshes.
+        watcher.on("error", () => watcher.close());
+        watchers.push(watcher);
+      } catch { /* An area need not exist yet. */ }
+    };
+    const arm = () => {
+      disarm();
+      add(dirname(this.agentDir), name => name === basename(this.agentDir));
+      try {
+        if (!privateDir(this.agentDir, false)) return;
+        add(this.agentDir, name => name === workArea || name === homeArea);
+        for (const area of [workArea, homeArea]) {
+          const path = join(this.agentDir, area);
+          if (privateDir(path, false)) add(path, name => /^[0-9a-f]{64}$/.test(name));
+        }
+      } catch { /* Unsafe grant storage never grants access. */ }
+    };
+    arm();
+    return () => { closed = true; clearImmediate(pending); disarm(); };
+  }
 
   async review(workspace: string, signal?: AbortSignal) {
     signal?.throwIfAborted();

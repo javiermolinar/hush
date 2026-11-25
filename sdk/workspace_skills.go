@@ -52,7 +52,7 @@ func supportedWorkspaceSkills(version uint64) bool {
 }
 
 func (c *Client) workspaceSkills(ctx context.Context, scope any, versions ...uint64) ([]WorkspaceSkill, error) {
-	out, err := waitOnCapability[struct {
+	out, err := metadataRead[struct {
 		Skills []WorkspaceSkill `json:"skills"`
 	}](ctx, c, workspaceSkillsList, scope, workspaceSkillsCapability, versions...)
 	if err != nil {

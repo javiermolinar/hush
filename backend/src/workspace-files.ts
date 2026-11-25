@@ -5,15 +5,19 @@ import { isAbsolute } from "node:path";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Cursors } from "../../server/src/cursor.js";
 import { browseName, githubDirectory, searchPath, type WorkspaceFileQuery, type WorkspaceFileSearch, type WorkspaceFileSearchResult, type WorkspaceFilesHost,
-  type WorkspaceFileTarget } from "../../server/src/workspace-files.js";
+  type WorkspaceFileTarget, type WorkspaceScopeWatch } from "../../server/src/workspace-files.js";
 import { object, WireError } from "../../server/src/wire.js";
 import type { WorkspaceTrust } from "./workspace-trust.js";
 import { prospectiveWorkspace, threadWorkspace } from "./thread-workspace.js";
 import { FileListWorker } from "./file-list-worker.js";
+import { ChangePulse, WorkspaceRevisions } from "./workspace-changes.js";
+
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 type Cursor = { scope: string; listing: string; offset: number; expires: number };
 type Root = "workspace" | "home";
 type Binding = Awaited<ReturnType<WorkspaceTrust["binding"]>>;
+const bindingStamp = (b: Binding | undefined) =>
+  b === undefined ? null : [b.path, String(b.device), String(b.inode), String(b.birth), b.stamp];
 
 export async function workspaceFileHelper() {
   const helper = process.env.HUSH_FILE_LIST_HELPER;
@@ -27,12 +31,50 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
   readonly #cursors = new Cursors();
   readonly #worker: FileListWorker;
   #pending = 0;
+  readonly #changes = new ChangePulse();
+  readonly #revisions = new WorkspaceRevisions();
+  #watchers = 0;
+  #fallback?: NodeJS.Timeout;
 
   constructor(private readonly harness: Harness, private readonly trust: WorkspaceTrust, helper: string) {
     this.#worker = new FileListWorker(helper);
   }
 
-  close() { return this.#worker.close(); }
+  close() {
+    clearInterval(this.#fallback);
+    return this.#worker.close();
+  }
+
+  grantsChanged() { this.#changes.emit(); }
+
+  async waitScope({ target, after }: WorkspaceScopeWatch, peer: AbortSignal) {
+    if (this.#watchers++ === 0) {
+      // Revalidate checkout bindings even if the filesystem dropped a grant
+      // notification or the thread's directory moved without a grant write.
+      this.#fallback = setInterval(() => this.#changes.emit(), 20_000).unref();
+    }
+    try {
+      for (;;) {
+        const generation = this.#changes.generation;
+        const signal = AbortSignal.any([peer, AbortSignal.timeout(3500)]);
+        const cwd = await this.#workspace(target, signal).catch(error => {
+          if (!(error instanceof WireError) || error.code !== "not_found") throw error;
+          return undefined;
+        });
+        const [workspace, home] = cwd ? await this.#scope(cwd, signal) : [];
+        signal.throwIfAborted();
+        if (generation !== this.#changes.generation) continue;
+        const revision = this.#revisions.of([target, cwd, bindingStamp(workspace), bindingStamp(home)]);
+        if (revision !== after) {
+          if (workspace || home) this.#worker.warm();
+          return { revision, workspace: !!workspace, home: !!home };
+        }
+        await this.#changes.wait(generation, peer);
+      }
+    } finally {
+      if (--this.#watchers === 0) clearInterval(this.#fallback);
+    }
+  }
 
   // A thread's recorded checkout, or the directory a prospective thread would
   // record. Either way the same grant applies and no conversation is created.
@@ -45,11 +87,15 @@ export class WorkspaceFiles implements WorkspaceFilesHost {
     catch { signal.throwIfAborted(); return undefined; }
   }
 
+  #scope(cwd: string, signal: AbortSignal) {
+    return Promise.all([this.#root("workspace", cwd, signal), this.#root("home", cwd, signal)]);
+  }
+
   async call(query: WorkspaceFileQuery, peer: AbortSignal) {
     const signal = AbortSignal.any([peer, AbortSignal.timeout(3500)]);
     const cwd = await this.#workspace(query.target, signal);
     if (query.kind === "scope") {
-      const [workspace, home] = await Promise.all([this.#root("workspace", cwd, signal), this.#root("home", cwd, signal)]);
+      const [workspace, home] = await this.#scope(cwd, signal);
       if (workspace || home) this.#worker.warm();
       return { workspace: !!workspace, home: !!home };
     }

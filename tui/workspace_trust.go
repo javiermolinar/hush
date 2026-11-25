@@ -188,10 +188,14 @@ func (m *Model) receiveWorkspaceTrust(msg workspaceTrustMsg) tea.Cmd {
 	}
 	closed := m.closeDialog(d, nil, false)
 	if msg.granted {
-		// Discard in-flight metadata from the previous scope. Update starts
-		// fresh file and skill lookups for the active thread or draft.
-		m.stopFileScope()
-		m.stopGitDiff()
+		// Old hosts don't observe the grant themselves. Refresh their scope
+		// now instead of waiting for the next poll.
+		if !m.fileScope.pushed {
+			m.stopFileScope()
+		}
+		if !m.gitDiffFeed.pushed {
+			m.stopGitDiff()
+		}
 		m.stopSkills()
 		return tea.Batch(closed, m.syncGitDiff(), m.notifyRoute(d.route, "Workspace trusted", x.Good))
 	}

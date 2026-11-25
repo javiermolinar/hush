@@ -80,6 +80,26 @@ HUSH_BENCH_SAMPLES=30 node app/test/cold-start.test.mjs              # spawn to 
 Thread switching and cold start have no target yet and only report. Record the machine, OS, and
 Go and Node versions with any numbers you compare.
 
+For a 60-second idle TUI request count and an external worktree edit latency
+measurement, run after the development build:
+
+```sh
+HUSH_TEST_BACKEND="$PWD/dist/hush-backend.mjs" HUSH_TEST_IDLE_60S=1 \
+  go test -count=1 -v ./tui -run '^TestWorkspaceWatchesLive$'
+```
+
+The test uses a real Unix socket and a temporary Git repository. It counts all
+requests written by the idle TUI after the watches are armed; the seed client
+and trust CLI are measured separately. The shorter default run checks tool and
+grant updates without waiting 60 seconds.
+
+Measure cold and pooled metadata calls on a local Unix socket and at a
+simulated 50 ms round trip:
+
+```sh
+go test -count=1 -v ./sdk -run '^TestMetadataPoolRoundTrips$'
+```
+
 ## Setting up the GitHub repository
 
 1. **Review what will be pushed.** Keep runtime data, session logs and provider credentials out of

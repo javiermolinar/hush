@@ -23,30 +23,31 @@ func TestWorkspaceMetadataNegotiationAndValidation(t *testing.T) {
 		reply(c, q, Hello{Version: 1, Epoch: "metadata-fixture", Capabilities: map[string]uint64{
 			workspaceFilesCapability: 1, workspaceSkillsCapability: 1, loadedContextCapability: 1,
 		}})
-		q, err = readReq(r)
-		if err != nil {
-			return
-		}
-		if q.Params["threadId"] != "7" {
-			t.Errorf("metadata request escaped thread scope: %+v", q)
-		}
-		switch q.Method {
-		case workspaceFilesPrefix + "scope":
-			reply(c, q, map[string]bool{"workspace": true, "home": false})
-		case workspaceFilesPrefix + "list":
-			if q.Params["directory"] != "nested space" || q.Params["root"] != "workspace" {
-				t.Errorf("bad file request: %+v", q)
+		for {
+			q, err = readReq(r)
+			if err != nil {
+				return
 			}
-			reply(c, q, map[string]any{"entries": []WorkspaceFileEntry{{Name: "file with space.md"}}})
-		case workspaceSkillsList:
-			reply(c, q, map[string]any{"skills": []WorkspaceSkill{{Name: "review", Token: strings.Repeat("A", 80), Source: "workspace", Description: "A fixture skill"}}})
-		case loadedContextGet:
-			// The SDK refuses data that is not metadata, even from a negotiated peer.
-			reply(c, q, map[string]any{"sources": []any{map[string]string{"path": "/remote/AGENTS.md", "kind": "workspace", "text": "content"}}})
-		default:
-			t.Errorf("unexpected method %q", q.Method)
+			if q.Params["threadId"] != "7" {
+				t.Errorf("metadata request escaped thread scope: %+v", q)
+			}
+			switch q.Method {
+			case workspaceFilesPrefix + "scope":
+				reply(c, q, map[string]bool{"workspace": true, "home": false})
+			case workspaceFilesPrefix + "list":
+				if q.Params["directory"] != "nested space" || q.Params["root"] != "workspace" {
+					t.Errorf("bad file request: %+v", q)
+				}
+				reply(c, q, map[string]any{"entries": []WorkspaceFileEntry{{Name: "file with space.md"}}})
+			case workspaceSkillsList:
+				reply(c, q, map[string]any{"skills": []WorkspaceSkill{{Name: "review", Token: strings.Repeat("A", 80), Source: "workspace", Description: "A fixture skill"}}})
+			case loadedContextGet:
+				// The SDK refuses data that is not metadata, even from a negotiated peer.
+				reply(c, q, map[string]any{"sources": []any{map[string]string{"path": "/remote/AGENTS.md", "kind": "workspace", "text": "content"}}})
+			default:
+				t.Errorf("unexpected method %q", q.Method)
+			}
 		}
-		_, _ = r.ReadByte()
 	})
 	c := NewClient(socket, ClientOptions{Capabilities: caps})
 	defer c.Close()
@@ -184,34 +185,35 @@ func TestWorkspaceFileProspectiveTarget(t *testing.T) {
 					return
 				}
 				reply(c, q, Hello{Version: 1, Epoch: "prospective-fixture", Capabilities: map[string]uint64{workspaceFilesCapability: version}})
-				q, err = readReq(r)
-				if err != nil {
-					return
-				}
-				calls.Add(1)
-				if _, thread := q.Params["threadId"]; thread || q.Params["cwd"] != cwd {
-					t.Errorf("prospective request carried the wrong target: %+v", q)
-				}
-				switch q.Method {
-				case workspaceFilesPrefix + "scope":
-					reply(c, q, map[string]bool{"workspace": true, "home": false})
-				case workspaceFilesPrefix + "list":
-					dir := q.Params["directory"]
-					file := WorkspaceFileEntry{Name: "README.md"}
-					if version == WorkspaceFileProjectPathsVersion && dir == "" {
-						file = WorkspaceFileEntry{Name: ".github", Directory: true}
-					} else if version == WorkspaceFileProjectPathsVersion && dir == ".github/workflows" {
-						file = WorkspaceFileEntry{Name: "workflow.yaml"}
-					} else if dir != "" {
-						t.Errorf("unexpected directory on v%d: %q", version, dir)
+				for {
+					q, err = readReq(r)
+					if err != nil {
+						return
 					}
-					reply(c, q, map[string]any{"entries": []WorkspaceFileEntry{file}})
-				case workspaceFileSearchMethod:
-					reply(c, q, WorkspaceFileSearchResult{Matches: []WorkspaceFileMatch{{Path: "docs/README.md"}}})
-				default:
-					t.Errorf("unexpected method %q", q.Method)
+					calls.Add(1)
+					if _, thread := q.Params["threadId"]; thread || q.Params["cwd"] != cwd {
+						t.Errorf("prospective request carried the wrong target: %+v", q)
+					}
+					switch q.Method {
+					case workspaceFilesPrefix + "scope":
+						reply(c, q, map[string]bool{"workspace": true, "home": false})
+					case workspaceFilesPrefix + "list":
+						dir := q.Params["directory"]
+						file := WorkspaceFileEntry{Name: "README.md"}
+						if version == WorkspaceFileProjectPathsVersion && dir == "" {
+							file = WorkspaceFileEntry{Name: ".github", Directory: true}
+						} else if version == WorkspaceFileProjectPathsVersion && dir == ".github/workflows" {
+							file = WorkspaceFileEntry{Name: "workflow.yaml"}
+						} else if dir != "" {
+							t.Errorf("unexpected directory on v%d: %q", version, dir)
+						}
+						reply(c, q, map[string]any{"entries": []WorkspaceFileEntry{file}})
+					case workspaceFileSearchMethod:
+						reply(c, q, WorkspaceFileSearchResult{Matches: []WorkspaceFileMatch{{Path: "docs/README.md"}}})
+					default:
+						t.Errorf("unexpected method %q", q.Method)
+					}
 				}
-				_, _ = r.ReadByte()
 			})
 			c := NewClient(socket, ClientOptions{Capabilities: map[string][]uint64{workspaceFilesCapability: {3, 2, 1}}})
 			defer c.Close()

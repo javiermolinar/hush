@@ -204,7 +204,7 @@ func (m *Model) receiveFeed(msg feedMsg) tea.Cmd {
 		m.probe.known = false // a new connection verifies capabilities again
 		probe = m.retryMenuProbe()
 	}
-	if m.gitDiffFeed.token != 0 && (old.Status != t.info.Status || slices.ContainsFunc(newRows, func(r *record) bool {
+	if m.gitDiffFeed.token != 0 && !m.gitDiffFeed.pushed && (old.Status != t.info.Status || slices.ContainsFunc(newRows, func(r *record) bool {
 		return slices.ContainsFunc(r.entry.Record.Messages, func(msg sdk.Message) bool { return msg.Role == "tool" })
 	})) {
 		review = m.expediteGitDiff()

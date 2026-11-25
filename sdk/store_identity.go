@@ -38,9 +38,12 @@ type storeProof struct {
 }
 
 func (c *Client) changedStore() bool {
-	c.storeMu.Lock()
-	defer c.storeMu.Unlock()
-	return c.storeChanged
+	select {
+	case <-c.storeInvalid:
+		return true
+	default:
+		return false
+	}
 }
 
 // A single publication fence for every kind of session. Handshakes can run in
@@ -48,7 +51,7 @@ func (c *Client) changedStore() bool {
 func (c *Client) verifyStore(ctx, lifetime context.Context, s *session, h Hello, proof storeProof) error {
 	c.storeMu.Lock()
 	defer c.storeMu.Unlock()
-	if c.storeChanged {
+	if c.changedStore() {
 		return ErrStoreChanged
 	}
 	if err := ctx.Err(); err != nil {
@@ -58,7 +61,7 @@ func (c *Client) verifyStore(ctx, lifetime context.Context, s *session, h Hello,
 		return ErrClosed
 	}
 	if c.storePin != (storeProof{}) && c.storePin != proof {
-		c.storeChanged = true
+		close(c.storeInvalid) // also wake calls waiting for a pool lease
 		for other := range c.verified {
 			other.fail(ErrStoreChanged)
 		}

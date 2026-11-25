@@ -125,8 +125,8 @@ func (c *Client) ListThreadDirectory(ctx context.Context, opts ThreadDirectoryOp
 
 func (c *Client) threadDirectoryPage(ctx context.Context, opts ThreadDirectoryOptions) (ThreadDirectoryPage, uint64, error) {
 	if opts.Query != "" {
-		// A picker cancels searches while typing, so use a separate connection.
-		page, err := waitOnCapability[ThreadDirectoryPage](ctx, c, threadDirectoryList, opts, "threadWorkspace", ThreadWorkspaceSearchVersion)
+		// Picker searches cancel independently of the command connection.
+		page, err := metadataRead[ThreadDirectoryPage](ctx, c, threadDirectoryList, opts, "threadWorkspace", ThreadWorkspaceSearchVersion)
 		return page, ThreadWorkspaceSearchVersion, err
 	}
 	s, err := c.connect(ctx)

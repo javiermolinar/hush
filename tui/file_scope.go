@@ -20,11 +20,16 @@ type fileSearchBackend interface {
 	SearchWorkspaceFiles(context.Context, sdk.WorkspaceFileTarget, string, int) (sdk.WorkspaceFileSearchResult, error)
 }
 
+type fileScopeWatchBackend interface {
+	WatchWorkspaceFileScope(context.Context, sdk.WorkspaceFileTarget) <-chan sdk.WorkspaceFileScopeUpdate
+}
+
 // The picker detects these at runtime, so a signature drift would silently
 // disable it. Keep the SDK client's methods checked at compile time.
 var _ interface {
 	fileBrowseBackend
 	fileSearchBackend
+	fileScopeWatchBackend
 } = (*sdk.Client)(nil)
 
 const fileSearchDelay = 150 * time.Millisecond
@@ -34,6 +39,8 @@ type fileScopeLease struct {
 	target                 sdk.WorkspaceFileTarget
 	navigation, generation uint64
 	scope                  sdk.WorkspaceFileScope
+	pushed                 bool
+	revision               string
 	ctx                    context.Context
 	cancel                 context.CancelFunc
 }
@@ -41,6 +48,12 @@ type fileScopeLease struct {
 type fileScopeMsg struct {
 	generation uint64
 	scope      sdk.WorkspaceFileScope
+}
+type fileScopeWatchMsg struct {
+	generation uint64
+	source     <-chan sdk.WorkspaceFileScopeUpdate
+	update     sdk.WorkspaceFileScopeUpdate
+	ok         bool
 }
 type renewFileScope uint64
 
@@ -73,13 +86,50 @@ func (m *Model) syncFileScope() tea.Cmd {
 		}
 		return nil
 	}
-	if m.fileScope.owner == m.active && m.fileScope.navigation == m.navigation && m.fileScope.target == target {
+	watcher, hasWatch := m.backend.(fileScopeWatchBackend)
+	pushed := m.fileScopePush && hasWatch
+	if s := m.fileScope; s.owner == m.active && s.navigation == m.navigation && s.target == target && s.pushed == pushed {
 		return nil
 	}
 	m.stopFileScope()
 	ctx, cancel := context.WithCancel(m.ctx)
-	m.fileScope = fileScopeLease{owner: m.active, target: target, navigation: m.navigation, generation: m.token(), ctx: ctx, cancel: cancel}
-	return m.fileScopeCommand()
+	s := fileScopeLease{owner: m.active, target: target, navigation: m.navigation, generation: m.token(), pushed: pushed, ctx: ctx, cancel: cancel}
+	m.fileScope = s
+	if !pushed {
+		return m.fileScopeCommand()
+	}
+	return func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return awaitFileScopeWatch(s, watcher.WatchWorkspaceFileScope(ctx, target))()
+	}
+}
+
+func awaitFileScopeWatch(s fileScopeLease, source <-chan sdk.WorkspaceFileScopeUpdate) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case <-s.ctx.Done():
+			return nil
+		case v, ok := <-source:
+			return fileScopeWatchMsg{s.generation, source, v, ok}
+		}
+	}
+}
+
+func (m *Model) receiveFileScopeWatch(msg fileScopeWatchMsg) tea.Cmd {
+	s := m.fileScope
+	if !s.pushed || msg.generation != s.generation || s.owner != m.active || s.navigation != m.navigation {
+		return nil
+	}
+	if sdk.IsCode(msg.update.Err, "unsupported_capability") {
+		m.fileScopePush = false
+		return m.syncFileScope()
+	}
+	if !msg.ok {
+		return nil
+	}
+	return tea.Batch(m.applyFileScope(msg.update.Scope, msg.update.Revision), awaitFileScopeWatch(s, msg.source))
 }
 
 func (m *Model) fileScopeCommand() tea.Cmd {
@@ -104,15 +154,20 @@ func (m *Model) fileScopeCommand() tea.Cmd {
 
 func (m *Model) receiveFileScope(v fileScopeMsg) tea.Cmd {
 	s := &m.fileScope
-	if v.generation != s.generation || s.owner != m.active || s.navigation != m.navigation {
+	if s.pushed || v.generation != s.generation || s.owner != m.active || s.navigation != m.navigation {
 		return nil
 	}
-	if s.scope != v.scope {
+	return tea.Batch(m.applyFileScope(v.scope, ""), tea.Tick(5*time.Second, func(time.Time) tea.Msg { return renewFileScope(v.generation) }))
+}
+
+func (m *Model) applyFileScope(scope sdk.WorkspaceFileScope, revision string) tea.Cmd {
+	s := &m.fileScope
+	if s.scope != scope || s.revision != revision {
 		m.stopFileRequest()
 		m.files = filePicker{}
 	}
-	s.scope = v.scope
-	return tea.Batch(m.refreshFilePicker(), tea.Tick(5*time.Second, func(time.Time) tea.Msg { return renewFileScope(v.generation) }))
+	s.scope, s.revision = scope, revision
+	return m.refreshFilePicker()
 }
 
 func (m *Model) currentFileScope() sdk.WorkspaceFileScope {

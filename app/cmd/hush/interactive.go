@@ -45,7 +45,8 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceSearchVersion, sdk.ThreadWorkspaceVersion},
 		"images": {sdk.ImagesVersion}, "nativeStop": {sdk.NativeStopVersion}, "schedules": {sdk.SchedulesVersion},
 		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "settings": {sdk.SettingsVersion},
-		"workspaceFiles":  {sdk.WorkspaceFileProjectPathsVersion, sdk.WorkspaceFileSearchVersion, sdk.WorkspaceFilesVersion},
+		"workspaceFiles":      {sdk.WorkspaceFileProjectPathsVersion, sdk.WorkspaceFileSearchVersion, sdk.WorkspaceFilesVersion},
+		"workspaceScopeWatch": {sdk.WorkspaceScopeWatchVersion}, "gitDiffWatch": {sdk.GitDiffWatchVersion},
 		"workspaceSkills": {sdk.WorkspaceSkillDraftVersion, sdk.WorkspaceSkillsVersion}, "loadedContext": {sdk.LoadedContextAgentsVersion, sdk.LoadedContextVersion},
 	}
 	var environment sdk.ClientEnvironment

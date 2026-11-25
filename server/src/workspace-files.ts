@@ -1,7 +1,9 @@
 import { isAbsolute } from "node:path";
 import { durableID, WireError } from "./wire.js";
+import { watchRevision } from "./workspace-watch.js";
 
 export const workspaceFilesVersion = 1;
+export const workspaceScopeWatchVersion = 1;
 export const workspaceFileSearchVersion = 2;
 export const workspaceFileProjectPathsVersion = 3;
 export const githubDirectory = ".github";
@@ -11,6 +13,8 @@ const maxSearchResults = 32;
 // workspace and applies the same grant; neither creates a conversation.
 export type WorkspaceFileTarget = { threadId: string } | { cwd: string };
 export type WorkspaceFileScope = { workspace: boolean; home: boolean };
+export type WorkspaceScopeWatch = { target: WorkspaceFileTarget; after?: string };
+export type WorkspaceScopeUpdate = WorkspaceFileScope & { revision: string };
 export type WorkspaceFileEntry = { name: string; directory: boolean };
 export type WorkspaceFilePage = { entries: WorkspaceFileEntry[]; nextCursor?: string };
 export type WorkspaceFileQuery = { kind: "scope"; target: WorkspaceFileTarget } | {
@@ -22,6 +26,7 @@ export interface WorkspaceFilesHost {
   readonly projectPaths?: true;
   call(query: WorkspaceFileQuery, signal: AbortSignal): Promise<WorkspaceFileScope | WorkspaceFilePage>;
   search?(query: WorkspaceFileSearch, signal: AbortSignal): Promise<WorkspaceFileSearchResult>;
+  waitScope?(query: WorkspaceScopeWatch, signal: AbortSignal): Promise<WorkspaceScopeUpdate>;
 }
 
 export const browseName = (name: unknown, includeGitHub = false): name is string => typeof name === "string" && name.length > 0 &&
@@ -45,6 +50,13 @@ function parseTarget({ threadId, cwd }: Record<string, unknown>, version: number
   if (cwd === undefined && durableID(threadId)) return { threadId };
   if (threadId === undefined && version >= workspaceFileSearchVersion && workspaceDirectory(cwd)) return { cwd };
   throw new WireError("invalid_request");
+}
+
+export function parseWorkspaceScopeWatch(fields: Record<string, unknown>, version: number): WorkspaceScopeWatch {
+  const { after } = fields;
+  if (after !== undefined && !watchRevision(after) ||
+      Object.keys(fields).some(key => key !== "threadId" && key !== "cwd" && key !== "after")) throw new WireError("invalid_request");
+  return { target: parseTarget(fields, version), after: after as string | undefined };
 }
 
 export function parseWorkspaceFileSearch(fields: Record<string, unknown>, version: number): WorkspaceFileSearch {
