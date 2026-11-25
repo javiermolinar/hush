@@ -16,7 +16,15 @@ import { checkTarget } from "../../server/test/perf.mjs";
 const run = promisify(execFile);
 const caps = { versions: [1], capabilities: { checkpoints: [1] } };
 const ok = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
-const streamPatch = frame => frame.type === "patch" && frame.ops.some(op => op[0] !== "d" && op[1]?.[0] === "streaming");
+const fixtureText = "Streaming fixture output. ".repeat(2000);
+const tokenSize = 12;
+const carriesFixtureText = value => {
+  // Require a full fixture token or more, not a matching short metadata value.
+  if (typeof value === "string") return value.length >= tokenSize && fixtureText.includes(value);
+  return value !== null && typeof value === "object" && Object.values(value).some(carriesFixtureText);
+};
+const streamPatch = frame => frame.type === "patch" && frame.ops.some(([op, path, ...payload]) =>
+  op !== "d" && path?.[0] === "streaming" && payload.some(carriesFixtureText));
 
 test("preview and confirm a 100k-file rewind while another peer streams", { timeout: 90_000 }, async t => {
   const home = await realpath(await mkdtemp("/tmp/hush-rw-bench-"));
@@ -36,6 +44,10 @@ test("preview and confirm a 100k-file rewind while another peer streams", { time
   }
   await git("add", ".");
   await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "100k files");
+  const { stdout: tracked } = await run("git", ["ls-files", "--cached", "-z"], { cwd, env, maxBuffer: 4 * 1024 * 1024 });
+  const trackedCount = tracked.split("\0").length - 1;
+  assert.equal(trackedCount, 100_000, "rewind fixture must contain exactly 100,000 tracked files");
+  t.diagnostic(`Git tracked files: ${trackedCount}`);
   await run(process.execPath, [fileURLToPath(new URL("../../dist/hush-backend.mjs", import.meta.url)), "trust", "grant", "--cwd", cwd], { cwd, env });
   const app = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
   let peer, streamer;
@@ -49,9 +61,9 @@ test("preview and confirm a 100k-file rewind while another peer streams", { time
     assert.equal(ok(await peer.send("submission.wait", { threadId, submissionId })).status, "done");
     const checkpoint = await cp("record", { kind: "files" });
 
-    const faux = fauxProvider({ provider: "rewind-fixture", tokensPerSecond: 250, tokenSize: { min: 12, max: 12 } });
-    faux.setResponses([fauxAssistantMessage("Streaming fixture output. ".repeat(2000))]);
-    app.runtime.registerNativeProvider(faux.provider);
+    const faux = fauxProvider({ provider: "rewind-fixture", tokensPerSecond: 250, tokenSize: { min: tokenSize, max: tokenSize } });
+    faux.setResponses([fauxAssistantMessage(fixtureText)]);
+    app.runtime.setProvider(faux.provider);
     let patches = 0;
     streamer = await dial(socket, frame => { if (streamPatch(frame)) patches++; });
     ok(await streamer.send("hello", caps));
