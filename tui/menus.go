@@ -58,6 +58,7 @@ type modelCatalogDraftBackend interface {
 }
 
 type menuCapabilities struct {
+	token      uint64
 	features   x.Features
 	directory  bool
 	files      bool
@@ -67,6 +68,65 @@ type menuCapabilities struct {
 	context    bool
 }
 
+// A cold backend can miss the startup probe, and a fresh session has no feed
+// whose connection would probe again. menuProbeState keeps at most one probe
+// in flight: a failure retries with capped backoff, a successful backend or
+// intro report retries at once, and both stop once a probe succeeds. A feed
+// that (re)connects verifies capabilities again, as before.
+type menuProbeState struct {
+	latest   uint64 // newest probe; replies to older ones are ignored
+	pending  bool   // the newest probe has not replied
+	known    bool   // a probe succeeded since the last feed (re)connection
+	failures int    // consecutive failures, which select the next delay
+	retry    uint64 // scheduled retry; 0 when none
+}
+
+type menuProbeFailed uint64
+type menuProbeRetry uint64
+
+const menuRetryBase, menuRetryMax = 250 * time.Millisecond, 4 * time.Second
+
+// menuRetryDelay doubles from menuRetryBase after each consecutive failure,
+// up to menuRetryMax.
+func menuRetryDelay(failures int) time.Duration {
+	return min(menuRetryMax, menuRetryBase<<min(failures, 4))
+}
+
+// retryMenuProbe probes unless capabilities are known or a probe is pending.
+func (m *Model) retryMenuProbe() tea.Cmd {
+	if m.probe.known || m.probe.pending {
+		return nil
+	}
+	return m.menuProbe()
+}
+
+func (m *Model) receiveMenuProbeFailure(token uint64) tea.Cmd {
+	if token != m.probe.latest || !m.probe.pending {
+		return nil
+	}
+	m.probe.pending = false
+	if m.probe.known {
+		return nil
+	}
+	delay := menuRetryDelay(m.probe.failures)
+	m.probe.failures++
+	retry := m.token()
+	m.probe.retry = retry
+	ctx := m.ctx
+	return func() tea.Msg {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-timer.C:
+			return menuProbeRetry(retry)
+		}
+	}
+}
+
+// menuProbe always starts a probe, superseding any pending one or scheduled
+// retry. Update paths use retryMenuProbe to keep one in flight.
 func (m *Model) menuProbe() tea.Cmd {
 	backend, ok := m.backend.(helloBackend)
 	_, catalog := m.backend.(piCatalogBackend)
@@ -93,13 +153,18 @@ func (m *Model) menuProbe() tea.Cmd {
 		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings {
 		return nil
 	}
+	token := m.token()
+	m.probe.latest, m.probe.pending, m.probe.retry = token, true, 0
 	ctx := m.ctx
 	return func() tea.Msg {
 		call, cancel := context.WithTimeout(ctx, menuTimeout)
 		defer cancel()
 		hello, err := backend.Hello(call)
 		if err != nil {
-			return nil
+			if ctx.Err() != nil {
+				return nil
+			}
+			return menuProbeFailed(token)
 		}
 		var f x.Features
 		catalogVersion := hello.Capabilities["modelCatalog"]
@@ -143,7 +208,7 @@ func (m *Model) menuProbe() tea.Cmd {
 		}
 		fileVersion, skillVersion := hello.Capabilities["workspaceFiles"], hello.Capabilities["workspaceSkills"]
 		searchable := fileVersion == sdk.WorkspaceFileSearchVersion || fileVersion == sdk.WorkspaceFileProjectPathsVersion
-		return menuCapabilities{features: f, directory: managed && directory,
+		return menuCapabilities{token: token, features: f, directory: managed && directory,
 			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || searchable),
 			fileSearch: files && fileSearch && searchable,
 			skills:     skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),

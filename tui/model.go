@@ -109,6 +109,7 @@ type Model struct {
 	intro                     *introState
 	introOnly                 bool
 	menuFeaturesFromBackend   extension.Features
+	probe                     menuProbeState
 	settings                  sdk.SettingsSnapshot
 	slashHidden               bool
 }
@@ -302,6 +303,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case introReportMsg:
 		cmd = m.receiveIntro(v)
+		if v.update.Err == nil {
+			cmd = tea.Batch(cmd, m.retryMenuProbe()) // the backend is reachable now
+		}
 	case backendReportMsg:
 		cmd = m.receiveBackendReport(v)
 	case tea.WindowSizeMsg:
@@ -315,11 +319,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tabFeed:
 		cmd = m.receiveTab(v)
 	case menuCapabilities:
+		if v.token != m.probe.latest {
+			break // a newer probe supersedes this reply
+		}
+		m.probe = menuProbeState{latest: v.token, known: true}
 		m.menuFeaturesFromBackend = v.features
 		m.directoryEnabled, m.nativeContext = v.directory, v.context
 		m.nativeFiles, m.nativeFileSearch = v.files, v.fileSearch
 		m.nativeSkills, m.nativeSkillDraft = v.skills, v.skillDraft
 		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff())
+	case menuProbeFailed:
+		cmd = m.receiveMenuProbeFailure(uint64(v))
+	case menuProbeRetry:
+		if uint64(v) == m.probe.retry {
+			m.probe.retry = 0
+			cmd = m.retryMenuProbe()
+		}
 	case skillsMsg:
 		m.receiveSkills(v)
 	case fileScopeMsg:

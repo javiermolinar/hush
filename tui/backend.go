@@ -201,7 +201,8 @@ func (m *Model) receiveFeed(msg feedMsg) tea.Cmd {
 	m.observeTools(owner, oldTools, t.tools)
 	var probe, review tea.Cmd
 	if !wasConnected {
-		probe = m.menuProbe()
+		m.probe.known = false // a new connection verifies capabilities again
+		probe = m.retryMenuProbe()
 	}
 	if m.gitDiffFeed.token != 0 && (old.Status != t.info.Status || slices.ContainsFunc(newRows, func(r *record) bool {
 		return slices.ContainsFunc(r.entry.Record.Messages, func(msg sdk.Message) bool { return msg.Role == "tool" })
