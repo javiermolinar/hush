@@ -3,7 +3,10 @@ package tui
 import "image/color"
 
 // The catalog maps palettes to Hush's semantic foreground roles. It never
-// sets the default text or the terminal background. See README for sources.
+// sets the default text or the terminal background. Where a source color
+// misses 4.5:1 on its palette's own background, it is lightened (darkened
+// for Dawn). Rosé Pine strings use gold, as its upstream highlights do,
+// and links use pine. See README for sources.
 var presetThemes = [...]namedTheme{
 	{name: "panther", colors: themeColors{
 		roleControl:       themeRGB(0xe0d9f7),
@@ -24,7 +27,7 @@ var presetThemes = [...]namedTheme{
 		roleLink:          themeRGB(0x83a598),
 		roleSuccess:       themeRGB(0xb8bb26),
 		roleWarning:       themeRGB(0xfe8019),
-		roleError:         themeRGB(0xfb4934),
+		roleError:         themeRGB(0xff565e),
 		roleSyntaxKeyword: themeRGB(0xd3869b),
 		roleSyntaxLiteral: themeRGB(0x8ec07c),
 		roleSyntaxComment: themeRGB(0xa89984),
@@ -33,24 +36,24 @@ var presetThemes = [...]namedTheme{
 		roleControl:       themeRGB(0xe0def4),
 		roleMuted:         themeRGB(0x908caa),
 		roleAccent:        themeRGB(0xebbcba),
-		roleLink:          themeRGB(0x9ccfd8),
+		roleLink:          themeRGB(0x65a7c3),
 		roleSuccess:       themeRGB(0x9ccfd8),
 		roleWarning:       themeRGB(0xf6c177),
 		roleError:         themeRGB(0xeb6f92),
 		roleSyntaxKeyword: themeRGB(0xc4a7e7),
-		roleSyntaxLiteral: themeRGB(0xebbcba),
+		roleSyntaxLiteral: themeRGB(0xf6c177),
 		roleSyntaxComment: themeRGB(0x908caa),
 	}},
 	{name: "rose-pine-moon", colors: themeColors{
 		roleControl:       themeRGB(0xe0def4),
 		roleMuted:         themeRGB(0x908caa),
 		roleAccent:        themeRGB(0xc4a7e7),
-		roleLink:          themeRGB(0x9ccfd8),
-		roleSuccess:       themeRGB(0xa7d4c3),
+		roleLink:          themeRGB(0x58a8ca),
+		roleSuccess:       themeRGB(0x9ccfd8),
 		roleWarning:       themeRGB(0xf6c177),
 		roleError:         themeRGB(0xeb6f92),
 		roleSyntaxKeyword: themeRGB(0xea9a97),
-		roleSyntaxLiteral: themeRGB(0x9ccfd8),
+		roleSyntaxLiteral: themeRGB(0xf6c177),
 		roleSyntaxComment: themeRGB(0x908caa),
 	}},
 	{name: "rose-pine-dawn", colors: themeColors{
@@ -60,16 +63,16 @@ var presetThemes = [...]namedTheme{
 		roleLink:          themeRGB(0x286983),
 		roleSuccess:       themeRGB(0x276853),
 		roleWarning:       themeRGB(0x88580d),
-		roleError:         themeRGB(0x93425a),
-		roleSyntaxKeyword: themeRGB(0x86506c),
-		roleSyntaxLiteral: themeRGB(0x286983),
+		roleError:         themeRGB(0x983e54),
+		roleSyntaxKeyword: themeRGB(0x994a48),
+		roleSyntaxLiteral: themeRGB(0x88580d),
 		roleSyntaxComment: themeRGB(0x68637c),
 	}},
 	{name: "keanu", colors: themeColors{
 		roleControl:       themeRGB(0xc2f4cc),
 		roleMuted:         themeRGB(0x88b699),
 		roleAccent:        themeRGB(0x63f57a),
-		roleLink:          themeRGB(0x74ebc9),
+		roleLink:          themeRGB(0x63ebe0),
 		roleSuccess:       themeRGB(0xb4f477),
 		roleWarning:       themeRGB(0xead879),
 		roleError:         themeRGB(0xff9392),
@@ -80,8 +83,8 @@ var presetThemes = [...]namedTheme{
 	{name: "kitt", colors: themeColors{
 		roleControl:       themeRGB(0xf5e1dc),
 		roleMuted:         themeRGB(0xb2a099),
-		roleAccent:        themeRGB(0xff716a),
-		roleLink:          themeRGB(0xffb073),
+		roleAccent:        themeRGB(0xff5b5a),
+		roleLink:          themeRGB(0xffa33c),
 		roleSuccess:       themeRGB(0xbed88a),
 		roleWarning:       themeRGB(0xffca77),
 		roleError:         themeRGB(0xff918e),

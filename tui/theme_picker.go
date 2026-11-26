@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -37,6 +38,68 @@ type themeSaved struct {
 	token uint64
 	name  string
 	err   error
+}
+
+// themeNote says why some of the active theme's colors show the terminal
+// palette instead, so a preview or save never falls back silently.
+func (m *Model) themeNote() string {
+	var requested int
+	var fallback []string
+	for role, def := range colorRoles {
+		if def.name != "" && m.themes.active.colors[role] != nil {
+			requested++
+			if !m.palette.roles[role].custom {
+				fallback = append(fallback, def.name)
+			}
+		}
+	}
+	switch {
+	case len(fallback) == 0:
+		return ""
+	case m.palette.noColor:
+		return "NO_COLOR is set: showing terminal colors"
+	case !m.theme.TrueColor:
+		return "needs truecolor: showing terminal colors"
+	case m.palette.background == nil:
+		return "background unknown: showing terminal colors"
+	case len(fallback) == requested:
+		return "low contrast here: showing terminal colors"
+	case len(fallback) == 1:
+		return fallback[0] + " uses its terminal color for contrast"
+	case len(fallback) == 2:
+		return fallback[0] + " and " + fallback[1] + " use terminal colors for contrast"
+	}
+	return fmt.Sprintf("%d of %d colors use the terminal palette for contrast", len(fallback), requested)
+}
+
+// themeSample shows the previewed roles. Its labels also size the row.
+var themeSample = [...]struct {
+	role  colorRole
+	label string
+}{{roleAccent, "Accent"}, {roleLink, "Link"}, {roleSuccess, "OK"}, {roleWarning, "Warn"}, {roleError, "Error"},
+	{roleSyntaxKeyword, "if"}, {roleSyntaxLiteral, `"text"`}, {roleSyntaxComment, "// note"}}
+
+var themeSampleWidth = func() int {
+	width := 2 * (len(themeSample) - 1)
+	for _, s := range themeSample {
+		width += stringWidth(s.label)
+	}
+	return width
+}()
+
+func (m *Model) themeSampleRow() string {
+	var b strings.Builder
+	for i, s := range themeSample {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		label := s.label
+		if s.role == roleLink {
+			label = "\x1b[4m" + label + "\x1b[24m" // links stay underlined in any palette
+		}
+		b.WriteString(m.palette.roles[s.role].ink.paint(label))
+	}
+	return b.String()
 }
 
 func (m *Model) applyTheme(theme namedTheme) {
@@ -155,7 +218,11 @@ func (m *Model) receiveThemeSaved(msg themeSaved) tea.Cmd {
 		}
 		return nil
 	}
-	return tea.Batch(m.closeDialog(d, msg.name, true), m.notify(m.active, "Saved theme "+msg.name, x.Good))
+	saved := "Saved theme " + msg.name
+	if note := m.themeNote(); note != "" {
+		saved += " · " + note
+	}
+	return tea.Batch(m.closeDialog(d, msg.name, true), m.notify(m.active, saved, x.Good))
 }
 
 func (m *Model) themePickerKey(d *dialog, key string) tea.Cmd {
@@ -199,7 +266,12 @@ func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
 		return nil, nil
 	}
 	if n >= 3 {
-		add(m.paint(x.Accent, d.title), -1)
+		// The title row always exists, so a note never moves the choices.
+		title := m.paint(x.Accent, d.title)
+		if note := m.themeNote(); note != "" && !p.loading && !p.saving {
+			title += m.control(" · " + note)
+		}
+		add(title, -1)
 	}
 	if p.loading || p.saving {
 		status := "Loading client themes…"
@@ -218,8 +290,7 @@ func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
 	if showKeys {
 		budget--
 	}
-	const sampleText = "Accent  Link  OK  Warn  Error  if  \"text\"  // note"
-	showSample := budget >= 5 && w >= stringWidth(sampleText)
+	showSample := budget >= 5 && w >= themeSampleWidth
 	if showSample {
 		budget--
 	}
@@ -240,11 +311,7 @@ func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
 		add(row, i)
 	}
 	if showSample {
-		roles := m.palette.roles
-		add(m.paint(x.Accent, "Accent")+"  "+roles[roleLink].ink.paint("\x1b[4mLink\x1b[24m")+"  "+
-			m.paint(x.Good, "OK")+"  "+m.paint(x.Warning, "Warn")+"  "+m.paint(x.Danger, "Error")+"  "+
-			roles[roleSyntaxKeyword].ink.paint("if")+"  "+roles[roleSyntaxLiteral].ink.paint("\"text\"")+"  "+
-			roles[roleSyntaxComment].ink.paint("// note"), -1)
+		add(m.themeSampleRow(), -1)
 	}
 	if showKeys {
 		action := "apply"

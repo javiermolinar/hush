@@ -275,9 +275,13 @@ type themeBook struct {
 }
 
 func (s themeStore) list(ctx context.Context) themeBook {
-	book := themeBook{choices: append([]namedTheme{{name: terminalTheme}}, presetThemes[:]...)}
+	// Presets resolve through ~/.hush/themes like local files, so offer them
+	// only where load and save can resolve them too. Without the directory,
+	// each preset is itself; if it can't be opened, only terminal applies.
+	book := themeBook{choices: []namedTheme{{name: terminalTheme}}}
 	agent, err := s.agent(false)
 	if errors.Is(err, fs.ErrNotExist) {
+		book.choices = append(book.choices, presetThemes[:]...)
 		return book
 	}
 	if err != nil {
@@ -287,6 +291,7 @@ func (s themeStore) list(ctx context.Context) themeBook {
 	defer agent.Close()
 	dir, err := openThemeDir(agent, "themes")
 	if errors.Is(err, fs.ErrNotExist) {
+		book.choices = append(book.choices, presetThemes[:]...)
 		return book
 	}
 	if err != nil {
@@ -294,15 +299,19 @@ func (s themeStore) list(ctx context.Context) themeBook {
 		return book
 	}
 	defer dir.Close()
+	// Keep the first problem, so a later truncation notice can't hide why
+	// a theme, such as an invalid preset override, is missing.
+	notice := func(s string) {
+		if book.problem == "" {
+			book.problem = s
+		}
+	}
 	// Resolve preset names directly, even if an override would be outside
 	// the bounded directory scan. Each effective name appears only once.
-	book.choices = book.choices[:1]
 	for _, preset := range presetThemes {
 		theme, err := readThemeChoice(dir, preset.name)
 		if err != nil {
-			if book.problem == "" {
-				book.problem = err.Error()
-			}
+			notice(err.Error())
 			continue
 		}
 		book.choices = append(book.choices, theme)
@@ -320,7 +329,7 @@ func (s themeStore) list(ctx context.Context) themeBook {
 		return book
 	}
 	if len(files) > maxScanned {
-		book.problem = "Showing up to 512 entries in ~/.hush/themes"
+		notice("Showing up to 512 entries in ~/.hush/themes")
 		files = files[:maxScanned]
 	}
 	count := 0
@@ -337,13 +346,11 @@ func (s themeStore) list(ctx context.Context) themeBook {
 		}
 		t, err := readNamedTheme(dir, name)
 		if err != nil {
-			if book.problem == "" {
-				book.problem = err.Error()
-			}
+			notice(err.Error())
 			continue
 		}
 		if count == maxThemeCount {
-			book.problem = "Showing up to 64 additional themes in ~/.hush/themes"
+			notice("Showing up to 64 additional themes in ~/.hush/themes")
 			break
 		}
 		book.choices = append(book.choices, t)

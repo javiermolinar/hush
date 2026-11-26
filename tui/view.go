@@ -858,10 +858,17 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 							return nil
 						}
 						if p := d.themePicker; p != nil {
-							if !p.loading && !p.saving {
-								d.selected = target
-								m.previewTheme(d) // Enter applies; clicking only previews
+							if p.loading || p.saving {
+								return nil
 							}
+							// A click previews a theme; clicking the previewed row again
+							// applies it, like Enter. The starter row copies at once.
+							again := target == d.selected
+							d.selected = target
+							if c, ok := d.choice(); ok && (again || c.ID == themeTemplateChoice) {
+								return m.acceptTheme(d)
+							}
+							m.previewTheme(d)
 							return nil
 						}
 						d.selected = target

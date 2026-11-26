@@ -2,7 +2,9 @@ package tui
 
 import (
 	"bytes"
+	"fmt"
 	"image/color"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,13 +86,17 @@ func TestPresetThemesOnFreshHome(t *testing.T) {
 			t.Fatalf("invalid or duplicate preset: %+v", theme)
 		}
 		seen[theme.name] = true
-		bg := themeRGB(0x1e1e2e)
+		// Check the Catppuccin review terminal and the background of the
+		// palette a preset adapts, which may be lighter than the review one.
+		refs := []uint32{0x1e1e2e}
 		if theme.name == "rose-pine-dawn" {
-			bg = themeRGB(0xeff1f5)
+			refs = []uint32{0xeff1f5}
 		}
-		for role, def := range colorRoles {
-			if def.name != "" && (theme.colors[role] == nil || contrastRatio(theme.colors[role], bg) < 4.5) {
-				t.Errorf("%s: %s doesn't meet contrast on the reference terminal", theme.name, def.name)
+		for _, bg := range append(refs, presetBackgrounds[theme.name]...) {
+			for role, def := range colorRoles {
+				if def.name != "" && (theme.colors[role] == nil || contrastRatio(theme.colors[role], themeRGB(bg)) < 4.5) {
+					t.Errorf("%s: %s doesn't meet contrast on #%06x", theme.name, def.name, bg)
+				}
 			}
 		}
 		if got, err := store.load(theme.name); err != nil || got != theme {
@@ -102,6 +108,99 @@ func TestPresetThemesOnFreshHome(t *testing.T) {
 	}
 	if got, err := store.load(""); err != nil || got.name != terminalTheme {
 		t.Fatalf("preset changed the default: %+v %v", got, err)
+	}
+}
+
+// Source backgrounds: Gruvbox dark0, and Rosé Pine base for each variant.
+var presetBackgrounds = map[string][]uint32{
+	"gruvbox-dark":   {0x282828},
+	"rose-pine":      {0x191724},
+	"rose-pine-moon": {0x232136},
+	"rose-pine-dawn": {0xfaf4ed},
+}
+
+func TestPresetRolesStayDistinct(t *testing.T) {
+	distance := func(a, b color.Color) float64 {
+		l1, a1, b1 := oklab(a)
+		l2, a2, b2 := oklab(b)
+		return math.Sqrt((l1-l2)*(l1-l2) + (a1-a2)*(a1-a2) + (b1-b2)*(b1-b2))
+	}
+	type pair struct {
+		a, b colorRole
+		min  float64
+	}
+	var pairs []pair
+	prose := []colorRole{roleAccent, roleLink, roleSuccess, roleWarning, roleError}
+	code := []colorRole{roleSyntaxKeyword, roleSyntaxLiteral, roleSyntaxComment}
+	for _, group := range [][]colorRole{prose, code} {
+		for i, a := range group {
+			for _, b := range group[i+1:] {
+				pairs = append(pairs, pair{a, b, 0.07})
+			}
+		}
+	}
+	// Code may reuse a status color, as Rosé Pine's strings reuse gold, but
+	// links and accents must not read as code.
+	for _, a := range []colorRole{roleAccent, roleLink} {
+		for _, b := range code[:2] {
+			pairs = append(pairs, pair{a, b, 0.07})
+		}
+	}
+	// Errors must stand out at a glance: roughly Gruvbox's red-to-orange gap.
+	for _, b := range prose[:4] {
+		pairs = append(pairs, pair{roleError, b, 0.1})
+	}
+	for _, theme := range presetThemes {
+		for _, p := range pairs {
+			if d := distance(theme.colors[p.a], theme.colors[p.b]); d < p.min {
+				t.Errorf("%s: %s and %s are too similar (OKLab %.3f < %.2f)", theme.name,
+					colorRoles[p.a].name, colorRoles[p.b].name, d, p.min)
+			}
+		}
+	}
+}
+
+func TestPresetsNeedAResolvableThemeDirectory(t *testing.T) {
+	// Presets resolve through ~/.hush/themes. If it can't be opened, an
+	// override can't be ruled out, so the picker must not offer what load
+	// and save reject.
+	for _, blocked := range []string{".hush", filepath.Join(".hush", "themes")} {
+		t.Run(blocked, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(home, filepath.Dir(blocked)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeThemeFixture(t, home, blocked, "not a directory")
+			store := themeStore{home: home}
+			book := store.list(t.Context())
+			if len(book.choices) != 1 || book.choices[0].name != terminalTheme || !strings.HasPrefix(book.problem, "Open ~/") {
+				t.Fatalf("offered presets that can't be applied: %+v", book)
+			}
+			preset, _ := presetTheme("gruvbox-dark")
+			if err := store.save(t.Context(), preset); err == nil {
+				t.Fatal("saved a preset that can't resolve")
+			}
+			if got, err := store.load(preset.name); err == nil || got.name != terminalTheme {
+				t.Fatalf("launched a preset that can't resolve: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestThemeListKeepsFirstProblem(t *testing.T) {
+	store, dir := themeFixture(t)
+	writeThemeFixture(t, dir, "kitt.json", "invalid")
+	for i := range maxThemeCount + 1 {
+		writeThemeFixture(t, dir, fmt.Sprintf("extra-%02d.json", i), violetThemeJSON)
+	}
+	if book := store.list(t.Context()); !strings.Contains(book.problem, "kitt.json") {
+		t.Fatalf("the theme cap hid why kitt is missing: %q", book.problem)
+	}
+	if err := os.Remove(filepath.Join(dir, "kitt.json")); err != nil {
+		t.Fatal(err)
+	}
+	if book := store.list(t.Context()); !strings.Contains(book.problem, "64 additional themes") {
+		t.Fatalf("missing theme cap notice: %q", book.problem)
 	}
 }
 

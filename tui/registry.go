@@ -74,6 +74,16 @@ var apiVersion = regexp.MustCompile(`^0\.1\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0
 var ident = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
 var slashName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
+// slashRank orders prefix matches, which Enter runs first. Themes change
+// rarely, so /theme sorts after other commands and a shared prefix such
+// as /th keeps opening /thinking.
+func slashRank(id extension.ActionID) int {
+	if id == themesID {
+		return 1
+	}
+	return 0
+}
+
 func compatibleVersion(version string) bool {
 	match := apiVersion.FindStringSubmatch(version)
 	if match == nil {
@@ -280,7 +290,8 @@ func makeRegistry(options Options) (registry, error) {
 		}
 	}
 	slices.SortFunc(r.slashOrder, func(a, b int) int {
-		return cmp.Compare(r.actions[a].action.Slash.Name, r.actions[b].action.Slash.Name)
+		first, second := r.actions[a].action, r.actions[b].action
+		return cmp.Or(cmp.Compare(slashRank(first.ID), slashRank(second.ID)), cmp.Compare(first.Slash.Name, second.Slash.Name))
 	})
 	for _, group := range [][]segmentSpec{r.statusSegments, r.tabSegments} {
 		slices.SortFunc(group, func(a, b segmentSpec) int { return compareSegmentPriority(a.rank, b.rank) })

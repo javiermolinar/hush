@@ -202,14 +202,19 @@ func TestThemeSlashPreviewsAndAppliesPreset(t *testing.T) {
 	if row < 0 {
 		t.Fatal("expected a visible Rosé Pine choice to click")
 	}
-	m.Update(tea.MouseClickMsg(tea.Mouse{X: f.dialogX + 3, Y: f.dialogY + row, Button: tea.MouseLeft}))
+	click := func() tea.Cmd {
+		_, cmd := m.Update(tea.MouseClickMsg(tea.Mouse{X: f.dialogX + 3, Y: f.dialogY + row, Button: tea.MouseLeft}))
+		return cmd
+	}
+	click()
 	if m.themes.active.name != "rose-pine" || d.themePicker.saving {
 		t.Fatal("click must preview without applying")
 	}
 	assertNotSaved()
-	cmd := press(m, tea.KeyEnter, 0)
-	if cmd == nil {
-		t.Fatal("Enter didn't schedule apply")
+	assertFrame(t, m)
+	cmd := click() // the previewed row: apply, like Enter
+	if cmd == nil || !d.themePicker.saving {
+		t.Fatal("second click didn't schedule apply")
 	}
 	assertNotSaved()
 	saved, ok := cmd().(themeSaved)
@@ -220,6 +225,101 @@ func TestThemeSlashPreviewsAndAppliesPreset(t *testing.T) {
 	reattach := modelFor(t, Options{})
 	if m.focusedDialog() != nil || m.themes.active.name != "rose-pine" || m.themes.active != reattach.themes.active {
 		t.Fatal("applied preset did not persist")
+	}
+}
+
+func freshThemeHome(t *testing.T, noColor string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("NO_COLOR", noColor)
+	t.Setenv("TERM_PROGRAM", "")
+	return home
+}
+
+func TestThemeStarterRowCopiesOnClick(t *testing.T) {
+	home := freshThemeHome(t, "")
+	var clipboard string
+	m := modelFor(t, Options{Fills: FillOff, ReducedMotion: true, CopyText: func(_ context.Context, text string) error {
+		clipboard = text
+		return nil
+	}})
+	darkThemeTerminal(m)
+	m.Update(tea.WindowSizeMsg{Width: 96, Height: 40})
+	d := openTestThemes(t, m)
+	f := m.frame
+	row := slices.Index(f.dialogChoices, slices.IndexFunc(d.choices, func(c x.Choice) bool { return c.ID == themeTemplateChoice }))
+	if row < 0 || d.selected == f.dialogChoices[row] {
+		t.Fatal("expected a visible, unselected starter row")
+	}
+	_, cmd := m.Update(tea.MouseClickMsg(tea.Mouse{X: f.dialogX + 3, Y: f.dialogY + row, Button: tea.MouseLeft}))
+	finishThemeWork(t, m, cmd)
+	if clipboard != ThemeTemplate() || m.focusedDialog() != nil || m.themes.active.name != terminalTheme {
+		t.Fatal("one click on the starter row didn't copy it")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".hush")); !os.IsNotExist(err) {
+		t.Fatalf("copying the starter wrote config: %v", err)
+	}
+}
+
+func TestThemePickerExplainsFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name, theme, noColor, want string
+		profile                    colorprofile.Profile
+		bg                         color.Color
+	}{
+		{"applied", "gruvbox-dark", "", "", colorprofile.TrueColor, themeRGB(0x282828)},
+		{"no truecolor", "gruvbox-dark", "", "needs truecolor: showing terminal colors", colorprofile.ANSI256, themeRGB(0x282828)},
+		{"NO_COLOR", "gruvbox-dark", "1", "NO_COLOR is set: showing terminal colors", colorprofile.TrueColor, themeRGB(0x282828)},
+		{"unknown background", "gruvbox-dark", "", "background unknown: showing terminal colors", colorprofile.TrueColor, nil},
+		{"one role", "gruvbox-dark", "", "error uses its terminal color for contrast", colorprofile.TrueColor, themeRGB(0x32302f)},
+		{"two roles", "rose-pine", "", "muted and syntax_comment use terminal colors for contrast", colorprofile.TrueColor, themeRGB(0x282c34)},
+		{"every role", "rose-pine-dawn", "", "low contrast here: showing terminal colors", colorprofile.TrueColor, themeRGB(0x1e1e2e)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			freshThemeHome(t, tc.noColor)
+			m := modelFor(t, Options{Fills: FillOff, ReducedMotion: true})
+			m.Update(tea.ColorProfileMsg{Profile: tc.profile})
+			if tc.bg != nil {
+				m.Update(tea.BackgroundColorMsg{Color: tc.bg})
+			}
+			m.Update(tea.WindowSizeMsg{Width: 96, Height: 24})
+			d := openTestThemes(t, m)
+			before := *m.frame
+			chooseThemeForTest(t, m, d, tc.theme)
+			body := ansi.Strip(assertFrame(t, m))
+			if got := m.themeNote(); got != tc.want || tc.want != "" && !strings.Contains(body, "Themes · "+tc.want) {
+				t.Fatalf("note %q, want %q:\n%s", got, tc.want, body)
+			}
+			if m.frame.dialogY != before.dialogY || m.frame.dialogHeight != before.dialogHeight {
+				t.Fatal("the note moved the picker")
+			}
+			cmd := press(m, tea.KeyEnter, 0)
+			saved, ok := cmd().(themeSaved)
+			if !ok || saved.err != nil {
+				t.Fatalf("save failed: %+v", saved)
+			}
+			m.Update(saved)
+			want := "Saved theme " + tc.theme
+			if tc.want != "" {
+				want += " · " + tc.want
+			}
+			if m.focusedDialog() != nil || !strings.Contains(ansi.Strip(assertFrame(t, m)), want) {
+				t.Fatalf("save notice should read %q:\n%s", want, ansi.Strip(assertFrame(t, m)))
+			}
+		})
+	}
+}
+
+func TestThemeSlashKeepsExistingPrefixes(t *testing.T) {
+	freshThemeHome(t, "")
+	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	for prefix, want := range map[string]string{"/t": "thinking", "/th": "thinking", "/the": "theme"} {
+		m.editor.set(prefix)
+		if matches := m.slashMatches(); len(matches) == 0 || matches[0].action.Slash.Name != want {
+			t.Errorf("Enter on %s should run /%s", prefix, want)
+		}
 	}
 }
 

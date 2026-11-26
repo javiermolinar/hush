@@ -98,7 +98,8 @@ personal roots and trusted workspaces. Use `/skills` to stage one without submit
 
 Hush uses the terminal palette by default. Open `/theme` (or `?` → **Themes**) and use ↑/↓ or
 click a row to preview it. The sample shows the active accent, link, status, and syntax colors.
-Press Enter to apply and save locally, or Esc to restore the previous theme without saving.
+Press Enter or click the row again to apply and save locally, or Esc to restore the previous theme
+without saving.
 
 Built-in choices are `panther`, `gruvbox-dark`, `keanu`, `rose-pine`, `rose-pine-moon`,
 `rose-pine-dawn`, and `kitt`. Dawn is intended for a light terminal; the other presets are
@@ -125,7 +126,8 @@ of the same name; `terminal` is reserved. `hush --theme NAME` overrides the save
 that launch; `hush --theme terminal` always uses the terminal palette. If the
 override is invalid, Hush reports the error and keeps the saved choice if it is valid.
 The terminal still owns the background; custom RGB needs truecolor and a
-reported background with sufficient contrast. `NO_COLOR` suppresses custom colors and fills.
+reported background with sufficient contrast. When colors fall back to the terminal palette, the
+picker title and the save notice say which and why. `NO_COLOR` suppresses custom colors and fills.
 `--fills off` (the automatic default in Rex) leaves backgrounds unpainted.
 
 ## Restart the local backend
