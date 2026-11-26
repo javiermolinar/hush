@@ -715,6 +715,29 @@ func (m *Model) dialogRows(d *dialog, w, n int) menuFrame {
 	return m.selectRows(d, w, n)
 }
 
+func (m *Model) emptyChoices(d *dialog) (string, x.Tone) {
+	if p := d.threadPicker; p != nil {
+		if status := p.message(d); status != "" {
+			if p.failed {
+				return status, x.Danger
+			}
+			return status, x.Muted
+		}
+	}
+	if search := d.modelSearch; search != nil {
+		if search.cancel != nil {
+			return "Searching models…", x.Muted
+		}
+		if search.failed {
+			return "Could not search models · edit the filter to retry", x.Danger
+		}
+	}
+	if d.query != "" {
+		return "No matches · edit the filter", x.Muted
+	}
+	return "No choices available · esc back", x.Muted
+}
+
 func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 	count := len(d.filtered)
 	c := menuChrome{title: d.title, count: menuCount(count, "choice", "choices")}
@@ -750,7 +773,11 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 		}
 		c.consequence = chromeLine(m.menuAction(verb, effect))
 	} else {
-		c.consequence = chromeLine(m.quiet("No available choice"))
+		message, tone := m.emptyChoices(d)
+		if count != 0 {
+			message = "No selectable choices · esc back"
+		}
+		c.consequence = chromeLine(m.paint(tone, message))
 	}
 	c.keys = chromeLine(m.menuKeys(w, "↑↓ move", key, "type to filter"))
 	if d.threadPicker != nil {
@@ -780,10 +807,18 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 		budget := h - len(out.rows)
 		if p := d.threadPicker; p != nil {
 			if status := p.message(d); status != "" && (count == 0 || budget > 1) {
-				out.add(m.quiet(status), -1)
 				if count == 0 {
+					if n <= 1 {
+						message, tone := m.emptyChoices(d)
+						out.add(m.paint(tone, message), -1)
+					}
 					return out
 				}
+				tone := x.Muted
+				if p.failed {
+					tone = x.Danger
+				}
+				out.add(m.paint(tone, status), -1)
 				budget--
 			}
 			if count > 0 {
@@ -800,15 +835,10 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 			}
 		}
 		if count == 0 {
-			status := "No matches"
-			if search := d.modelSearch; search != nil {
-				if search.cancel != nil {
-					status = "Searching models…"
-				} else if search.failed {
-					status = "Model search failed · edit to retry"
-				}
+			if n <= 1 {
+				message, tone := m.emptyChoices(d)
+				out.add(m.paint(tone, message), -1)
 			}
-			out.add(m.quiet(status), -1)
 			return out
 		}
 		var detail func(int, int) []string

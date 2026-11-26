@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+  Select model ────────────────────────────────────────────────────── 0 models
+  › zzzz
+
+  Could not search models · edit the filter to retry
+  ↑↓ move  ↵ choose  type to filter  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you › Keep the draft
+  Workspace workspace
+  › ○ workspace

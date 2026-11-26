@@ -84,11 +84,11 @@ func (m *Model) View() tea.View {
 	pane := m.pane()
 	if !pane.usable {
 		if m.height > 0 && m.width > 0 {
-			warning := "terminal too small"
-			if m.width < len(warning) {
+			warning := "Terminal too small · resize to at least 12×3"
+			if m.width < stringWidth("Terminal too small") {
 				warning = "too small"
 			}
-			f.rows[0] = ansiCut(warning, m.width)
+			f.rows[0] = m.paint(x.Warning, ansiCut(warning, m.width))
 		}
 		v.SetContent(strings.Join(f.rows, "\n"))
 		*m.frame = f
