@@ -519,6 +519,9 @@ func (m *Model) configMouse(d *dialog, msg tea.Msg, row int) tea.Cmd {
 		return nil
 	}
 	if d.config.pickingModel {
+		if m.frame.dialogListWidth > 0 && click.X >= m.frame.dialogX+m.frame.dialogListWidth {
+			return nil
+		}
 		d.selected = target
 		return m.configModelInput(d, tea.KeyPressMsg{}, "enter")
 	}

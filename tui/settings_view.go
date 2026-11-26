@@ -1,10 +1,8 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
@@ -18,46 +16,6 @@ func modelRef(model sdk.Model) string {
 		return model.Provider
 	}
 	return model.Provider + "/" + model.ModelID
-}
-
-func (m *Model) configSelectedValue(value string) string {
-	value = "\x1b[1m" + value + "\x1b[22m"
-	if m.palette.activeTab != "" {
-		return surface(value, m.palette.activeTab)
-	}
-	return m.paint(x.Accent, value)
-}
-
-func (m *Model) configScopeLabel(label string, active bool) string {
-	if active {
-		return m.configSelectedValue(label)
-	}
-	return m.control(label)
-}
-
-func (m *Model) configHeader(d *dialog, w int) string {
-	p := d.config
-	left := m.paint(x.Muted, "─ ") + m.control("settings") + m.paint(x.Muted, " · ")
-	thread := m.configScopeLabel("this thread", p.scope == configThread)
-	defaults := m.configScopeLabel("default", p.scope == configDefault)
-	middle := thread + m.paint(x.Muted, "  ") + defaults
-	tail := m.paint(x.Muted, " · tab switches scope")
-	if p.pending {
-		tail = m.paint(x.Muted, " · saving…")
-	}
-	line := left + middle + tail + " "
-	line += m.paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(line))))
-	return ansiCut(line, w)
-}
-
-func (m *Model) configModelHeader(d *dialog, w int) string {
-	scope := "this thread"
-	if d.config.scope == configDefault {
-		scope = "default"
-	}
-	line := m.paint(x.Muted, "─ ") + m.control("model") + m.paint(x.Muted, " · ") + m.configSelectedValue(scope) + " "
-	line += m.paint(x.Muted, strings.Repeat("─", max(0, w-stringWidth(line))))
-	return ansiCut(line, w)
 }
 
 func optionWindow(values []string, current string, room int) (int, int) {
@@ -111,203 +69,94 @@ func (m *Model) configOptions(values []string, current string, room int) string 
 	return strings.Join(out, "  ")
 }
 
-func (m *Model) configSettingRow(d *dialog, setting configSetting, w int) string {
-	model, thinking, reasoning := m.configCurrent(d)
-	selected := d.config.selected == setting
-	marker := "  "
-	if selected {
-		marker = m.paint(x.Accent, "› ")
-	}
-	labelWidth := 17
-	if w < 56 {
-		labelWidth = min(12, w/2)
-	}
-	label := ""
-	value := ""
-	switch setting {
-	case configThinking:
-		label = "thinking"
-		value = m.configOptions(m.configLevels(d, model, thinking), thinking, max(1, w-labelWidth-2))
-	case configModelSetting:
-		label = "model"
-		value = modelRef(model)
-		hint := m.paint(x.Muted, "  ↵ pick")
-		if stringWidth(value)+stringWidth(hint) <= max(1, w-labelWidth) {
-			value += hint
-		}
-	case configReasoning:
-		label = "reasoning"
-		current := "folded"
-		if reasoning {
-			current = "expanded"
-		}
-		value = m.configOptions([]string{"folded", "expanded"}, current, max(1, w-labelWidth-2))
-	}
-	styledLabel := m.control(label)
-	if selected {
-		styledLabel = "\x1b[1m" + styledLabel + "\x1b[22m"
-	}
-	line := marker + fit(ansi.Truncate(styledLabel, labelWidth-2, "…"), labelWidth-2) + ansi.Truncate(value, max(1, w-labelWidth), "…")
-	if selected && m.theme.Fills {
-		line = fill(fit(line, w), m.palette.selected)
-	}
-	return line
-}
+// The theme picker still cycles named fill choices inline.
+func (m *Model) configSelectedValue(value string) string { return strongText(value) }
 
 func (m *Model) configDescription(d *dialog) string {
 	if d.config.scope == configDefault {
 		switch d.config.selected {
 		case configThinking:
-			return "Thinking effort for newly created threads. Higher levels may cost more."
+			return "Thinking effort for new threads · higher levels may cost more"
 		case configModelSetting:
-			return "Model used for newly created threads."
+			return "Model for new threads"
 		case configReasoning:
-			return "Show reasoning text by default without expanding tool output."
+			return "Show reasoning in new threads without expanding tools"
 		}
 	}
 	switch d.config.selected {
 	case configThinking:
-		return "How hard the agent thinks in this thread. Higher levels may cost more."
+		return "Thinking effort for this thread · higher levels may cost more"
 	case configModelSetting:
-		return "Model used by this thread."
+		return "Model for this thread"
 	case configReasoning:
-		return "Show reasoning text in this thread without expanding tool output."
+		return "Show reasoning in this thread without expanding tools"
 	}
 	return ""
 }
 
-func (m *Model) configHints(d *dialog, w int) string {
-	full := m.keyHint("↑↓", "move") + "  " + m.keyHint("←→", "change, applies now") + "  " + m.keyHint("tab", "scope") +
-		"  " + m.keyHint("/", "models") + "  " + m.keyHint("u", "undo") + "  " + m.keyHint("esc", "close")
-	compact := m.keyCap("↑↓") + "  " + m.keyCap("←→") + "  " + m.keyCap("tab") + "  " + m.keyCap("/") + "  " + m.keyCap("u") + "  " + m.keyCap("esc")
-	return "  " + m.hintRow(max(1, w-2), full, compact, "")
+func (m *Model) configScope(d *dialog) string {
+	if d.config.scope == configDefault {
+		return "Default"
+	}
+	return "This thread"
 }
 
-func (m *Model) configDockRows(d *dialog, w, n int) ([]string, []int, *tea.Cursor) {
+func (m *Model) configDockRows(d *dialog, w, n int) menuFrame {
 	if d.config.pickingModel {
-		return m.configModelRows(d, w, n)
+		return m.selectRows(d, w, n)
 	}
-	var rows []string
-	var targets []int
-	add := func(row string, target int) {
-		if len(rows) < n {
-			rows, targets = append(rows, row), append(targets, target)
+	p := d.config
+	model, thinking, reasoning := m.configCurrent(d)
+	visibility := "Folded"
+	if reasoning {
+		visibility = "Expanded"
+	}
+	values := []struct{ title, value string }{
+		{"Thinking", thinking}, {"Model", modelRef(model)}, {"Reasoning", visibility},
+	}
+	c := menuChrome{title: "Settings", scope: m.configScope(d), minBody: 3}
+	var hints []string
+	if p.pending {
+		c.consequence = chromeLine(m.quiet("Wait for settings to save"))
+	} else {
+		hints = []string{"↑↓ move", "←→ change", "tab scope", "/ models", "u undo", d.zoomKey()}
+		switch p.selected {
+		case configModelSetting:
+			c.consequence = chromeLine(m.menuAction("Choose a model", ""))
+		case configThinking:
+			next := cycleValue(m.configLevels(d, model, thinking), thinking, 1)
+			if next == thinking || next == "" {
+				c.consequence = chromeLine(m.quiet("No other thinking level for this model"))
+			} else {
+				c.consequence = chromeLine(m.menuAction("Set thinking", next+" · applies now"))
+			}
+		case configReasoning:
+			label := "Show reasoning"
+			if reasoning {
+				label = "Fold reasoning"
+			}
+			c.consequence = chromeLine(m.menuAction(label, "Applies now"))
 		}
 	}
-	if n <= 3 {
-		selected := int(d.config.selected)
-		first := min(selected, 3-n)
-		for i := first; i < first+n; i++ {
-			add(m.configSettingRow(d, configSetting(i), w), i)
+	c.keys = chromeLine(m.menuKeys(w, hints...))
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		var out menuFrame
+		labels := min(14, w/2)
+		lo, hi := menuWindow(int(p.selected), len(values), h)
+		for i := lo; i < hi; i++ {
+			value := values[i]
+			focus := configSetting(i) == p.selected
+			label, cursor := value.title, "  "
+			if focus {
+				cursor = m.paint(x.Accent, "› ")
+				label = strongText(label)
+			}
+			text := fit(cursor+label, labels) + "  " + ansi.Truncate(oneLine(value.value), max(0, w-labels-2), "…")
+			out.add(m.cursorRow(text, w, focus), i)
 		}
-		return rows, targets, nil
-	}
-	add(m.configHeader(d, w), -1)
-	if n >= 12 {
-		add("", -1)
-		add(m.configSettingRow(d, configThinking, w), int(configThinking))
-		add("", -1)
-		add(m.configSettingRow(d, configModelSetting, w), int(configModelSetting))
-		add("", -1)
-		add(m.configSettingRow(d, configReasoning, w), int(configReasoning))
-		add("", -1)
-		add("", -1)
-		add("  "+m.control(ansi.Truncate(m.configDescription(d), max(1, w-2), "…")), -1)
-		add("", -1)
-		add(m.configHints(d, w), -1)
-		return rows, targets, nil
-	}
-	add(m.configSettingRow(d, configThinking, w), int(configThinking))
-	add(m.configSettingRow(d, configModelSetting, w), int(configModelSetting))
-	add(m.configSettingRow(d, configReasoning, w), int(configReasoning))
-	if n >= 7 {
-		add("", -1)
-	}
-	if n >= 6 {
-		add("  "+m.control(ansi.Truncate(m.configDescription(d), max(1, w-2), "…")), -1)
-	}
-	if n >= 8 {
-		add("", -1)
-	}
-	if n >= 5 {
-		add(m.configHints(d, w), -1)
-	}
-	return rows, targets, nil
-}
-
-func (m *Model) configModelRows(d *dialog, w, n int) ([]string, []int, *tea.Cursor) {
-	var rows []string
-	var targets []int
-	add := func(row string, target int) {
-		if len(rows) < n {
-			rows, targets = append(rows, row), append(targets, target)
+		if h > len(out.rows) {
+			out.add(m.quiet(ansi.Truncate(m.configDescription(d), w, "…")), -1)
 		}
-	}
-	if n >= 3 {
-		add(m.configModelHeader(d, w), -1)
-	}
-	if n >= 7 {
-		add("", -1)
-	}
-	var cursor *tea.Cursor
-	if n >= 2 {
-		input, x := m.paletteInput(d.query, w)
-		cursor = tea.NewCursor(x, len(rows))
-		add(input, -1)
-	}
-	footer := n >= 4
-	budget := n - len(rows)
-	if footer {
-		budget--
-	}
-	spacious := n >= 10
-	if spacious {
-		budget = max(1, budget/2) // reserve a blank before the footer; choices use alternating rows
-	}
-	count := len(d.filtered)
-	lo := min(max(0, d.selected-budget+1), max(0, count-budget))
-	hi := min(lo+budget, count)
-	for i := lo; i < hi; i++ {
-		choice := d.choices[d.filtered[i]]
-		model := d.modelSearch.models[choice.ID]
-		prefix := "  "
-		if i == d.selected {
-			prefix = m.paint(x.Accent, "› ")
-		}
-		ref := modelRef(model.Model)
-		detail := model.Label
-		if model.Current {
-			detail = "current · " + detail
-		}
-		line := prefix + ref
-		if detail != "" {
-			tail := m.control(ansi.Truncate(detail, max(1, w/3), "…"))
-			line = ansi.Truncate(line, max(1, w-stringWidth(tail)-2), "…") + "  " + tail
-		}
-		if i == d.selected && m.theme.Fills {
-			line = fill(fit(line, w), m.palette.selected)
-		}
-		add(line, i)
-		if spacious && i+1 < hi {
-			add("", -1)
-		}
-	}
-	if count == 0 && budget > 0 {
-		status := "No matches"
-		if d.modelSearch.cancel != nil {
-			status = "Searching models…"
-		} else if d.modelSearch.failed {
-			status = "Model search failed · edit to retry"
-		}
-		add(m.control("  "+status), -1)
-	}
-	if footer && n-len(rows) >= 2 {
-		add("", -1)
-	}
-	if footer {
-		full := m.keyHint("enter", "use") + "  " + m.keyHint("ctrl+d", "make default") + "  " + m.keyHint("esc", "back to settings")
-		compact := m.keyCap("enter") + "  " + m.keyCap("ctrl+d") + "  " + m.keyCap("esc")
-		add(m.hintRow(w, full, compact, fmt.Sprintf("%d models", count)), -1)
-	}
-	return rows, targets, cursor
+		return out
+	})
 }

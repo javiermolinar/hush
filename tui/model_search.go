@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -115,4 +116,37 @@ func (m *Model) receiveModelSearch(v modelSearchResult) {
 	rows := nativeModels(v.catalog, x.ListModels{Limit: sdk.ModelCatalogLimit})
 	d.choices, d.modelSearch.models = modelPickerChoices(rows.Models)
 	d.filter() // results are already matched against the backend's catalog
+}
+
+// Model display names need not match catalog references. Keep the original
+// choice text for filtering and put the reference and availability in detail.
+func (d *dialog) modelMenuItem(c x.Choice, focused bool) (menuItem, string) {
+	item := menuItem{title: c.Label, focus: focused, disabled: c.Disabled}
+	if d.modelSearch == nil {
+		return item, c.Description
+	}
+	model, ok := d.modelSearch.models[c.ID]
+	if !ok {
+		return item, c.Description
+	}
+	ref := modelRef(model.Model)
+	if model.Label != "" {
+		item.title = model.Label
+	} else {
+		item.title = ref
+	}
+	var details []string
+	if ref != item.title {
+		details = append(details, ref)
+	}
+	if model.Unavailable != "" {
+		item.icon, item.state, item.tone = "⏸", "Unavailable", x.Warning
+		details = append(details, model.Unavailable)
+	} else if model.Current {
+		item.icon, item.state, item.tone = "○", "Current", x.Muted
+	}
+	if len(model.ThinkingLevels) != 0 {
+		details = append(details, "Thinking: "+strings.Join(model.ThinkingLevels, ", "))
+	}
+	return item, strings.Join(details, "\n")
 }

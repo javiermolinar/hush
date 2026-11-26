@@ -9,14 +9,14 @@
 
 
 │ What changed in @app/main.go:12?
-  ─ model · default ──────────────────────────────────────────────────────────────
 
+  Select model · Default ──────────────────────────────────────────────── 2 models
   › Type to filter
-  › fixture/one  current · Fixture one
-
-    fixture/two  Fixture two
-
-  enter use  ctrl+d make default  esc back to settings                    2 models
+  › ○ Fixture one              Current     │ Fixture one
+    Fixture two                            │ fixture/one
+                                           │ Thinking: off, low, high
+  ↵ Use model  Fixture one
+  ↑↓ move  ↵ use  ctrl+d make default  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────────
   you › keep this draft
   dir workspace

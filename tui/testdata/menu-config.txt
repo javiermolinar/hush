@@ -5,18 +5,18 @@
 
 
 
-  ─ settings · this thread  default · tab switches scope ─────────────────────────
-
-  › thinking       off  low  high
-
-    model          fixture/one  ↵ pick
-
-    reasoning      folded  expanded
 
 
-    How hard the agent thinks in this thread. Higher levels may cost more.
 
-    ↑↓ move  ←→ change, applies now  tab scope  / models  u undo  esc close
+│ What changed in @app/main.go:12?
+
+  Settings · This thread ─────────────────────────────────────────────────────────
+  › Thinking      high
+    Model         fixture/one
+    Reasoning     Folded
+  Thinking effort for this thread · higher levels may cost more
+  ↵ Set thinking  off · applies now
+  ↑↓ move  ←→ change  tab scope  / models  u undo  f full  esc back
   ────────────────────────────────────────────────────────────────────────────────
   you › keep this draft
   dir workspace

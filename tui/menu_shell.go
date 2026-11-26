@@ -41,7 +41,7 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	case d.workTrust != nil:
 		frame.rows, frame.targets = m.workspaceTrustRows(d.workTrust, w, n)
 	case d.config != nil:
-		frame.rows, frame.targets, frame.cursor = m.configDockRows(d, w, n)
+		frame = m.configDockRows(d, w, n)
 	case d.palette:
 		frame.rows, frame.targets = m.paletteRows(d, w, n)
 		frame.cursor = m.paletteCursor(d, w, len(frame.rows))

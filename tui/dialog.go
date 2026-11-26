@@ -722,21 +722,37 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 	}
 	key := "↵ choose"
 	if d.modelSearch != nil {
-		c.count = menuCount(count, "model", "models")
+		c.title, c.count = "Select model", menuCount(count, "model", "models")
+	}
+	if d.config != nil {
+		c.scope = m.configScope(d)
 	}
 	if choice, ok := d.choice(); ok {
 		verb, effect := "Choose", oneLine(choice.Label)
 		if d.threadPicker != nil {
 			verb, effect = m.threadPickerAction(d, choice)
 		}
+		if d.modelSearch != nil {
+			item, _ := d.modelMenuItem(choice, true)
+			effect = oneLine(item.title)
+			switch {
+			case item.state == "Unavailable":
+				verb = "Show why unavailable"
+			case d.config != nil:
+				verb = "Use model"
+			default:
+				verb = "Choose thinking for"
+			}
+		}
 		c.consequence = chromeLine(m.menuAction(verb, effect))
 	} else {
 		c.consequence = chromeLine(m.quiet("No available choice"))
 	}
+	c.keys = chromeLine(m.menuKeys(w, "↑↓ move", key, "type to filter"))
 	if d.threadPicker != nil {
 		c.keys = chromeLine(m.threadPickerKeys(d, w))
-	} else {
-		c.keys = chromeLine(m.menuKeys(w, "↑↓ move", key, "type to filter"))
+	} else if d.config != nil {
+		c.keys = chromeLine(m.menuKeys(w, "↑↓ move", "↵ use", "ctrl+d make default", "type to filter"))
 	}
 	return m.menuShell(w, n, c, func(h int) menuFrame {
 		var out menuFrame
@@ -751,7 +767,10 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 					placeholder = "Filter working directories"
 				}
 			}
-			filter, _ := m.filterInput(d.query, w, placeholder)
+			filter, x := m.filterInput(d.query, w, placeholder)
+			if d.config != nil {
+				out.cursor = tea.NewCursor(x, len(out.rows))
+			}
 			out.add(filter, -1)
 		}
 		budget := h - len(out.rows)
@@ -789,15 +808,19 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 			return out
 		}
 		var detail func(int, int) []string
-		if focus := d.choices[d.filtered[d.selected]]; focus.Description != "" {
-			detail = func(width, height int) []string { return m.menuDetail(focus.Label, focus.Description, width, height) }
+		if item, description := d.modelMenuItem(d.choices[d.filtered[d.selected]], true); description != "" {
+			detail = func(width, height int) []string { return m.menuDetail(item.title, description, width, height) }
 		}
 		list := m.menuColumns(w, budget, detail, func(lw, lh int) menuFrame {
 			var list menuFrame
 			lo, hi := menuWindow(d.selected, count, lh)
 			for i := lo; i < hi; i++ {
-				item := d.choices[d.filtered[i]]
-				list.add(m.menuRow(lw, 0, menuItem{title: item.Label, focus: i == d.selected, disabled: item.Disabled}), i)
+				item, _ := d.modelMenuItem(d.choices[d.filtered[i]], i == d.selected)
+				stateWidth := 0
+				if d.modelSearch != nil {
+					stateWidth = 11
+				}
+				list.add(m.menuRow(lw, stateWidth, item), i)
 			}
 			return list
 		})

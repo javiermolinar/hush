@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+  Select model ────────────────────────────────────────────────────── 2 models
+  › Type to filter
+    ○ Reasoning              Current     │ Writer
+  › ⏸ Writer                 Unavailable │ fixture/writer-v2
+                                         │ Sign in to this provider before
+                                         │ using Writer
+
+  ↵ Show why unavailable  Writer
+  ↑↓ move  ↵ choose  type to filter  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace
