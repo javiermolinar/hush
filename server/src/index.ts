@@ -8,8 +8,8 @@ import { clientEnvironment, clientEnvironmentVersion, type ClientEnvironment } f
 import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, modelCatalogVersion,
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { parsePlanAt, parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace,
-  planVersion, planCatalogVersion, planChatVersion, planDraftVersion, planWorkspaceVersion, type PlanChatHost, type PlanDraftHost, type PlanHost } from "./plan.js";
+import { parsePlanAt, parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace, parsePlanWorktreeSource, parsePlanWorktreeStart,
+  planWorktreeVersion, type PlanWorktreeHost, planVersion, planCatalogVersion, planChatVersion, planDraftVersion, planWorkspaceVersion, type PlanChatHost, type PlanDraftHost, type PlanHost } from "./plan.js";
 import { parsePlanReview, planReviewVersion, type PlanReviewHost } from "./plan-review.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
@@ -45,6 +45,7 @@ export type HostCapabilities = Readonly<{
   runtime?: RuntimeHost;
   plan?: PlanHost;
   planChat?: PlanChatHost;
+  planWorktree?: PlanWorktreeHost;
   planDraft?: PlanDraftHost;
   planReview?: PlanReviewHost;
   settings?: SettingsHost;
@@ -174,6 +175,7 @@ class Peer {
   #gitDiffWatch = false;
   #plan?: PlanHost;
   #planChat?: PlanChatHost;
+  #planWorktree?: PlanWorktreeHost;
   #planDraft?: PlanDraftHost;
   #planWorkspace = false;
   #planCatalog = false;
@@ -325,6 +327,20 @@ class Peer {
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
         }
+        if (parts[1] === "planWorktree" && this.#planWorktree) {
+          const host = this.#planWorktree, signal = this.#abort.signal;
+          // Checkout/model work can take seconds; keep the peer's request
+          // admission available without allowing concurrent prepares on it.
+          if (parts[2] === "prepare") {
+            const query = parsePlanWorktreeSource(req.params);
+            this.#metadata(req, parts[1], () => host.prepare(query, signal));
+            return;
+          }
+          if (parts[2] !== "start") throw new WireError("unknown_method");
+          const result = await host.start(parsePlanWorktreeStart(req.params), signal);
+          this.#write(encode({ ...identity(req), ok: true, result }));
+          return;
+        }
         if (parts[1] === "planChat" && this.#planChat) {
           const host = this.#planChat, signal = this.#abort.signal;
           if (parts[2] === "workspace") {
@@ -368,7 +384,7 @@ class Peer {
           }
           const result = parts[2] === "setClosed" ? await host.setClosed(parsePlanClosure(req.params), signal)
             : parts[2] === "use" ? await host.attach(parsePlanAttach(req.params), signal, true)
-            : parts[2] === "history" ? await host.history(parsePlanHistory(req.params), signal, !!this.#planChat, this.#planCatalog) : undefined;
+            : parts[2] === "history" ? await host.history(parsePlanHistory(req.params), signal, !!this.#planChat, this.#planCatalog, !!this.#planWorktree) : undefined;
           if (!result) throw new WireError("unknown_method");
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
@@ -614,6 +630,10 @@ class Peer {
             if (this.capabilities.planChat && req.params.capabilities?.planChat?.includes(planChatVersion)) {
               capabilities.planChat = planChatVersion;
               this.#planChat = this.capabilities.planChat;
+              if (this.capabilities.planWorktree && req.params.capabilities?.planWorktree?.includes(planWorktreeVersion)) {
+                this.#planWorktree = this.capabilities.planWorktree;
+                capabilities.planWorktree = planWorktreeVersion;
+              }
             }
             if (this.#plan.catalog && req.params.capabilities?.planCatalog?.includes(planCatalogVersion)) {
               capabilities.planCatalog = planCatalogVersion;

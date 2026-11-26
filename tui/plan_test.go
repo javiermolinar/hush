@@ -518,3 +518,149 @@ func TestPlanCatalogShowsForeignReadOnlyPlans(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 39, Height: 11})
 	assertFrame(t, m)
 }
+
+type planWorktreeFixture struct {
+	draftPlanFixtureBackend
+	prepare func(sdk.PlanSelection, sdk.PlanWorktreeSource) (sdk.PlanWorktree, error)
+	start   func(sdk.PlanWorktree, sdk.PlanSelection) (sdk.ID, error)
+}
+
+func (b planWorktreeFixture) PreparePlanWorktree(_ context.Context, q sdk.PlanSelection, source sdk.PlanWorktreeSource) (sdk.PlanWorktree, error) {
+	return b.prepare(q, source)
+}
+
+func (b planWorktreeFixture) StartPlanWorktree(_ context.Context, w sdk.PlanWorktree, q sdk.PlanSelection) (sdk.ID, error) {
+	return b.start(w, q)
+}
+
+func TestPlanWorktreeTrustStartsExactSelectionAndKeepsOriginalDraft(t *testing.T) {
+	const cwd = "/managed/preferences-fixture"
+	granted := false
+	trust := &WorkspaceTrustOptions{Review: func(_ context.Context, path string) (WorkspaceTrustPreview, error) {
+		if path != cwd {
+			t.Fatalf("review requested for %q, not the new checkout", path)
+		}
+		return WorkspaceTrustPreview{Path: path, Decide: func(_ context.Context, yes bool) error { granted = yes; return nil }}, nil
+	}}
+	m, source := demo(t, Options{ReducedMotion: true, Fills: FillOff, WorkspaceTrust: trust})
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace | x.PlanChat | x.PlanWorktree
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 25})
+	m.editor.set("source draft")
+	original := m.active
+	var selection sdk.PlanSelection
+	var prepares, starts int
+	checkout := sdk.PlanWorktree{ThreadID: "41", Title: "Preferences fixture"}
+	checkout.Checkout.CWD, checkout.Checkout.Branch = cwd, "hush/preferences-fixture"
+	m.backend = planWorktreeFixture{prepare: func(q sdk.PlanSelection, source sdk.PlanWorktreeSource) (sdk.PlanWorktree, error) {
+		prepares++
+		if q.ThreadID != original || source != (sdk.PlanWorktreeSource{}) || !reflect.DeepEqual(q.StepIDs, []string{"restore"}) {
+			t.Fatalf("bad worktree choice: %+v %+v", q, source)
+		}
+		selection = q
+		return checkout, nil
+	}, start: func(w sdk.PlanWorktree, q sdk.PlanSelection) (sdk.ID, error) {
+		starts++
+		if !granted || w != checkout || !reflect.DeepEqual(q, selection) {
+			t.Fatalf("unreviewed or changed checkout start: %+v %+v", w, q)
+		}
+		return "42", nil
+	}}
+	d := &dialog{route: m.route(original, menusID), token: m.token(), promptDock: true, plan: &planPicker{
+		named: "a-plan", view: planView{ready: true, snapshot: chatPlanFixtureSnapshot()}, focus: 1,
+	}}
+	m.pushDialog(d)
+	if frame := ansi.Strip(assertFrame(t, m)); strings.Contains(frame, "w Run in new worktree") {
+		t.Fatal("worktree was offered without selected tasks")
+	}
+	m.planKey(d, "space")
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "w Run in new worktree") || !strings.Contains(frame, "Run here Restore profiles") {
+		t.Fatal(frame)
+	}
+	prepared := m.planKey(d, "w")().(workMsg)
+	review := m.finishWork(prepared)
+	if m.active != original || prepares != 1 || starts != 0 || m.editor.value() != "source draft" || m.focusedDialog().workTrust == nil {
+		t.Fatal("prepare changed threads or started implementation before trust")
+	}
+	workspaceTrustStep(t, m, review)
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Trust this workspace?") || !strings.Contains(frame, cwd) {
+		t.Fatal(frame)
+	}
+	if m.workspaceTrustKey(m.focusedDialog(), "enter") != nil {
+		t.Fatal("Enter must not grant trust")
+	}
+	start := workspaceTrustStep(t, m, m.workspaceTrustKey(m.focusedDialog(), "t"))
+	workflowWork(t, m, start)
+	if m.active != checkout.ThreadID || starts != 1 || !granted || source.draft.text != "source draft" || m.editor.value() != "" {
+		t.Fatal("the run didn't open the worktree while retaining the source draft")
+	}
+}
+
+func TestPlanWorktreeStartupRetryKeepsExactSourceAndCanLeaveIdle(t *testing.T) {
+	const sourceCWD = "/project/component"
+	const cwd = "/managed/long path's \\name/" + "inside-component/inside-component/inside-component/inside-component/inside-component"
+	selected := sdk.Model{Provider: "staged", ModelID: "chosen"}
+	var copied string
+	m := modelFor(t, Options{ReducedMotion: true, Fills: FillOff, WorkspaceLocal: true, NewThread: sdk.NewThread{CWD: sourceCWD},
+		CopyText: func(_ context.Context, text string) error { copied = text; return nil }})
+	m.connection = x.Connected
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace | x.PlanChat | x.PlanWorktree
+	m.Update(tea.WindowSizeMsg{Width: 96, Height: 22})
+	m.editor.set("keep this draft")
+	m.threads[""].info.Model, m.threads[""].info.Thinking = selected, "high"
+	var selection sdk.PlanSelection
+	var prepares int
+	checkout := sdk.PlanWorktree{ThreadID: "41", Title: "Preferences fixture"}
+	checkout.Checkout.CWD, checkout.Checkout.Branch = cwd, "hush/preferences-fixture"
+	m.backend = planWorktreeFixture{prepare: func(q sdk.PlanSelection, source sdk.PlanWorktreeSource) (sdk.PlanWorktree, error) {
+		prepares++
+		if q.ThreadID != "" || source.CWD != sourceCWD || source.Model == nil || *source.Model != selected || source.ThinkingLevel != "high" {
+			t.Fatalf("bad startup source: %+v %+v", q, source)
+		}
+		if prepares == 1 {
+			selection = q
+			return sdk.PlanWorktree{}, &sdk.TransportError{Err: context.DeadlineExceeded, Indeterminate: true}
+		}
+		if !reflect.DeepEqual(q, selection) {
+			t.Fatalf("retry changed selection: %+v != %+v", q, selection)
+		}
+		return checkout, nil
+	}, start: func(sdk.PlanWorktree, sdk.PlanSelection) (sdk.ID, error) {
+		t.Fatal("reviewing instructions or leaving idle must not start the run")
+		return "", nil
+	}}
+	d := &dialog{route: m.route("", menusID), token: m.token(), promptDock: true, plan: &planPicker{
+		named: "a-plan", view: planView{ready: true, snapshot: chatPlanFixtureSnapshot()}, focus: 1,
+	}}
+	m.pushDialog(d)
+	m.planKey(d, "space")
+	assertFrame(t, m)
+	m.finishWork(m.planKey(d, "w")().(workMsg))
+	frame := ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "Worktree setup unconfirmed") || !strings.Contains(frame, "w retry setup") {
+		t.Fatal(frame)
+	}
+	m.threads[""].info.Model, m.threads[""].info.Thinking = sdk.Model{Provider: "later", ModelID: "different"}, "off"
+	m.finishWork(m.planKey(d, "w")().(workMsg))
+	trust := m.focusedDialog()
+	frame = ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "y copy grant command") || !strings.Contains(frame, "w start after granting") {
+		t.Fatal(frame)
+	}
+	workflowWork(t, m, m.workspaceTrustKey(trust, "y"))
+	want := `hush trust grant --cwd '/managed/long path'\''s '\\'name/inside-component/inside-component/inside-component/inside-component/inside-component'`
+	if copied != want {
+		t.Fatalf("copied wrong command: %q", copied)
+	}
+	m.workspaceTrustKey(trust, "esc")
+	assertFrame(t, m)
+	m.planKey(d, "w")
+	if m.focusedDialog().workTrust == nil || prepares != 2 {
+		t.Fatal("w must reopen the same trust instructions, not start or reallocate")
+	}
+	m.workspaceTrustKey(m.focusedDialog(), "esc")
+	assertFrame(t, m)
+	m.planKey(d, "x")
+	if m.active != "" || m.threads[""].plan.worktree != nil || m.editor.value() != "keep this draft" {
+		t.Fatal("leaving the worktree idle must retain the startup draft and leave no pending request")
+	}
+}

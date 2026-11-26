@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { parseCatalogCreation, type CatalogCreation } from "./model-catalog.js";
 import { durableID, token, WireError } from "./wire.js";
 
 export const planVersion = 1;
@@ -6,6 +7,7 @@ export const planWorkspaceVersion = 1;
 export const planCatalogVersion = 1;
 export const planDraftVersion = 1;
 export const planChatVersion = 1;
+export const planWorktreeVersion = 1;
 export const planPreviewKind = "hush.plan.preview";
 export const planPreviewSavedKind = "hush.plan.preview-saved";
 export const planWorkspacePageSize = 48;
@@ -46,7 +48,7 @@ export type PlanWorkspace = { revision: string; plans: PlanSummary[]; more: bool
 export type PlanRunRecord = { id: string; revision: number; threadId: string; stepIds: string[]; state: PlanRunState; failure?: string; publicationUncertain?: true;
   workers: { stepId: string; threadId: string; state: PlanProgress["state"] }[];
   turns?: { stepId: string; entryId: string; state: PlanProgress["state"] }[];
-  chat?: true; entryId?: string; reports?: PlanTaskReport[] };
+  chat?: true; worktree?: true; entryId?: string; reports?: PlanTaskReport[] };
 export type PlanHistory = { runs: PlanRunRecord[]; next: string | null };
 export type PlanSnapshot = {
   revision: string; plan: PlanDefinition | null; progress: PlanProgress[]; run: PlanRun | null;
@@ -59,6 +61,15 @@ export type PlanClosure = PlanAttachment & { closed: boolean };
 export type PlanWorkspaceQuery = { threadId: string; page: number; after?: string };
 export type PlanHistoryQuery = PlanAttachment & { before?: string };
 export type PlanSelection = { threadId: string; planId: string; revision: number; stepIds: string[]; requestId: string };
+type PlanWorktreePick = Omit<PlanSelection, "threadId">;
+export type PlanWorktreeSource = PlanWorktreePick & ({ threadId: string } |
+  ({ cwd: string } & (Pick<CatalogCreation, "model" | "thinkingLevel"> | { model?: undefined; thinkingLevel?: undefined })));
+export type PlanWorktreeStart = PlanWorktreePick & { threadId: string; checkout: string };
+export type PlanWorktreeCheckout = { threadId: string; title: string; checkout: { cwd: string; root: string; branch: string } };
+export interface PlanWorktreeHost {
+  prepare(selection: PlanWorktreeSource, signal: AbortSignal): Promise<PlanWorktreeCheckout>;
+  start(selection: PlanWorktreeStart, signal: AbortSignal): Promise<{ runId: string }>;
+}
 
 export type PlanDraftTarget = { threadId: string; previewId: string };
 export type PlanDraftReceipt = { planId: string; revision: number };
@@ -75,7 +86,7 @@ export interface PlanHost {
   wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string, chat?: boolean, browse?: boolean): Promise<PlanSnapshot>;
   workspace(query: PlanWorkspaceQuery, signal: AbortSignal, chat?: boolean): Promise<PlanWorkspace>;
   catalog?(query: PlanWorkspaceQuery, signal: AbortSignal, chat?: boolean): Promise<PlanWorkspace>;
-  history(query: PlanHistoryQuery, signal: AbortSignal, chat?: boolean, browse?: boolean): Promise<PlanHistory>;
+  history(query: PlanHistoryQuery, signal: AbortSignal, chat?: boolean, browse?: boolean, worktrees?: boolean): Promise<PlanHistory>;
   setClosed(closure: PlanClosure, signal: AbortSignal): Promise<Record<string, never>>;
   attach(attachment: PlanAttachment, signal: AbortSignal, replace?: boolean): Promise<Record<string, never>>;
   run(selection: PlanSelection, signal: AbortSignal): Promise<{ runId: string }>;
@@ -128,7 +139,7 @@ export function parsePlanAttach(p: Record<string, unknown>): PlanAttachment {
 export function parsePlanAt(p: Record<string, unknown>, inspect: true): PlanInspectAt;
 export function parsePlanAt(p: Record<string, unknown>, inspect: false): PlanWorkspaceAt;
 export function parsePlanAt({ cwd, ...p }: Record<string, unknown>, inspect: boolean): PlanInspectAt | PlanWorkspaceAt {
-  if (typeof cwd !== "string" || !isAbsolute(cwd) || Buffer.byteLength(cwd) > 4096 || !cwd.isWellFormed() || /[\x00-\x1f\x7f-\x9f]/.test(cwd)) {
+  if (!validPlanCheckoutPath(cwd)) {
     throw new WireError("invalid_request");
   }
   const { after, planId, page } = p;
@@ -141,10 +152,36 @@ export function parsePlanAt({ cwd, ...p }: Record<string, unknown>, inspect: boo
   return { cwd, page, after };
 }
 
-export function parsePlanRun(p: Record<string, unknown>): PlanSelection {
-  if (Object.keys(p).length !== 5 || !durableID(p.threadId) || !token(p.planId) || !token(p.requestId) ||
+export function validPlanCheckoutPath(cwd: unknown): cwd is string {
+  return typeof cwd === "string" && isAbsolute(cwd) && Buffer.byteLength(cwd) <= 4096 && cwd.isWellFormed() && !/[\x00-\x1f\x7f-\x9f]/.test(cwd);
+}
+
+function parsePlanPick(p: Record<string, unknown>): PlanWorktreePick {
+  if (Object.keys(p).length !== 4 || !token(p.planId) || !token(p.requestId) ||
       typeof p.revision !== "number" || !Number.isSafeInteger(p.revision) || p.revision < 1 ||
       !Array.isArray(p.stepIds) || p.stepIds.length < 1 || p.stepIds.length > planStepLimit ||
       !p.stepIds.every(planStepID) || new Set(p.stepIds).size !== p.stepIds.length) throw new WireError("invalid_request");
-  return { threadId: p.threadId, planId: p.planId, revision: p.revision, stepIds: p.stepIds, requestId: p.requestId };
+  return { planId: p.planId, revision: p.revision, stepIds: p.stepIds, requestId: p.requestId };
+}
+
+export function parsePlanRun({ threadId, ...p }: Record<string, unknown>): PlanSelection {
+  if (!durableID(threadId)) throw new WireError("invalid_request");
+  return { threadId, ...parsePlanPick(p) };
+}
+
+export function parsePlanWorktreeSource({ threadId, cwd, model, thinkingLevel, ...p }: Record<string, unknown>): PlanWorktreeSource {
+  const staged = model !== undefined || thinkingLevel !== undefined;
+  if (durableID(threadId) && cwd === undefined && !staged) return { threadId, ...parsePlanPick(p) };
+  if (threadId === undefined && validPlanCheckoutPath(cwd)) {
+    const pick = parsePlanPick(p);
+    if (!staged) return { cwd, ...pick };
+    const selection = parseCatalogCreation({ model, thinkingLevel });
+    return { cwd, ...pick, model: selection.model, thinkingLevel: selection.thinkingLevel };
+  }
+  throw new WireError("invalid_request");
+}
+
+export function parsePlanWorktreeStart({ checkout, ...p }: Record<string, unknown>): PlanWorktreeStart {
+  if (!validPlanCheckoutPath(checkout)) throw new WireError("invalid_request");
+  return { checkout, ...parsePlanRun(p) };
 }

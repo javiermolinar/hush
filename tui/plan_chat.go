@@ -70,7 +70,7 @@ func (m *Model) runChatPlan(d *dialog, v *planView) tea.Cmd {
 	}
 	r := d.route
 	t := m.threads[r.owner]
-	if t.sending || t.aborting || t.attaching || t.plan.request != nil || t.plan.sending {
+	if t.sending || t.aborting || t.attaching || t.plan.request != nil || t.plan.sending || t.plan.worktree != nil {
 		return nil
 	}
 	pending := t.plan.chatRequest

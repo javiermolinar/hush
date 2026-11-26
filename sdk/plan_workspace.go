@@ -59,6 +59,7 @@ type PlanRunRecord struct {
 	Workers              []PlanWorkerRecord `json:"workers"`
 	Turns                []PlanTurnRecord   `json:"turns,omitempty"`
 	Chat                 bool               `json:"chat,omitempty"`
+	Worktree             bool               `json:"worktree,omitempty"`
 	EntryID              ID                 `json:"entryId,omitempty"`
 	Reports              []PlanTaskReport   `json:"reports,omitempty"`
 }
@@ -198,7 +199,7 @@ func (c *Client) PlanHistory(ctx context.Context, thread ID, planID string, befo
 			if !validPlanReports(run.Reports, steps) {
 				return PlanHistoryPage{}, ErrProtocol
 			}
-		} else if run.EntryID != "" || run.Reports != nil {
+		} else if run.Worktree || run.EntryID != "" || run.Reports != nil {
 			return PlanHistoryPage{}, ErrProtocol
 		}
 		for i, turn := range run.Turns {

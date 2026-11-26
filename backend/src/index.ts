@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/cho
 import { createModels, InMemoryCredentialStore, type Models } from "@earendil-works/pi-ai";
 import {
   createRegistry, Harness, hook, LiveDoc, MemoryStorage, ROOT_CONVERSATION_ID, ToolTask, type AgentChange, type Conversation,
-  type Extension, type HarnessSettings,
+  type ConversationId, type Extension, type HarnessSettings,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -22,12 +22,12 @@ import { ModelOverlayError } from "./model-overlays.js";
 import { createHushModels } from "./models.js";
 import { IntroReports } from "./intro.js";
 import { ThreadDirectory } from "./thread-directory.js";
-import { threadTitleGenerator } from "./thread-title-model.js";
+import { generatePlanWorktreeName, threadTitleGenerator } from "./thread-title-model.js";
 import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
 import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
-import { Plans, fixtureExtensions, isPlanWorker, planChatExecution, recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
+import { Plans, checkPlanWorktree, fixtureExtensions, isPlanWorker, planChatExecution, recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
 import { checkPlanAdmission, foregroundPlan, PlanForeground } from "./plan-turn.js";
 import { PlanReviews, planReviewExtension } from "./plan-review.js";
 import { planAuthor } from "./plan-author.js";
@@ -278,16 +278,17 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     });
     if (scopedPlans) registry.install(scopedPlans.extension);
     else if (planEnabled) registry.install(scopedRecovery);
+    const validateSelection = nativeSelectionValidator(runtime, requireModel);
     const host: NativeHost = {
-      defaults, requireModel, checkAdmission: planAdmission,
-      validateSelection: nativeSelectionValidator(runtime, requireModel),
+      defaults, requireModel, checkAdmission: planAdmission, validateSelection,
       async checkMutation(conv, ctx) {
         if (planEnabled && await isPlanWorker(h!, conv.id, ctx)) throw new WireError("not_found");
       },
       async prepare({ threadId, cwd, text, skillToken }, ctx) {
         // Native text, images, Continue and Retry share this admission path.
         refuseWork?.();
-        await authorizeWork?.(cwd, ctx);
+        const authorized = await authorizeWork?.(cwd, ctx);
+        if (planAdmission && threadId && authorized) await checkPlanWorktree(h!, Number(threadId) as ConversationId, authorized, ctx);
         if (!config.ephemeral && text?.startsWith("/skill:")) {
           if (!workspaceSkills || !threadId) throw skillUnavailable();
           const skill = await workspaceSkills.expand(threadId, cwd, text, skillToken, ctx.abortSignal);
@@ -319,6 +320,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
         // Durable builds the env for every tool attempt, also after a wake or
         // recovery that skips beforeTool. Do not hand a tool an unchecked cwd.
         const authorized = authorizeWork ? await authorizeWork(cwd, ctx) : path;
+        if (chatPlans) await checkPlanWorktree(read, conversationId, authorized, ctx);
         return new LocalEnvironment(authorized, path);
       },
       onReport: () => warn("harness_report"),
@@ -352,9 +354,10 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       intro = new IntroReports(harness, root, resources, runtime, startedAtMs, () => ({ ...defaultModel(), tools }),
         host.prepare!, host.requireModel, planAdmission);
     }
-    if (config.dataDir && trust) {
+    const worktrees = config.dataDir && trust ? new ThreadWorktrees(config.dataDir, trust) : undefined;
+    if (worktrees) {
       const title = !modelIssue && config.threadTitleModel ? threadTitleGenerator(runtime, config.threadTitleModel) : undefined;
-      threadDirectory = new ThreadDirectory(harness, config.cwd, defaults, new ThreadWorktrees(config.dataDir, trust), title, readOnlyReason);
+      threadDirectory = new ThreadDirectory(harness, config.cwd, defaults, worktrees, title, readOnlyReason);
       images = new ImageFitter(runtime, wasm);
     }
     const modelCatalog = modelIssue ? undefined : nativeModelCatalog(harness, runtime, nativeDefault);
@@ -367,7 +370,9 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const loadedContext = trust && config.dataDir ? new LoadedContext(harness, resources, trust) : undefined;
     const settingsHost = config.dataDir && useStoredDefaults
       ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
-    const plans = planEnabled && !modelIssue ? new Plans(harness, store, cwd => resources.directory(cwd), fauxPlan, scopedPlans, chatPlans) : undefined;
+    const plans = planEnabled && !modelIssue ? new Plans(harness, store, cwd => resources.directory(cwd), fauxPlan, scopedPlans, chatPlans,
+      worktrees && { checkout: worktrees, defaults, validateSelection,
+        name: (ref, title, tasks, signal) => generatePlanWorktreeName(runtime, ref, title, tasks, signal) }) : undefined;
     const planDrafts = plans && authorizeWork ? new PlanDrafts(harness, cwd => resources.directory(cwd), fauxPlan, authorizeWork) : undefined;
     const planReviews = plans && !fauxPlan ? new PlanReviews(harness, plans, async (cwd, model, ctx) => {
       await authorizeWork?.(cwd, ctx);
@@ -375,7 +380,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, readOnlyReason, capabilities: { intro, threadDirectory, images,
       schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
-      plan: plans, planChat: chatPlans && plans, planDraft: planDrafts, planReview: planReviews,
+      plan: plans, planChat: chatPlans && plans, planWorktree: plans?.worktrees, planDraft: planDrafts, planReview: planReviews,
       gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
       workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });

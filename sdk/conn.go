@@ -266,6 +266,13 @@ func (s *session) receive(f map[string]any) error {
 		if err := optionalEnvelope(f, version, PlanWorkspaceVersion); err != nil {
 			return err
 		}
+	} else if ok && (method == planWorktreePrepare || method == planWorktreeStart) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planWorktreeCap]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanWorktreeVersion); err != nil {
+			return err
+		}
 	} else if ok && (method == planChatRun || method == planChatPlans || method == planChatInspect) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[planChat]

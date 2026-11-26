@@ -70,6 +70,43 @@ try:
         else:
             os.write(master, b"\x1b")
             wait_for("Workspace plans")
+    elif mode == "worktree":
+        def pick_restore(count):
+            os.write(master, b"/plan")
+            wait_for("/plan", "Open plan")
+            os.write(master, b"\r")
+            wait_for("Workspace plans", "Interface preferences", count)
+            os.write(master, b"\r")
+            wait_for("Select tasks to run here")
+            os.write(master, b"\x1b[B ")
+            wait_for("Run here Restore preferences", "w Run in new worktree")
+
+        wait_for("ask anything")
+        pick_restore("0/2 · r1")
+        os.write(master, b"\r")
+        wait_for("Run here finished")
+        pick_restore("1/2 done")
+        os.write(master, b"w")
+        wait_for("hush trust grant --cwd PATH", "y copy grant command")
+        os.write(master, b"\x1b")
+        wait_for("w review trust", "x keep idle")
+        time.sleep(0.15)  # Let the terminal disambiguate the standalone Escape.
+        os.write(master, b"x")
+        wait_for("Run in new worktree")  # The renderer can reuse the leading key cell.
+        os.write(master, b"w")
+        wait_for("copy grant command", "start after granting")
+        os.write(master, b"w")
+        wait_for("Workspace is not trusted for tool execution", "review trust")
+        os.write(master, b"w")
+        wait_for("copy grant command", "start after granting")
+        with open(draft + ".reviewed", "w", encoding="utf-8"):
+            pass
+        deadline = time.monotonic() + 5
+        while not os.path.exists(draft) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert os.path.exists(draft), "backend operator did not grant trust"
+        os.write(master, b"w")
+        wait_for("Plan run finished", "reported done")
     elif mode == "catalog":
         wait_for("ask anything")
         os.write(master, b"keep this draft")

@@ -17,6 +17,8 @@ const openWorkspaceTrustOp x.LocalOp = "workspaceTrust.open"
 const workspaceTrustTimeout = 30 * time.Second
 const workspaceTrustGrantTarget = -3
 const workspaceTrustDismissTarget = -4
+const workspaceTrustCopyTarget = -5
+const workspaceTrustStartTarget = -6
 
 // WorkspaceTrustOptions enables /trust. Review must be nil on attached clients,
 // even when they share the backend's filesystem for links.
@@ -45,6 +47,9 @@ type workspaceTrustDialog struct {
 	attached, trusted bool
 	cancel            context.CancelFunc
 	decide            func(context.Context, bool) error
+	onGrant           func() tea.Cmd // a local plan trusts the checkout in this dialog
+	command           string         // an attached plan needs the operator to grant trust
+	onStart           func() tea.Cmd
 }
 
 type workspaceTrustMsg struct {
@@ -174,12 +179,19 @@ func (m *Model) receiveWorkspaceTrust(msg workspaceTrustMsg) tea.Cmd {
 	}
 	w := d.workTrust
 	w.cancel = nil
-	if w.cwd != m.workspaceTrustCWD() {
+	if w.onGrant == nil && w.cwd != m.workspaceTrustCWD() {
 		w.notice = "Workspace changed · reopen /trust"
 		return nil
 	}
 	if !msg.decision {
+		if w.onGrant != nil && msg.err == nil && msg.preview.Path != w.cwd {
+			w.notice = "Worktree path changed · no run started"
+			return nil
+		}
 		w.apply(msg.preview, msg.err)
+		if w.onGrant != nil && w.trusted {
+			return tea.Batch(m.closeDialog(d, nil, false), w.onGrant())
+		}
 		return nil
 	}
 	if msg.err != nil {
@@ -188,6 +200,9 @@ func (m *Model) receiveWorkspaceTrust(msg workspaceTrustMsg) tea.Cmd {
 	}
 	closed := m.closeDialog(d, nil, false)
 	if msg.granted {
+		if w.onGrant != nil {
+			return tea.Batch(closed, w.onGrant())
+		}
 		// Old hosts don't observe the grant themselves. Refresh their scope
 		// now instead of waiting for the next poll.
 		if !m.fileScope.pushed {
@@ -202,8 +217,25 @@ func (m *Model) receiveWorkspaceTrust(msg workspaceTrustMsg) tea.Cmd {
 	return closed
 }
 
+func workspaceGrantCommand(cwd string) string {
+	// Quote apostrophes and backslashes outside the single-quoted segments
+	// so the command works in both POSIX shells and fish.
+	return "hush trust grant --cwd '" + strings.NewReplacer("'", "'\\''", "\\", "'\\\\'").Replace(cwd) + "'"
+}
+
 func (m *Model) workspaceTrustKey(d *dialog, chord string) tea.Cmd {
 	w := d.workTrust
+	if w.onStart != nil && m.dialogVisible(d) && m.foreground(d.route) {
+		switch {
+		case chord == "y" && slices.Contains(m.frame.dialogChoices, workspaceTrustCopyTarget):
+			return m.copyTextWithFeedback(d.route, w.command, nil, func() tea.Cmd {
+				w.notice = "Grant command copied"
+				return nil
+			})
+		case chord == "w" && slices.Contains(m.frame.dialogChoices, workspaceTrustStartTarget):
+			return tea.Batch(m.closeDialog(d, nil, false), w.onStart())
+		}
+	}
 	grant := chord == "t"
 	if chord != "n" && chord != "esc" && !grant {
 		return nil
@@ -214,7 +246,7 @@ func (m *Model) workspaceTrustKey(d *dialog, chord string) tea.Cmd {
 		}
 		return nil
 	}
-	if w.cwd != m.workspaceTrustCWD() {
+	if w.onGrant == nil && w.cwd != m.workspaceTrustCWD() {
 		if chord == "esc" {
 			return m.closeDialog(d, nil, false)
 		}
@@ -278,6 +310,24 @@ func (m *Model) workspaceTrustRows(wt *workspaceTrustDialog, w, h int) (rows []s
 			add(m.keyHint("n", "not now")+"  "+m.keyHint("esc", "dismiss"), workspaceTrustDismissTarget)
 			return rows, targets
 		}
+	case wt.onStart != nil:
+		add(m.paint(x.Warning, "Trust on the backend host"), -1)
+		label := "hush trust grant --cwd PATH"
+		if wt.notice != "" {
+			label = wt.notice
+		}
+		add(m.control(label), -1)
+		path := strconv.QuoteToGraphic(wt.cwd)
+		if space := h - len(rows) - 3; space > 0 && stringWidth(path) <= space*w {
+			lines := strings.Split(ansi.Hardwrap(path, w, true), "\n")
+			if len(lines) <= space {
+				for _, line := range lines {
+					add(m.control(line), -1)
+				}
+			}
+		}
+		add(m.keyHint("y", "copy grant command"), workspaceTrustCopyTarget)
+		add(m.keyHint("w", "start after granting"), workspaceTrustStartTarget)
 	default:
 		add(m.paint(x.Warning, "Workspace trust"), -1)
 		if wt.notice != "" {

@@ -123,6 +123,32 @@ outcomes in the transcript and picker are advisory, not backend verification.
 Reported tasks can be selected again. Closing the picker or disconnecting
 leaves admitted work alone; normal Stop applies to the native input.
 
+## Run in a new worktree
+
+Select tasks with Space, then press **w Run in new worktree** instead of Enter.
+The action uses the plan's source checkout. If you're looking at a read-only
+plan from another workspace, return to its workspace first. Hush asks the model
+for a short name using only the plan and selected task titles. It uses the
+active thread's model or the startup model selection, not a different provider
+as a fallback. If naming fails or cannot produce a branch name, Hush tries the
+plan title. The checkout starts from committed `HEAD`; uncommitted files and the
+original conversation history are not copied. A plan scoped to a subdirectory
+runs from the corresponding subdirectory in the new checkout.
+
+Review and trust the new checkout before the run starts. In the local TUI,
+confirm the exact execution directory with **t**. On a socket attachment,
+press **y** to copy the full grant command, run it on the backend host, then
+press **w** in the trust instructions to start. If you close the instructions,
+**w** reopens them. **x** in the plan picker leaves the prepared checkout and
+thread idle without deleting them. After admission, Hush opens the new thread
+and records a worktree run on the original plan. Advisory reports are not
+verification, and Hush does not merge the changes back.
+
+After an unconfirmed setup, **w** retries the same request rather than creating
+another checkout. If setup was interrupted after Hush reserved a thread but
+could not finish the checkout, the picker identifies that thread in `/threads`.
+Hush does not reuse or delete an incomplete checkout automatically.
+
 ## Run scoped edits
 
 Press `s` when the task picker shows **s scoped** to opt into isolated
@@ -257,6 +283,35 @@ initiating transcript. The backend tracks the normal input's settlement and
 records `hush.plan.result` there. This does not open a subagent or worker
 conversation. An independent review still uses its explicitly separate,
 read-only reviewer conversation.
+
+### Worktree launch (`planWorktree:1`)
+
+Offer `planWorktree:1` with `planChat:1`, `planWorkspace:1`, and `plan:1`.
+
+- `ext.planWorktree.prepare {threadId | cwd, planId, revision, stepIds, requestId, model?, thinkingLevel?}`
+  prepares an empty ownerless thread and a managed Git checkout. Exactly one
+  source locator is required: a thread in the plan's recorded directory, or
+  that absolute directory for a threadless launch. Only a threadless launch
+  may include `model: {provider, modelId}` and `thinkingLevel` together. It uses
+  backend defaults if neither is present. Hush requires a trusted source, a
+  valid selection, and a committed Git tree containing the plan directory.
+  The reply is `{threadId, title, checkout: {cwd, root, branch}}`. `root` is the
+  worktree root; `cwd` is the execution directory and the exact trust scope.
+  This is neither a run receipt nor a grant. Hush reserves a discoverable thread
+  before Git writes the checkout. An exact retry (same plan, request ID,
+  selection and source) returns the same allocation on reconnect or restart.
+  While setup is running it may return `busy`; incomplete reservations identify
+  the affected thread and do not write Git again.
+- `ext.planWorktree.start {threadId, checkout, planId, revision, stepIds, requestId}`
+  uses the **new** thread ID and exact `checkout.cwd`. It checks the recorded
+  worktree, Git metadata, branch and starting commit, and requires separate
+  trust for the execution directory, an idle target thread, a valid model,
+  and the exact prepared selection on the same open plan revision. Closing and
+  reopening the plan invalidates an unstarted selection. The reply is
+  `{runId}`. An exact retry for that same checkout and selection returns the
+  same receipt, including after restart. A regular `Run here` request cannot
+  use the allocation to run a foreign plan. History adds `worktree: true` to
+  worktree chat runs only for peers that negotiated `planWorktree:1`.
 
 ### Workspace inventory (`planWorkspace:1`)
 

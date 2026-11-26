@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
 import { startBackend } from "../../dist/hush-backend.mjs";
@@ -240,3 +241,65 @@ test("terminal UI saves and independently reviews a plan without the scoped file
 test("explicit scoped Run verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));
 
 test("terminal UI authorizes one checked file set and leaves other files untouched", { timeout: 45_000 }, t => terminalPlan(t, "fileset"));
+
+
+test("terminal UI distinguishes Run here, leaving a checkout idle, and starting after backend trust", { timeout: 35_000 }, async t => {
+  const home = await realpath(await mkdtemp("/tmp/hush-plan-pty-wt-"));
+  const cwd = join(home, "project"), agentDir = join(home, ".hush");
+  const dataDir = join(home, "worktree state path with spaces"), socket = join(dataDir, "hush.sock");
+  const grant = join(home, "granted");
+  let peer, host, naming = 0;
+  t.after(async () => { peer?.close(); await host?.close(); await rm(home, { recursive: true, force: true }); });
+  await Promise.all([agentDir, cwd].map(path => mkdir(path, { mode: 0o700 })));
+  const git = (...args) => exec("git", args, { cwd });
+  await git("init", "-q");
+  await git("-c", "user.name=Hush Fixture", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture");
+  const trust = new WorkspaceTrust(agentDir);
+  await trust.change(cwd, "grant", t.signal);
+  const provider = await planProvider(t, agentDir, async turn => {
+    if (turn.text === createRequest) return turn.results.length ? "Saved." : [call("hush_plan_propose", draftArgs())];
+    if (turn.text.startsWith("Plan worktree name\n")) return ++naming === 1 ? "Idle checkout" : "Preference round trip";
+    assert.match(turn.text, /^Plan implementation\n/);
+    assert.deepEqual(JSON.parse(turn.text.split("\n")[1]).selected, ["restore"]);
+    assert.equal(turn.messages.some(m => m.content === createRequest), naming === 0, "only Run here sees the source transcript");
+    return turn.results.length ? "Done." : [call("hush_plan_report", {
+      tasks: [{ stepId: "restore", state: "done", detail: "Checked the round-trip." }],
+    })];
+  });
+  const binary = process.env.HUSH_TEST_CLI || join(home, "hush");
+  if (!process.env.HUSH_TEST_CLI) await exec("go", ["build", "-o", binary, "./app/cmd/hush"], { cwd: repo, timeout: 25_000 });
+  host = await startBackend({ faux: false, model: provider.model, ephemeral: false, idleMs: 30_000, cwd, agentDir, dataDir, socket });
+  peer = await dial(socket);
+  const rpc = async (method, args) => okay(await peer.send(method, args));
+  await rpc("hello", { versions: [1], capabilities: { plan: [1], planChat: [1], planWorkspace: [1], planWorktree: [1], threadDirectory: [2] } });
+  const { id: threadId } = await rpc("thread.new", {});
+  const { submissionId } = await rpc("submit", { threadId, text: createRequest, requestId: "draft", whenBusy: "reject" });
+  assert.equal((await rpc("submission.wait", { threadId, submissionId })).status, "done");
+  const { plan } = await rpc("ext.plan.wait", { threadId });
+  const history = () => rpc("ext.planWorkspace.history", { threadId, planId: plan.id });
+  const operator = async () => {
+    for (let i = 0; i < 500; i++) {
+      if (await readFile(grant + ".reviewed").then(() => true, () => false)) {
+        const { threads } = await rpc("ext.threadDirectory.list", { limit: 10 });
+        const idle = threads.find(row => row.title === "Idle checkout");
+        const work = threads.find(row => row.title === "Preference round trip");
+        if (idle?.checkout?.kind === "managed" && work?.checkout?.kind === "managed") {
+          assert.equal(idle.status, "idle");
+          assert.equal((await trust.review(idle.checkout.cwd)).trusted, false);
+          assert.equal((await trust.review(work.checkout.cwd)).trusted, false);
+          assert.deepEqual((await history()).runs.map(r => r.threadId), [threadId], "neither preparation nor a denied start admits work");
+          await trust.change(work.checkout.cwd, "grant", t.signal);
+          await writeFile(grant, "granted");
+          return work.id;
+        }
+      }
+      await delay(20, undefined, { signal: t.signal });
+    }
+    assert.fail("no prepared worktree in the thread directory");
+  };
+  const [worktree] = await Promise.all([operator(), exec("python3", [script, binary, socket, threadId, "worktree", grant], { cwd, timeout: 22_000,
+    env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } })]);
+  const { runs } = await history();
+  assert.deepEqual(runs.map(run => [run.threadId, run.state, run.stepIds, run.worktree]),
+    [[worktree, "done", ["restore"], true], [threadId, "done", ["restore"], undefined]]);
+});

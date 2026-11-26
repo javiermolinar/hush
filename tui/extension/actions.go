@@ -156,6 +156,9 @@ const PlanChat Features = 1 << 21
 // PlanCatalog enables read-only discovery across workspaces in the same store.
 const PlanCatalog Features = 1 << 22
 
+// PlanWorktree enables running selected plan tasks in a new managed checkout.
+const PlanWorktree Features = 1 << 23
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.

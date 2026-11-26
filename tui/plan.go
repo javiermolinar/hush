@@ -17,6 +17,8 @@ const planID x.ActionID = menusID + ".plan"
 const openPlanOp x.LocalOp = "plan.open"
 const planRunTarget = -2
 const planScopedTarget = -3
+const planWorktreeTarget = -4
+const planWorktreeDismissTarget = -5
 
 type planBackend interface {
 	WatchPlan(context.Context, sdk.ID) <-chan sdk.PlanUpdate
@@ -27,8 +29,9 @@ type planView struct {
 	snapshot    sdk.PlanSnapshot
 	ready       bool
 	err         error
-	request     *sdk.PlanSelection // retained after an indeterminate reply, never retried with a new key
-	chatRequest *planChatAdmission // shared by all pickers of the initiating thread
+	request     *sdk.PlanSelection     // retained after an indeterminate reply, never retried with a new key
+	worktree    *planWorktreeAdmission // shared with other pickers of this thread
+	chatRequest *planChatAdmission     // shared by all pickers of the initiating thread
 	sending     bool
 	awaiting    sdk.ID
 	note        string
@@ -359,6 +362,10 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 		if !p.details {
 			m.togglePlanStep(v, p)
 		}
+	case "w":
+		return m.runPlanWorktree(d, v)
+	case "x":
+		return m.leavePlanWorktree(d)
 	case "enter":
 		if v.request == nil && m.planChatAvailable(v) {
 			return m.runChatPlan(d, v)
@@ -372,7 +379,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 
 func (m *Model) togglePlanStep(v *planView, p *planPicker) {
 	if p.workspace != "" || !v.ready || v.snapshot.Plan == nil || !p.matches(v) || v.locked() || v.request != nil ||
-		m.threads[m.active].plan.chatRequest != nil || !(m.planAvailable() || m.planChatAvailable(v)) {
+		m.threads[m.active].plan.chatRequest != nil || m.threads[m.active].plan.worktree != nil || !(m.planAvailable() || m.planChatAvailable(v)) {
 		return
 	}
 	id := v.snapshot.Plan.Steps[p.focus].ID
@@ -396,7 +403,7 @@ func (m *Model) planActionDrawn(d *dialog, v *planView, target int) bool {
 }
 
 func (m *Model) runPlan(d *dialog, v *planView, target int) tea.Cmd {
-	if d.plan.workspace != "" || !m.planActionDrawn(d, v, target) || m.threads[d.route.owner].plan.chatRequest != nil {
+	if d.plan.workspace != "" || !m.planActionDrawn(d, v, target) || m.threads[d.route.owner].plan.chatRequest != nil || m.threads[d.route.owner].plan.worktree != nil {
 		return nil // Enter is only a Run when the current scope's action was drawn.
 	}
 	b, ok := m.backend.(planBackend)
@@ -591,6 +598,11 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 	if showKeys {
 		body--
 	}
+	worktree, worktreeAction := m.planWorktreeBar(d, v)
+	showWorktree := n >= 4 && body > 1 && worktree != ""
+	if showWorktree {
+		body--
+	}
 	// Spend spare rows on separation, not at the expense of the focused task
 	// or the Run line. On short terminals keep the lower two gaps first.
 	minBody := min(4, len(plan.Steps))
@@ -678,17 +690,23 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 		}
 		add(bar+preview, target)
 	}
+	if showWorktree {
+		if stringWidth(worktree) > w {
+			worktreeAction = -1
+		}
+		add(m.control(worktree), worktreeAction)
+	}
 	if showKeys {
 		close := "esc close"
 		primary, compact, move := "space select  tab details", "space pick  tab info", "↑↓ move"
 		if p.details {
 			primary, compact, move = "tab steps", "tab steps", "↑↓ scroll"
-		} else if p.workspace != "" || v.locked() || v.request != nil || m.threads[d.route.owner].plan.chatRequest != nil {
+		} else if p.workspace != "" || v.locked() || v.request != nil || m.threads[d.route.owner].plan.chatRequest != nil || m.threads[d.route.owner].plan.worktree != nil {
 			primary, compact = "tab details", "tab details"
 		}
 		scoped := false
 		if m.planChatAvailable(v) && v.snapshot.RunAvailability == sdk.PlanRunScoped && !v.locked() &&
-			v.request == nil && m.threads[d.route.owner].plan.chatRequest == nil {
+			v.request == nil && m.threads[d.route.owner].plan.chatRequest == nil && m.threads[d.route.owner].plan.worktree == nil {
 			ids, reason := v.selection(p)
 			if len(ids) > 0 && reason == "" {
 				primary += "  s scoped"
@@ -727,6 +745,15 @@ func (m *Model) planRunBar(d *dialog, v *planView, width int) (bar, preview stri
 	p := d.plan
 	if p.workspace != "" {
 		return m.control("Read-only · " + oneLine(p.workspace)), "", false
+	}
+	if pending := m.threads[d.route.owner].plan.worktree; pending != nil {
+		if pending.selection.PlanID != v.snapshot.Plan.ID {
+			return m.control("Resolve the worktree request in its plan"), "", false
+		}
+		if pending.note != "" {
+			return m.paint(x.Warning, pending.note), "", false
+		}
+		return m.control(pending.label()), "", false
 	}
 	chat := v.request == nil && m.planChatAvailable(v)
 	if chat && m.threads[d.route.owner].plan.chatRequest != nil {

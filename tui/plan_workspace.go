@@ -560,7 +560,9 @@ func planHistoryLines(page sdk.PlanHistoryPage) []string {
 			out = append(out, "")
 		}
 		label := "Run"
-		if run.Chat {
+		if run.Worktree {
+			label = "Run in new worktree"
+		} else if run.Chat {
 			label = "Run here"
 		}
 		out = append(out, fmt.Sprintf("%s #%s · r%d · %s", label, run.ID, run.Revision, run.State),
