@@ -27,9 +27,10 @@ func (g paletteGroup) String() string {
 
 type paletteItem struct {
 	x.Choice
-	group paletteGroup
-	alias string
-	keys  []string // shell bindings are dispatched through promptKey, not the registry
+	group       paletteGroup
+	alias       string
+	description string
+	keys        []string // shell bindings are dispatched through promptKey, not the registry
 }
 
 func paletteGroupFor(a registeredAction) paletteGroup {
@@ -60,7 +61,7 @@ func (m *Model) openPalette(r ownerRoute, budget *int) tea.Cmd {
 		if a.action.ID == paletteID || !m.eligible(a, r.owner) {
 			continue
 		}
-		item := paletteItem{Choice: x.Choice{ID: string(a.action.ID), Label: a.action.Title, Description: m.actionBinding(a)}, group: paletteGroupFor(a)}
+		item := paletteItem{Choice: x.Choice{ID: string(a.action.ID), Label: a.action.Title, Description: m.actionBinding(a)}, group: paletteGroupFor(a), description: a.action.Description}
 		if a.action.Slash != nil {
 			item.alias = "/" + a.action.Slash.Name
 		}
@@ -158,10 +159,6 @@ func (d *dialog) paletteFilterText(i int) string {
 	return item.group.String() + " " + item.alias + " " + item.Label + " " + item.Description
 }
 
-func (m *Model) paletteInput(query string, w int) (text string, cursor int) {
-	return m.filterInput(query, w, "Type to filter")
-}
-
 func (m *Model) filterInput(query string, w int, placeholder string) (text string, cursor int) {
 	s := oneLine(query)
 	room := max(1, w-3) // leave a cell for the caret
@@ -175,84 +172,74 @@ func (m *Model) filterInput(query string, w int, placeholder string) (text strin
 	return label + s, 2 + stringWidth(s)
 }
 
-// paletteRows returns body rows and the index of the choice on each row (-1
-// for chrome). Build only the visible window, retaining context for its first
-// group when possible. Headers never count as choices.
-func (m *Model) paletteRows(d *dialog, w, h int) ([]string, []int) {
-	var rows []string
-	var targets []int
-	add := func(s string, choice int) {
-		rows = append(rows, s)
-		targets = append(targets, choice)
-	}
-	if h <= 0 {
-		return nil, nil
-	}
-	if h >= 3 {
-		title := m.paint(x.Accent, d.title)
-		add(title+m.paint(x.Muted, " "+strings.Repeat("─", max(0, w-stringWidth(title)-1))), -1)
-	}
-	if h >= 2 {
-		filter, _ := m.paletteInput(d.query, w)
-		add(filter, -1)
-	}
-	if h >= 7 {
-		add("", -1)
-	}
-	footer, padFooter := h >= 4, h >= 10
-	if footer {
-		h--
-	}
-	if padFooter {
-		h--
-	}
-	budget := h - len(rows)
-	grouped := strings.TrimSpace(d.query) == "" && budget > 1
+func (m *Model) paletteRows(d *dialog, w, h int) menuFrame {
 	count := len(d.filtered)
-	start, end := 0, 0
-	if count == 0 {
-		add(m.paint(x.Muted, "No commands match"), -1)
-	} else {
-		// Find the earliest start that still leaves room for the selected row.
-		// Only inspect as many items as we can possibly show.
-		selected := min(d.selected, count-1)
-		start = selected
-		used, previous := 0, paletteGroup(255)
-		for i := selected; i >= 0; i-- {
-			group := d.paletteItems[d.filtered[i]].group
-			cost := 1
-			if grouped && group != previous {
-				cost++
-			}
-			if used+cost > budget {
-				break
-			}
-			start, used, previous = i, used+cost, group
+	c := menuChrome{title: d.title, count: menuCount(count, "command", "commands"), minBody: 2}
+	hints := []string{"↑↓ move", "type to filter"}
+	if choice, ok := d.choice(); ok {
+		c.consequence = chromeLine(m.menuAction("Run", oneLine(choice.Label)))
+		hints = append(hints, "↵ run")
+	}
+	c.keys = chromeLine(m.menuKeys(w, hints...))
+	return m.menuShell(w, h, c, func(budget int) menuFrame {
+		var out menuFrame
+		if budget >= 2 {
+			filter, x := m.filterInput(d.query, w, "Type to filter")
+			out.cursor = tea.NewCursor(x, 0)
+			out.add(filter, -1)
+			budget--
 		}
-		previous = paletteGroup(255)
-		for end = start; end < count && len(rows) < h; end++ {
-			item := d.paletteItems[d.filtered[end]]
-			if grouped && item.group != previous {
-				if len(rows)+1 >= h {
-					break // no orphaned heading at the bottom
+		if count == 0 {
+			out.add(m.quiet("No commands match · edit the filter"), -1)
+			return out
+		}
+		item := d.paletteItems[d.filtered[d.selected]]
+		var detail []string
+		if item.description != "" {
+			detail = append(detail, item.description)
+		}
+		if item.Description != "" {
+			detail = append(detail, item.Description)
+		}
+		if item.alias != "" {
+			detail = append(detail, item.alias)
+		}
+		columns := m.menuColumns(w, budget, func(lw, lh int) []string { return m.menuDetail(item.Label, strings.Join(detail, "\n"), lw, lh) }, func(lw, lh int) menuFrame {
+			var list menuFrame
+			grouped := strings.TrimSpace(d.query) == "" && lh > 1
+			start, _ := menuWindow(d.selected, count, lh)
+			if grouped {
+				start = d.selected
+				used, previous := 0, paletteGroup(255)
+				for i := d.selected; i >= 0; i-- {
+					group := d.paletteItems[d.filtered[i]].group
+					cost := 1
+					if group != previous {
+						cost++
+					}
+					if used+cost > lh {
+						break
+					}
+					start, used, previous = i, used+cost, group
 				}
-				add(m.paint(x.Muted, item.group.String()), -1)
-				previous = item.group
 			}
-			line := m.paletteActionRow(item.Choice, end == selected, w)
-			if end == selected && m.theme.Fills {
-				line = fill(fit(line, w), m.palette.selected)
+			previous := paletteGroup(255)
+			for i := start; i < count && len(list.rows) < lh; i++ {
+				row := d.paletteItems[d.filtered[i]]
+				if grouped && row.group != previous {
+					if len(list.rows)+1 >= lh {
+						break // no orphaned group heading
+					}
+					list.add(m.quiet(row.group.String()), -1)
+					previous = row.group
+				}
+				list.add(m.menuRow(lw, 0, menuItem{title: row.Label, focus: i == d.selected}), i)
 			}
-			add(line, end)
-		}
-	}
-	if footer {
-		if padFooter {
-			add("", -1)
-		}
-		add(m.choiceFooter(w, "run", visibleRange(start, end, count)), -1)
-	}
-	return rows, targets
+			return list
+		})
+		out.appendBody(columns)
+		return out
+	})
 }
 
 func visibleRange(start, end, count int) string {
@@ -277,45 +264,4 @@ func (m *Model) hintRow(w int, full, compact, right string) string {
 		left = fit(left, w-stringWidth(right)) + m.control(right)
 	}
 	return left
-}
-
-func (m *Model) choiceFooter(w int, action, right string) string {
-	accept := m.keyHint("enter", action)
-	full := strings.Join([]string{accept, m.keyHint("↑↓", "move"), m.keyHint("esc", "close")}, "  ")
-	compact := strings.Join([]string{accept, m.keyCap("↑↓"), m.keyCap("esc")}, "  ")
-	return m.hintRow(w, full, compact, right)
-}
-
-func (m *Model) paletteActionRow(c x.Choice, selected bool, width int) string {
-	prefix, tone := "  ", x.Plain
-	if selected {
-		prefix, tone = "› ", x.Accent
-	}
-	key := oneLine(c.Description)
-	if stringWidth(key) > width/3+2 {
-		key, _, _ = strings.Cut(key, " / ")
-	}
-	key = ansi.Truncate(key, max(0, width/3+2), "…")
-	keyWidth := stringWidth(key)
-	gap := 2
-	if keyWidth == 0 {
-		gap = 0
-	}
-	name := ansi.Truncate(prefix+oneLine(c.Label), max(1, width-keyWidth-gap), "…")
-	if keyWidth == 0 {
-		return m.paint(tone, name)
-	}
-	return fit(m.paint(tone, name), width-keyWidth) + m.control(key)
-}
-
-func (m *Model) paletteCursor(d *dialog, width, height int) *tea.Cursor {
-	if height < 2 {
-		return nil
-	}
-	_, x := m.paletteInput(d.query, width)
-	y := 0
-	if height >= 3 { // title present
-		y++
-	}
-	return tea.NewCursor(x, y)
 }

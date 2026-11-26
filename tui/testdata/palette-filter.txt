@@ -15,15 +15,15 @@
 
 
 
-│ What changed in @app/main.go:12?
-
-  Answer
-  Commands ───────────────────────────────────────────────────────────────────────────────────
+  Commands ───────────────────────────────────────────────────────────────────────── 1 command
   › /copy
+  › Copy last answer                             │ Copy last answer
+                                                 │ ctrl+x y
+                                                 │ /copy
 
-  › Copy last answer                                                                  ctrl+x y
+  ↵ Run  Copy last answer
+  ↑↓ move  type to filter  ↵ run  esc back
 
-  enter run  ↑↓ move  esc close
   ────────────────────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

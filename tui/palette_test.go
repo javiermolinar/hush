@@ -2,11 +2,9 @@ package tui
 
 import (
 	"slices"
-	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
 )
@@ -161,12 +159,14 @@ func TestPaletteClicksMapOnlyToActionRows(t *testing.T) {
 	}
 }
 
-func TestPaletteShortcutColumn(t *testing.T) {
-	const w = 50
-	for _, v := range []struct{ label, key string }{{"Short", "ctrl+x s"}, {"A much longer title", "alt+shift+f"}, {"宽字符 with a long title", "ctrl+g"}} {
-		line := ansi.Strip((&Model{}).paletteActionRow(x.Choice{Label: v.label, Description: v.key}, true, w))
-		if !strings.HasSuffix(line, v.key) || stringWidth(line) != w {
-			t.Fatalf("shortcut does not align: %q", line)
-		}
+func TestPaletteTypingFRemainsAFilter(t *testing.T) {
+	m, _ := demo(t, Options{Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	budget := maxEffects
+	m.openPalette(m.route(m.active, coreID), &budget)
+	assertFrame(t, m)
+	m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	if d := m.focusedDialog(); d.query != "f" || d.full {
+		t.Fatal("zoom intercepted the existing type-to-filter shortcut")
 	}
 }

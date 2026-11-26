@@ -4,26 +4,26 @@
 
 
 
-  Commands ───────────────────────────────────────────────────────────────────────────────────
+  Commands ─────────────────────────────────────────────────────────────────────── 22 commands
   › Type to filter
+  Thread                                         │ Switch threads
+  › Switch threads                               │ ctrl+x s
+    New thread                                   │ /threads
+    Usage details                                │
+    Browse all workspaces                        │
+    Fork history                                 │
+    Select thinking level                        │
+    Compact the context                          │
+    Reset the context                            │
+    Close tab                                    │
+    Previous tab                                 │
+  Prompt                                         │
+    Edit prompt                                  │
+    Recall queued messages                       │
 
-  Thread
-  › Switch threads                                                                    ctrl+x s
-    New thread                                                                        ctrl+x n
-    Usage details                                                                   ctrl+x i u
-    Browse all workspaces                                                       ctrl+x shift+s
-    Fork history                                                                        ctrl+f
-    Select thinking level                                                            shift+tab
-    Compact the context                                                               ctrl+x j
-    Reset the context                                                                 ctrl+x z
-    Close tab                                                                           ctrl+w
-    Previous tab                                                                      ctrl+x [
-  Prompt
-    Edit prompt                                                                       ctrl+x e
-    Recall queued messages                                                              alt+up
-    Insert a newline                                                      shift+enter / ctrl+j
+  ↵ Run  Switch threads
+  ↑↓ move  type to filter  ↵ run  esc back
 
-  enter run  ↑↓ move  esc close                                                      1–13 / 22
   ────────────────────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace
