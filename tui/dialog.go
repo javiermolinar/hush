@@ -725,12 +725,16 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 		c.count = menuCount(count, "model", "models")
 	}
 	if choice, ok := d.choice(); ok {
-		c.consequence = chromeLine(m.menuAction("Choose", oneLine(choice.Label)))
+		verb, effect := "Choose", oneLine(choice.Label)
+		if d.threadPicker != nil {
+			verb, effect = m.threadPickerAction(d, choice)
+		}
+		c.consequence = chromeLine(m.menuAction(verb, effect))
 	} else {
 		c.consequence = chromeLine(m.quiet("No available choice"))
 	}
 	if d.threadPicker != nil {
-		c.keys = chromeLine(m.threadPickerFooter(d, w, ""))
+		c.keys = chromeLine(m.threadPickerKeys(d, w))
 	} else {
 		c.keys = chromeLine(m.menuKeys(w, "↑↓ move", key, "type to filter"))
 	}
@@ -759,8 +763,18 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 				}
 				budget--
 			}
-			m.threadPickerRows(d, w, budget, out.add)
-			return out
+			if count > 0 {
+				focus, detail := d.choices[d.filtered[d.selected]], p.detail(d)
+				list := m.menuColumns(w, budget, func(width, height int) []string {
+					return m.menuDetail(p.selectedRow(d).displayTitle(focus), detail, width, height)
+				}, func(lw, lh int) menuFrame {
+					var list menuFrame
+					m.threadPickerRows(d, lw, lh, list.add)
+					return list
+				})
+				out.appendBody(list)
+				return out
+			}
 		}
 		if count == 0 {
 			status := "No matches"
@@ -787,9 +801,7 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 			}
 			return list
 		})
-		out.rows = append(out.rows, list.rows...)
-		out.targets = append(out.targets, list.targets...)
-		out.listWidth = list.listWidth
+		out.appendBody(list)
 		return out
 	})
 }

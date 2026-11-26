@@ -25,6 +25,8 @@ type threadPicker struct {
 type threadPickerRow struct {
 	workspaceID, workspaceName string
 	status                     x.ThreadStatus
+	title                      string // display title; the choice label is kept for legacy filtering
+	current                    bool
 	destination                *workspaceThreadTarget
 	directory                  string // a choice in the directory picker
 }
@@ -234,15 +236,18 @@ func (p *threadPicker) setPage(d *dialog, active sdk.ID, r x.ClientResult, direc
 		for _, i := range g.indices {
 			t := r.Threads[i]
 			row := g.row
-			row.status = t.Status
+			row.status, row.current = t.Status, t.ID == active
 			label := threadTitle(t)
+			row.title = threadDisplayTitle(t)
 			if t.Forked {
 				label = "⑂ " + label
+				row.title = "⑂ " + row.title
 			}
-			if t.ID == active {
+			if row.current {
 				label += " · current"
 			}
-			p.addChoice(d, string(t.ID), label, threadChoiceDetail(t, r.Directory), row)
+			detail := threadChoiceDetail(t, r.Directory)
+			p.addChoice(d, string(t.ID), label, detail, row)
 		}
 	}
 	if launch >= 0 {
@@ -296,20 +301,37 @@ func threadChoiceDetail(t x.Thread, directory bool) string {
 	return strings.Join(parts, " · ")
 }
 
-func threadPickerStatus(status x.ThreadStatus) (icon, label string, tone x.Tone) {
-	if status == "" {
-		return "", "", x.Plain
+func threadDisplayTitle(t x.Thread) string {
+	if t.Title != "" {
+		return oneLine(t.Title)
 	}
-	icon, tone = tabStatus(status)
+	if name := workspaceLabel(t.Workspace); name != "" {
+		return name
+	}
+	if t.ID == "" {
+		return "New thread"
+	}
+	return "Untitled thread"
+}
+
+func threadPickerStatus(status x.ThreadStatus) (icon, label string, tone x.Tone) {
 	switch status {
+	case "":
+		return "", "", x.Plain
 	case x.Running:
-		return icon, "running", x.Accent
-	case x.Parked, x.Failed:
-		return icon, "needs attention", tone
+		return "◐", "Running", x.Warning
+	case x.Parked:
+		return "⏸", "Parked", x.Warning
+	case x.Failed:
+		return "✗", "Failed", x.Danger
 	case x.Stopped:
-		return icon, "stopped", x.Plain
+		return "○", "Stopped", x.Muted
+	case x.Done:
+		return "✓", "Done", x.Good
+	case x.Scheduled:
+		return "○", "Scheduled", x.Warning
 	default:
-		return icon, string(status), tone
+		return "○", "Idle", x.Muted
 	}
 }
 
@@ -371,8 +393,7 @@ func (m *Model) threadPickerRows(d *dialog, w, budget int, add func(string, int)
 			if budget < 2 {
 				break // never leave an orphaned workspace heading
 			}
-			name := ansi.Truncate("  "+oneLine(row.workspaceName), w, "…")
-			add("\x1b[1m"+m.control(name)+"\x1b[22m", -1)
+			add(m.quiet(ansi.Truncate(oneLine(row.workspaceName), w, "…")), -1)
 			budget--
 		}
 		previous = row.workspaceID
@@ -382,40 +403,59 @@ func (m *Model) threadPickerRows(d *dialog, w, budget int, add func(string, int)
 	return lo, hi
 }
 
-func (m *Model) threadPickerLine(item x.Choice, row threadPickerRow, selected bool, w int) string {
-	prefix, tone := "  ", x.Plain
-	if selected {
-		prefix, tone = "› ", x.Accent
+func (m *Model) threadPickerLine(choice x.Choice, row threadPickerRow, selected bool, w int) string {
+	icon, state, tone := threadPickerStatus(row.status)
+	stateWidth := 9
+	if row.status == "" {
+		stateWidth = 0
 	}
-	if row.workspaceID != "" {
-		prefix = "  " + prefix
+	return m.menuRow(w, stateWidth, menuItem{title: row.displayTitle(choice), icon: icon, state: state, tone: tone, focus: selected})
+}
+
+func (r threadPickerRow) displayTitle(choice x.Choice) string {
+	if r.title != "" {
+		return r.title
 	}
-	icon, label, statusTone := threadPickerStatus(row.status)
-	if icon != "" {
-		prefix += icon + " "
+	return choice.Label
+}
+
+func (p *threadPicker) detail(d *dialog) string {
+	choice := d.choices[d.filtered[d.selected]]
+	row := p.selectedRow(d)
+	var parts []string
+	if row.workspaceName != "" {
+		parts = append(parts, row.workspaceName)
 	}
-	room := w
-	if label != "" {
-		room = max(1, w-stringWidth(label)-2)
+	if row.current {
+		parts = append(parts, "Current thread")
 	}
-	labelText := oneLine(item.Label)
+	if row.title != "" && choice.Description == "" && choice.ID != "" {
+		parts = append(parts, "Thread #"+choice.ID)
+	}
 	if row.directory != "" {
-		labelText = shortenDirectory(labelText, room-stringWidth(prefix))
+		parts = append(parts, row.directory)
 	}
-	line := m.paint(tone, ansi.Truncate(prefix+labelText, room, "…"))
-	if label != "" {
-		line += "  " + m.paint(statusTone, label)
+	if choice.Description != "" {
+		parts = append(parts, choice.Description)
 	}
-	sep := "  "
-	if label != "" {
-		sep = " · "
+	return strings.Join(parts, "\n")
+}
+
+func (m *Model) threadPickerAction(d *dialog, choice x.Choice) (string, string) {
+	switch choice.ID {
+	case "new":
+		return "Create thread", "Use the launch workspace"
+	case newThreadHereChoice:
+		return "Choose directory", d.threadPicker.selectedRow(d).workspaceName
+	case workspaceDirectoryChoice:
+		return "Create thread", oneLine(d.threadPicker.selectedRow(d).directory)
+	case "refresh":
+		return "Refresh", oneLine(choice.Label)
+	case "all-workspaces":
+		return "Browse", "All workspaces"
+	case pageChoice:
+		return "Open next page", oneLine(choice.Label)
+	default:
+		return "Switch to", oneLine(d.threadPicker.selectedRow(d).displayTitle(choice))
 	}
-	if room = w - stringWidth(line) - stringWidth(sep); room > 1 && item.Description != "" {
-		detail := oneLine(item.Description)
-		if item.ID == newThreadHereChoice && row.destination.preview != "" {
-			detail = shortenDirectory(detail, room)
-		}
-		line += m.control(sep + ansi.Truncate(detail, room, "…"))
-	}
-	return line
 }

@@ -7,16 +7,16 @@
 
 
 
-
-│ What changed in @app/main.go:12?
   Switch thread · workspace unverified ───────────────────────────── 3 choices
   › Workspace, thread, or message
-    Workspace unknown
-    › ◌ workspace #1 · current  idle · Answer See the docs and app/main.go:12…
-      ⑂ thread 14  fork of #1
-    + New thread
-  ↵ Choose  workspace #1 · current
-  enter choose  ↑↓ move  esc close
+  Workspace unknown                      │ workspace
+  › ○ workspace                Idle      │ Workspace unknown
+    ⑂ Untitled thread                    │ Current thread
+    + New thread                         │ Answer See the docs and
+                                         │ app/main.go:12. func main() {
+                                         │ println(42) }
+  ↵ Switch to  workspace
+  ↑↓ move  ↵ choose  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

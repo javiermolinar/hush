@@ -72,23 +72,31 @@ func openGroupedThreadPicker(t *testing.T, m *Model) {
 	threadPickerStep(t, m, m.runAction(m.host.byID[switchAllID], ""))
 }
 
-func TestThreadPickerGroupsAndStatus(t *testing.T) {
+func TestGoldenThreadPickerGroupsAndStatus(t *testing.T) {
 	m, _ := demo(t, Options{ReducedMotion: true})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
 	openGroupedThreadPicker(t, m)
-	frame := ansi.Strip(assertFrame(t, m))
-	before := -1
-	for _, expected := range []string{"  hush", "● Go TUI  running", "◐ List display · current  needs attention", "  Deployment tools", "✗ Rollout review  needs attention", "◌ Trace annotations  stopped"} {
+	golden(t, "menu-threads-grouped", m)
+	d := m.sheet
+	f := m.frame
+	left := func(row string) string {
+		s, _, _ := strings.Cut(ansi.Strip(row), "│")
+		return strings.Join(strings.Fields(s), " ")
+	}
+	var rows []string
+	for _, row := range f.rows[f.dialogY : f.dialogY+f.dialogHeight] {
+		rows = append(rows, left(row))
+	}
+	frame, before := strings.Join(rows, "\n"), -1
+	for _, expected := range []string{"hush", "◐ Go TUI Running", "⏸ List display Parked", "Deployment tools", "✗ Rollout review Failed", "○ Trace annotations Stopped"} {
 		at := strings.Index(frame, expected)
 		if at <= before {
 			t.Fatalf("missing or misplaced %q:\n%s", expected, frame)
 		}
 		before = at
 	}
-	d := m.sheet
-	f := m.frame
 	for i, row := range f.rows[f.dialogY : f.dialogY+f.dialogHeight] {
-		if strings.TrimSpace(ansi.Strip(row)) == "Deployment tools" {
+		if left(row) == "Deployment tools" {
 			m.mouse(tea.MouseClickMsg(tea.Mouse{X: f.dialogX + 4, Y: f.dialogY + i, Button: tea.MouseLeft}))
 			break
 		}

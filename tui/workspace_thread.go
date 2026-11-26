@@ -179,24 +179,10 @@ func shortenDirectory(s string, w int) string {
 	return s
 }
 
-func (m *Model) threadPickerFooter(d *dialog, w int, right string) string {
-	i, ok := m.host.byID[newThreadID]
-	if !ok || d.threadPicker.selectedRow(d).destination == nil {
-		return m.choiceFooter(w, "choose", right)
+func (m *Model) threadPickerKeys(d *dialog, w int) string {
+	hints := []string{"↑↓ move", "↵ choose", "type to filter"}
+	if i, ok := m.host.byID[newThreadID]; ok && d.threadPicker.selectedRow(d).destination != nil {
+		hints = append(hints, "ctrl+x "+m.host.actions[i].action.Binding.Leader+" new here")
 	}
-	action := "open"
-	if c, _ := d.choice(); c.ID == newThreadHereChoice {
-		action = "new"
-	}
-	accept := m.keyHint("enter", action)
-	create := m.keyHint("ctrl+x "+m.host.actions[i].action.Binding.Leader, "new here")
-	full := strings.Join([]string{accept, m.keyHint("↑↓", "move"), create, m.keyHint("esc", "close")}, "  ")
-	compact := strings.Join([]string{accept, create, m.keyCap("↑↓"), m.keyCap("esc")}, "  ")
-	if stringWidth(compact) > w {
-		return m.choiceFooter(w, action, right)
-	}
-	if stringWidth(compact)+stringWidth(right)+2 > w {
-		right = ""
-	}
-	return m.hintRow(w, full, compact, right)
+	return m.menuKeys(w, hints...)
 }

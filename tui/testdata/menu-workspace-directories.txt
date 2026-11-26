@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+  New thread · Deployment tools ──────────────────────────────────── 2 choices
+  › Filter working directories
+  › /work/deploy                         │ /work/deploy
+    /worktrees/deploy/release            │ /work/deploy
+
+  ↵ Create thread  /work/deploy
+  ↑↓ move  ↵ choose  type to filter  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

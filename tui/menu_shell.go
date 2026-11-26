@@ -76,6 +76,12 @@ func (f *menuFrame) add(text string, target int) {
 	f.targets = append(f.targets, target)
 }
 
+func (f *menuFrame) appendBody(body menuFrame) {
+	f.rows = append(f.rows, body.rows...)
+	f.targets = append(f.targets, body.targets...)
+	f.listWidth = body.listWidth
+}
+
 func (m *Model) menuShell(w, n int, c menuChrome, body func(int) menuFrame) menuFrame {
 	if n <= 0 {
 		return menuFrame{}

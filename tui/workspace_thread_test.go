@@ -78,7 +78,7 @@ func TestWorkspaceNewThreadHereKeyboard(t *testing.T) {
 	if c, _ := d.choice(); c.ID != newThreadHereChoice || c.Description != deployCWD {
 		t.Fatalf("Up did not select a new thread in the recorded directory: %+v", c)
 	}
-	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "› + New thread here  "+deployCWD) || !strings.Contains(frame, "ctrl+x n new here") {
+	if frame := ansi.Strip(assertFrame(t, m)); !(strings.Contains(frame, "› + New thread here") && strings.Contains(frame, deployCWD)) || !strings.Contains(frame, "ctrl+x n new here") {
 		t.Fatalf("missing creation row or keyboard hint:\n%s", frame)
 	}
 	lookup := press(m, tea.KeyEnter, 0)
@@ -173,5 +173,24 @@ func TestWorkspaceNewThreadHereNeedsKnownWorkspace(t *testing.T) {
 	press(m, 'x', tea.ModCtrl)
 	if cmd := press(m, 'n', 0); cmd != nil || m.focusedDialog() != m.sheet || len(b.created) != 0 {
 		t.Fatal("new thread binding must not fall back to /new in an unknown workspace")
+	}
+}
+
+func TestGoldenWorkspaceDirectory(t *testing.T) {
+	m, _ := demo(t, Options{ReducedMotion: true, Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	openGroupedThreadPicker(t, m)
+	parent := m.sheet
+	for i, at := range parent.filtered {
+		if parent.choices[at].ID == newThreadHereChoice && parent.threadPicker.rows[at].workspaceName == "Deployment tools" {
+			parent.selected = i
+			break
+		}
+	}
+	threadPickerStep(t, m, m.openWorkspaceDirectories(parent))
+	golden(t, "menu-workspace-directories", m)
+	press(m, tea.KeyEscape, 0)
+	if m.focusedDialog() != parent {
+		t.Fatal("directory picker did not return to all workspaces")
 	}
 }
