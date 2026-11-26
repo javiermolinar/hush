@@ -1,0 +1,24 @@
+  ██      ██  ██      ██    ████████  ██      ██  ▄
+  ██      ██  ██      ██  ██          ██      ██  █  ▂
+  ██████████  ██      ██    ██████    ██████████  █▄▂█
+  ██      ██  ██      ██          ██  ██      ██  █████▂▆▇▁▇▁  ▆      ▁
+  ██      ██    ██████    ████████    ██      ██  ████████████▇█▇▆█▇█▅█▅▆▂▃▅▄▅
+
+  ⎇ main  /work/hush                                                     ·····
+  ·····
+
+  sessions    ·····
+
+
+  Choose a workspace ──────────────────────────────────────────────── 1 choice
+  › Type to filter
+  › Hush                                 │ Hush
+                                         │ /work/hush
+
+  ↵ Choose  Hush
+  ↑↓ move  ↵ choose  type to filter  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  main › Keep this draft
+  ◌ connecting
+  › ○ Untitled thread
