@@ -7,6 +7,10 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai";
+import { createRegistry, defineDocFamily, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { dial } from "../../server/test/client.mjs";
 import { startBackend } from "../../dist/hush-backend.mjs";
 import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
@@ -763,6 +767,55 @@ test("plan catalog browses other workspaces without carrying action authority", 
   assert.notEqual(reopened.revision, all.revision);
   assert.deepEqual(reopened.plans.map(p => [p.id, p.closed, p.workspace]),
     [[local.id, false, undefined], [original.id, true, config.cwd]]);
+});
+
+test("plan inventory projects only negotiated fields from stored rows", { timeout: 15_000 }, async t => {
+  const { boot, stop, config } = await layout(t);
+  const provider = await planProvider(t, config.agentDir, turn => {
+    assert.equal(turn.text, createRequest);
+    return turn.results.length ? "Saved." : [call("hush_plan_propose", draftArgs())];
+  });
+  const options = { faux: false, model: provider.model };
+  const connect = await boot(options);
+  const peer = await connect();
+  const owner = okay(await peer.send("thread.new", {})).id;
+  const fresh = okay(await peer.send("thread.new", {})).id;
+  await ask(peer, owner, createRequest, "make-plan");
+  const [summary] = okay(await peer.send("ext.planWorkspace.wait", { threadId: fresh, page: 0 })).plans;
+  assert.equal(summary.title, "Interface preferences");
+  await stop();
+
+  // Simulate an existing store containing fields not in this wire version.
+  const stored = defineDocFamily({ kind: "hush.plan-workspace", version: 1, family: true, scope: "session",
+    initial: () => ({ rows: [] }), checkpointWhen: () => true });
+  const store = await openNodeSqliteStorage(join(config.dataDir, "history.sqlite"));
+  const harness = await Harness.open(store, { registry: createRegistry(), models: createModels() }, context);
+  try {
+    await harness.commit(async tx => {
+      const catalog = await tx.doc(stored, config.cwd, null);
+      assert.equal(catalog.rows[0].id, summary.id);
+      Object.assign(catalog.rows[0], { ready: true, done: 2, workspace: "/not-the-plan-workspace", reportedDone: 1 });
+    }, context);
+  } finally { await harness.close(context); }
+
+  const other = join(dirname(config.cwd), "other");
+  await mkdir(other, { mode: 0o700 });
+  const reopened = await boot(options);
+  const old = await reopened();
+  const foreign = okay(await old.send("thread.new", { cwd: other })).id;
+  const query = { threadId: fresh, page: 0 };
+  assert.deepEqual(okay(await old.send("ext.planWorkspace.wait", query)).plans, [summary]);
+
+  const full = await dial(config.socket);
+  try {
+    okay(await full.send("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planCatalog: [1], planChat: [1] } }));
+    const current = { ...summary, reportedDone: 1 };
+    assert.deepEqual(okay(await full.send("ext.planWorkspace.wait", query)).plans, [current]);
+    assert.deepEqual(okay(await full.send("ext.planCatalog.wait", query)).plans, [current]);
+    assert.deepEqual(okay(await full.send("ext.planCatalog.wait", { ...query, threadId: foreign })).plans,
+      [{ ...current, workspace: config.cwd }]);
+    assert.deepEqual(okay(await full.send("ext.planChat.workspace", { cwd: config.cwd, page: 0 })).plans, [current]);
+  } finally { full.close(); }
 });
 
 test("workspace plans stay visible with a durable run log through close, reopen and completion", { timeout: 16_000 }, async t => {

@@ -7,6 +7,14 @@ import { ChangePulse, observe } from "./workspace-changes.js";
 
 export type WorkspacePlans = { cursor: string; rows: PlanSummary[] };
 
+// Persisted rows may come from another host build. Never spread storage
+// fields into the wire format; only the catalog supplies a foreign workspace.
+export function projectPlanSummary({ id, title, revision, total, verified, status, closed, reportedDone }: PlanSummary,
+    chat: boolean, workspace?: string): PlanSummary {
+  return { id, title, revision, total, verified, status, closed,
+    ...(chat && reportedDone && { reportedDone }), ...(workspace !== undefined && { workspace }) };
+}
+
 // Mirror the existing workspace summaries, not the full plans or their
 // transcripts. This disposable index starts only when a client asks for all
 // workspaces. It does not add a store-wide write to each plan transaction.
@@ -75,8 +83,7 @@ export class PlanCatalog {
             if (row.closed !== closed) continue;
             if (skip > 0) { skip--; continue; }
             if (plans.length === planWorkspacePageSize) return { revision, plans, more: true };
-            const { reportedDone, ...summary } = row;
-            plans.push({ ...summary, ...(chat && reportedDone && { reportedDone }), ...(workspace !== cwd && { workspace }) });
+            plans.push(projectPlanSummary(row, chat, workspace === cwd ? undefined : workspace));
           }
         }
         return { revision, plans, more: false };

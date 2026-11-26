@@ -13,7 +13,7 @@ import type { PlanReviewTarget } from "../../server/src/plan-review.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { PlanFileError, type PlanFiles, type FileProposal, type PlanFileTarget } from "./plan-files.js";
 import type { PlanAcceptance } from "./plan-acceptance.js";
-import { PlanCatalog, type WorkspacePlans } from "./plan-catalog.js";
+import { PlanCatalog, projectPlanSummary, type WorkspacePlans } from "./plan-catalog.js";
 import { observe } from "./workspace-changes.js";
 import { ThreadPresentationDoc, threadLabel } from "./thread-presentation.js";
 import { checkoutIdentity, planWorktreeIdentity, type PlannedCheckout, type PlanWorktreeIdentity, type ThreadWorktrees } from "./worktrees.js";
@@ -811,8 +811,8 @@ export class Plans implements PlanHost, PlanChatHost {
     const catalog = await observed(observer => h.observeDoc(WorkspaceCatalog, cwd, observer, ctx), token, q.after, signal);
     const ordered = catalog.rows.slice().reverse().sort((a, b) => Number(a.closed) - Number(b.closed));
     const first = q.page * planWorkspacePageSize;
-    const plans = ordered.slice(first, first + planWorkspacePageSize);
-    return { revision: token(catalog), plans: chat ? plans : plans.map(({ reportedDone: _, ...plan }) => plan), more: ordered.length > first + planWorkspacePageSize };
+    const plans = ordered.slice(first, first + planWorkspacePageSize).map(row => projectPlanSummary(row, chat));
+    return { revision: token(catalog), plans, more: ordered.length > first + planWorkspacePageSize };
   }
 
   #ensureCatalog(signal: AbortSignal) {
