@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+  Plan review · r2 · Workspace profiles ──────────────────────────────────────
+  No review yet. A fresh reviewer sees this revision and its captured draft
+  requests only.
+  No workspace access · advisory findings only
+  Original requirements not captured
+
+  ↵ Start review  Advisory findings only
+  ↑↓ scroll  r refresh  f full  ↵ review  ←→ revisions  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

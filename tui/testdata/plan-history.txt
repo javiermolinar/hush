@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  Run history · Workspace profiles ──────────────────────────────────── 0 runs
+  No recorded runs
+
+  ↑↓ scroll  ← latest  → older  r refresh  f full  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

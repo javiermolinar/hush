@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
 )
@@ -191,146 +190,122 @@ func (m *Model) planWorkspaceKey(d *dialog, chord string) tea.Cmd {
 	return nil
 }
 
-func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets []int) {
+func (m *Model) planWorkspaceRows(d *dialog, w, n int) menuFrame {
 	p := d.planWorkspace
-	add := func(line string, target int) {
-		if len(rows) < n {
-			rows, targets = append(rows, ansi.Truncate(line, w, "…")), append(targets, target)
-		}
-	}
+	c := menuChrome{title: "Workspace plans", count: menuCount(len(p.rows), "plan", "plans")}
 	t := m.threads[d.route.owner]
-	title := "Workspace plans"
 	if m.menuFeaturesFromBackend.Has(x.PlanCatalog) {
-		title += " · all workspaces"
+		c.scope = "all workspaces"
 	} else if path := t.info.Workspace; path != "" {
-		title += " · " + oneLine(filepath.Base(path))
+		c.scope = filepath.Base(path)
 	} else if d.route.owner == "" {
-		title += " · " + oneLine(filepath.Base(m.options.NewThread.CWD))
+		c.scope = filepath.Base(m.options.NewThread.CWD)
 	}
-	if n >= 8 {
-		add("", -1)
-	}
-	add(strongText(title), -1)
-	if n >= 7 {
-		add("", -1)
-	}
-	footer := 1
-	if n >= 6 {
-		footer++
-	}
-	showPage := p.page > 0 || p.more
-	if showPage && n >= 7 {
-		footer++
-	}
-	budget := max(1, n-len(rows)-footer)
-	switch {
-	case p.failed:
-		add("Could not load plans · r retry", -1)
-	case !p.ready:
-		add("Loading workspace plans…", -1)
-	case len(p.rows) == 0:
-		if p.page == 0 {
-			add("No plan yet · ask “Create a plan…”", -1)
-		} else {
-			add("No plans on this page", -1)
-		}
-	default:
-		grouped := budget >= 3 && p.rows[len(p.rows)-1].Closed
-		first := d.selected
-		if !grouped {
-			first = min(max(0, first-budget+1), max(0, len(p.rows)-budget))
-		} else {
-			cost := 2 // selected row and its group heading
-			for first > 0 {
-				step := 1
-				if p.rows[first-1].Closed != p.rows[first].Closed {
-					step++
-				}
-				if cost+step > budget {
-					break
-				}
-				first, cost = first-1, cost+step
-			}
-		}
-		for i := first; i < len(p.rows) && budget > 0; i++ {
-			r := p.rows[i]
-			if grouped && (i == first || r.Closed != p.rows[i-1].Closed) {
-				if budget < 2 {
-					break
-				}
-				heading := "Open plans"
-				if r.Closed {
-					heading = "Closed plans"
-				}
-				add(m.control(heading), -1)
-				budget--
-			}
-			budget--
-			status, tone := workspacePlanStatus(r)
-			prefix := "  "
-			if d.selected == i {
-				prefix = m.paint(x.Accent, "› ")
-			}
-			if v := t.plan.snapshot; v.Plan != nil && v.Plan.ID == r.ID && v.RunAvailability != sdk.PlanRunPinned {
-				prefix += m.paint(x.Accent, "• ")
-			} else {
-				prefix += "  "
-			}
-			count := fmt.Sprintf("  %d/%d · r%d", r.Verified, r.Total, r.Revision)
-			if r.ReportedDone > 0 {
-				count = fmt.Sprintf("  %d/%d done · r%d", r.Verified+r.ReportedDone, r.Total, r.Revision)
-			}
-			badge := m.paint(tone, status) + m.control(count)
-			left := max(4, w-stringWidth(badge)-2)
-			name := prefix + oneLine(r.Title)
-			if r.Workspace != "" {
-				source := ansi.Truncate(" · "+oneLine(filepath.Base(r.Workspace)), max(4, left/3), "…")
-				name = ansi.Truncate(name, left-stringWidth(source), "…") + m.control(source)
-			}
-			line := fit(ansi.Truncate(name, left, "…"), left) + "  " + badge
-			if d.selected == i && m.theme.Fills {
-				line = fill(fit(line, w), m.palette.selected)
-			}
-			add(line, i)
-		}
-	}
-	if showPage && n >= 7 {
-		add(m.control(fmt.Sprintf("Page %d · ←→ pages", p.page+1)), -1)
-	}
-	keys, compact := "↵ open", "↵ open"
-	if d.route.owner.Valid() {
-		keys += "  h history"
-	}
-	if p.ready && !p.failed && d.selected < len(p.rows) {
-		pick := p.rows[d.selected]
-		if pick.Workspace != "" {
-			keys, compact = "↵ preview", "↵ preview"
-			if d.route.owner.Valid() {
-				keys += "  h history"
-			}
-		} else if d.route.owner.Valid() {
-			if m.menuFeaturesFromBackend.Has(x.PlanReview) {
-				keys += "  v review"
-				compact += "  v review"
-			}
-			if !pick.Closed {
-				keys += "  c close plan"
-				compact += "  c close plan"
-			} else if pick.Status != "complete" {
-				keys += "  c reopen"
-				compact += "  c reopen"
-			}
-		}
+	hints := []string{"↑↓ move", "r refresh", d.zoomKey()}
+	if p.page > 0 || p.more {
+		c.scope += fmt.Sprintf(" · page %d", p.page+1)
+		hints = append(hints, "←→ pages")
 	}
 	if t.plan.snapshot.RunAvailability == sdk.PlanRunPinned {
-		keys += "  p pinned revision"
-		compact += "  p pinned"
+		hints = append(hints, "p pinned revision")
 	}
-	add(m.paint(x.Muted, m.hintRow(w, keys, compact, "esc close")), -1)
-	if n >= 6 {
-		add("", -1)
+	if p.failed || !p.ready || len(p.rows) == 0 {
+		c.keys = chromeLine(m.menuKeys(w, hints...))
+		message, tone := "No plan yet · ask to create a plan", x.Muted
+		switch {
+		case p.failed:
+			message, tone = "Could not load plans · r retry", x.Danger
+		case !p.ready:
+			message = "Loading workspace plans…"
+		case p.page > 0:
+			message = "No plans on this page · ← previous page"
+		}
+		return m.menuShell(w, n, c, func(int) menuFrame {
+			return menuFrame{rows: []string{m.paint(tone, message)}, targets: []int{-1}}
+		})
 	}
-	return
+	pick := p.rows[d.selected]
+	if pick.Workspace == "" {
+		c.consequence = chromeLine(m.menuAction("Open", oneLine(pick.Title)))
+		hints = append(hints, "↵ open")
+		if d.route.owner.Valid() {
+			if m.menuFeaturesFromBackend.Has(x.PlanReview) {
+				hints = append(hints, "v review")
+			}
+			if !pick.Closed {
+				hints = append(hints, "c close plan")
+			} else if pick.Status != "complete" {
+				hints = append(hints, "c reopen")
+			}
+		}
+	} else {
+		c.consequence = chromeLine(m.menuAction("Preview", oneLine(pick.Title)+" · read-only"))
+		hints = append(hints, "↵ preview")
+	}
+	if d.route.owner.Valid() {
+		hints = append(hints, "h history")
+	}
+	c.keys = chromeLine(m.menuKeys(w, hints...))
+	progress := fmt.Sprintf("%d/%d verified · r%d", pick.Verified, pick.Total, pick.Revision)
+	if pick.ReportedDone > 0 {
+		progress += fmt.Sprintf(" · %d reported done", pick.ReportedDone)
+	}
+	if pick.Workspace != "" {
+		progress += "\nRead-only · " + pick.Workspace
+	}
+	if v := t.plan.snapshot; v.Plan != nil && v.Plan.ID == pick.ID && v.RunAvailability != sdk.PlanRunPinned {
+		progress += "\nBound to this thread"
+	}
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		return m.menuColumns(w, h, func(width, height int) []string { return m.menuDetail(pick.Title, progress, width, height) }, func(lw, budget int) menuFrame {
+			var out menuFrame
+			grouped := budget >= 3 && p.rows[len(p.rows)-1].Closed
+			first, _ := menuWindow(d.selected, len(p.rows), budget)
+			if grouped {
+				first = d.selected
+				for cost := 2; first > 0; {
+					step := 1
+					if p.rows[first-1].Closed != p.rows[first].Closed {
+						step++
+					}
+					if cost+step > budget {
+						break
+					}
+					first, cost = first-1, cost+step
+				}
+			}
+			for i := first; i < len(p.rows) && budget > 0; i++ {
+				r := p.rows[i]
+				if grouped && (i == first || r.Closed != p.rows[i-1].Closed) {
+					if budget < 2 {
+						break
+					}
+					heading := "Open plans"
+					if r.Closed {
+						heading = "Closed plans"
+					}
+					out.add(m.quiet(heading), -1)
+					budget--
+				}
+				status, tone := workspacePlanStatus(r)
+				icon := "○"
+				switch status {
+				case "Running", "Closing":
+					icon = "◐"
+				case "Complete":
+					icon = "✓"
+				case "Closed", "Needs check":
+					icon = "⏸"
+				}
+				if v := t.plan.snapshot; v.Plan != nil && v.Plan.ID == r.ID && v.RunAvailability != sdk.PlanRunPinned && status == "Pending" {
+					status = "Bound"
+				}
+				out.add(m.menuRow(lw, 13, menuItem{title: r.Title, icon: icon, state: status, tone: tone, focus: i == d.selected}), i)
+				budget--
+			}
+			return out
+		})
+	})
 }
 
 func workspacePlanStatus(p sdk.PlanSummary) (string, x.Tone) {
@@ -342,7 +317,7 @@ func workspacePlanStatus(p sdk.PlanSummary) (string, x.Tone) {
 	case p.Closed:
 		return "Closed", x.Muted
 	case p.Status == "running":
-		return "Running", x.Accent
+		return "Running", x.Warning
 	case p.Status == "attention":
 		return "Needs check", x.Warning
 	case p.Verified+p.ReportedDone == p.Total:
@@ -589,35 +564,25 @@ func planHistoryLines(page sdk.PlanHistoryPage) []string {
 	return out
 }
 
-func (m *Model) planHistoryRows(d *dialog, w, n int) (rows []string, targets []int) {
+func (m *Model) planHistoryRows(d *dialog, w, n int) menuFrame {
 	p := d.planHistory
-	add := func(line string) {
-		if len(rows) < n {
-			rows, targets = append(rows, ansi.Truncate(line, w, "…")), append(targets, -1)
+	c := menuChrome{title: "Run history", scope: p.title, count: menuCount(len(p.page.Runs), "run", "runs"),
+		keys: chromeLine(m.menuKeys(w, "↑↓ scroll", "← latest", "→ older", "r refresh", d.zoomKey()))}
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		var out menuFrame
+		switch {
+		case p.loading:
+			out.add(m.quiet("Loading run history…"), -1)
+		case p.failed:
+			out.add(m.paint(x.Danger, "Could not load run history · r retry"), -1)
+		case len(p.page.Runs) == 0:
+			out.add(m.quiet("No recorded runs"), -1)
+		default:
+			start := min(p.offset, max(0, len(p.lines)-h))
+			for _, line := range p.lines[start:min(len(p.lines), start+h)] {
+				out.add(m.quiet(line), -1)
+			}
 		}
-	}
-	add(strongText("Run history · " + oneLine(p.title)))
-	if n >= 6 {
-		add("")
-	}
-	switch {
-	case p.loading:
-		add("Loading run history…")
-	case p.failed:
-		add("Could not load run history · r retry")
-	case len(p.page.Runs) == 0:
-		add("No recorded runs")
-	default:
-		lines := p.lines
-		height := max(0, n-len(rows)-2)
-		start := min(p.offset, max(0, len(lines)-height))
-		for _, line := range lines[start:min(len(lines), start+height)] {
-			add(m.control(line))
-		}
-	}
-	add(m.paint(x.Muted, m.hintRow(w, "↑↓ scroll  ← latest  → older  r refresh", "↑↓ scroll", "esc back")))
-	if n >= 5 {
-		add("")
-	}
-	return
+		return out
+	})
 }

@@ -445,7 +445,7 @@ func TestRunNamedPlanHerePreservesThreadAndDraftAcrossReceiptRetry(t *testing.T)
 	}
 }
 
-func TestPlanWorkspaceDockAndStatuses(t *testing.T) {
+func TestGoldenPlanWorkspaceDockAndStatuses(t *testing.T) {
 	m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
 	m.Update(tea.WindowSizeMsg{Width: 104, Height: 24})
 	enableGitDiffFixture(m, s)
@@ -460,8 +460,9 @@ func TestPlanWorkspaceDockAndStatuses(t *testing.T) {
 	}}
 	d := &dialog{route: m.route(m.active, menusID), token: m.token(), planWorkspace: p, selected: 2}
 	m.pushDialog(d)
-	body := ansi.Strip(assertFrame(t, m))
-	for _, want := range []string{"Workspace plans", "Open plans", "Closed plans", "Running", "Needs check", "2/5 · r7", "c reopen", "± 4 files", "keep this draft"} {
+	golden(t, "plan-catalog", m)
+	body := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Workspace plans", "Open plans", "Closed plans", "Running", "Needs check", "2/5 verified · r7", "c reopen", "± 4 files", "keep this draft"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q:\n%s", want, body)
 		}

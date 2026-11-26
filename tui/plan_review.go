@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
 	x "github.com/javiermolinar/hush/tui/extension"
 )
@@ -211,9 +210,9 @@ func (p *planReviewPicker) lines(width int) []planReviewLine {
 		add(reviewer, x.Muted)
 		switch row.State {
 		case "running":
-			add("Reviewing the saved revision…", x.Accent)
+			add("Reviewing the saved revision…", x.Warning)
 		case "failed":
-			add(row.Failure, x.Warning)
+			add(row.Failure, x.Danger)
 			if !p.view.CanStart && p.target.Revision == p.view.HeadRevision {
 				add("Review attempt limit reached", x.Muted)
 			}
@@ -254,53 +253,63 @@ func (p *planReviewPicker) lines(width int) []planReviewLine {
 	return body
 }
 
-func (m *Model) planReviewRows(d *dialog, w, n int) (rows []string, targets []int) {
+func (m *Model) planReviewRows(d *dialog, w, n int) menuFrame {
 	p := d.planReview
-	add := func(line string) {
-		if len(rows) < n {
-			rows, targets = append(rows, ansi.Truncate(line, w, "…")), append(targets, -1)
-		}
-	}
-	add(strongText(fmt.Sprintf("Plan review · r%d · %s", p.target.Revision, oneLine(p.title))))
-	keys := "↑↓ scroll"
-	if p.failed {
-		add("Could not load review · r refresh")
-	} else if !p.ready {
-		add("Loading review…")
-	} else {
-		if p.view.HeadRevision > p.target.Revision {
-			add(m.paint(x.Warning, fmt.Sprintf("Stale revision · head is r%d", p.view.HeadRevision)))
-		}
-		if p.note != "" {
-			add(m.paint(x.Warning, p.note))
-		} else if p.sending || p.awaiting != "" {
-			add(m.control("Updating review…"))
-		}
-		lines := p.lines(w)
-		height := max(0, n-len(rows)-2)
-		start := min(p.offset, max(0, len(lines)-height))
-		for _, line := range lines[start:min(len(lines), start+height)] {
-			add(m.paint(line.tone, line.text))
-		}
-	}
-	prefix := ""
-	if p.canStart() {
-		prefix = "↵ start review  "
+	c := menuChrome{title: "Plan review", scope: fmt.Sprintf("r%d · %s", p.target.Revision, p.title)}
+	hints := []string{"↑↓ scroll", "r refresh", d.zoomKey()}
+	switch {
+	case p.canStart():
+		action := "Start review"
 		if p.view.Review != nil {
-			prefix = "↵ retry review  "
+			action = "Retry review"
 		}
-	} else if r := p.view.Review; p.ready && r != nil && r.State == "running" && r.ThreadID == d.route.owner {
-		prefix = "x stop review  "
+		c.consequence = chromeLine(m.menuAction(action, "Advisory findings only"))
+		hints = append(hints, "↵ review")
+	case p.sending || p.awaiting != "":
+		c.consequence = chromeLine(m.quiet("Wait for the pending review request"))
+	case p.ready && p.view.HeadRevision > p.target.Revision:
+		c.consequence = chromeLine(m.quiet("Only the current revision can be reviewed · → newer"))
+	case p.ready:
+		c.consequence = chromeLine(m.quiet("Review unavailable for this revision"))
 	}
-	if p.ready && p.view.Review != nil && p.view.Review.ReviewerThreadID.Valid() {
-		keys += "  o reviewer"
+	if p.ready && p.view.Review != nil {
+		r := p.view.Review
+		if r.State == "running" && r.ThreadID == d.route.owner {
+			c.consequence = chromeLine(m.quiet("Review in progress · x stop review"))
+		}
+		if r.ReviewerThreadID.Valid() {
+			hints = append(hints, "o reviewer")
+		}
+		if r.Report != nil {
+			c.count = menuCount(len(r.Report.Findings), "finding", "findings")
+		}
 	}
 	if p.ready && (p.target.Revision > 1 || p.view.HeadRevision > p.target.Revision) {
-		keys += "  ←→ revisions"
+		hints = append(hints, "←→ revisions")
 	}
-	add(m.paint(x.Muted, m.hintRow(w, prefix+keys, prefix+keys, "esc back")))
-	if n >= 5 {
-		add("")
-	}
-	return
+	c.keys = chromeLine(m.menuKeys(w, hints...))
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		var out menuFrame
+		if p.failed {
+			out.add(m.paint(x.Danger, "Could not load review · r refresh"), -1)
+			return out
+		}
+		if !p.ready {
+			out.add(m.quiet("Loading review…"), -1)
+			return out
+		}
+		if h > 1 && p.view.HeadRevision > p.target.Revision {
+			out.add(m.paint(x.Warning, fmt.Sprintf("Stale revision · head is r%d", p.view.HeadRevision)), -1)
+		}
+		if h-len(out.rows) > 1 && p.note != "" {
+			out.add(m.paint(x.Warning, p.note), -1)
+		}
+		lines := p.lines(w)
+		height := h - len(out.rows)
+		start := min(p.offset, max(0, len(lines)-height))
+		for _, line := range lines[start:min(len(lines), start+height)] {
+			out.add(m.paint(line.tone, line.text), -1)
+		}
+		return out
+	})
 }

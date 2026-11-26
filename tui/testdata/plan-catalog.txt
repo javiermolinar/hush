@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+  Workspace plans · src ────────────────────────────────────────────────────────────────────── 3 plans
+  Open plans                                         │ Review history
+    ◐ Workspace profiles               Running       │ 2/5 verified · r7
+    ⏸ Track config files               Needs check   │
+  Closed plans                                       │
+  › ⏸ Review history                   Closed        │
+
+  ↵ Open  Review history
+  ↑↓ move  r refresh  f full  ↵ open  c reopen  h history  esc back
+
+  ──────────────────────────────────────────────────────────────────────────────── ± 4 files  +82 −18*
+  you › keep this draft
+  dir src

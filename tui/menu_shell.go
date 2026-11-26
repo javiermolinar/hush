@@ -29,11 +29,11 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	var frame menuFrame
 	switch {
 	case d.planWorkspace != nil:
-		frame.rows, frame.targets = m.planWorkspaceRows(d, w, n)
+		frame = m.planWorkspaceRows(d, w, n)
 	case d.planHistory != nil:
-		frame.rows, frame.targets = m.planHistoryRows(d, w, n)
+		frame = m.planHistoryRows(d, w, n)
 	case d.planReview != nil:
-		frame.rows, frame.targets = m.planReviewRows(d, w, n)
+		frame = m.planReviewRows(d, w, n)
 	case d.plan != nil:
 		frame = m.planRows(d, w, n)
 	case d.git != nil:

@@ -51,3 +51,18 @@ func testPlanReviewFrameGeometry(t *testing.T) {
 		}
 	}
 }
+
+func TestGoldenPlanReviewAndHistory(t *testing.T) {
+	m, _ := demo(t, Options{ReducedMotion: true, Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanReview
+	r := m.route(m.active, menusID)
+	m.openPlanReview(r, "fixture-plan", "Workspace profiles", 2)
+	p := m.focusedDialog().planReview
+	p.ready, p.view.CanStart = true, true
+	p.view.Source, p.view.HeadRevision = "missing", 2
+	golden(t, "plan-review", m)
+	press(m, tea.KeyEscape, 0)
+	m.pushDialog(&dialog{route: r, token: m.token(), planHistory: &planHistoryPicker{title: "Workspace profiles"}})
+	golden(t, "plan-history", m)
+}
