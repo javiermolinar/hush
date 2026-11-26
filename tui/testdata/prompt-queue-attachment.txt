@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ↳ follow-up queued · Review the changes
+  ▣ Screenshot
+  ◌ Working ─────────────────────── esc stop  enter steer  alt+enter follow-up
+  steer › Keep the draft
+          Second line
+  Workspace workspace
+  › ◐ workspace

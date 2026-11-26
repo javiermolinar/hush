@@ -427,7 +427,7 @@ func (m *Model) promptRows(t *threadState, pane paneLayout, slash []registeredAc
 		}
 		text = ansiCut(text, w-prefix)
 		if intro && i == 0 && m.editor.value() == "" && m.focusedDialog() == nil {
-			text = m.control("ask anything")
+			text = m.quiet("ask anything")
 		}
 		if i == 0 && len(output) == 1 && m.focusedDialog() == nil {
 			if len(slash) > 0 && m.editor.value() != "/" && m.editor.cursorByte() == len(m.editor.value()) {
@@ -439,7 +439,7 @@ func (m *Model) promptRows(t *threadState, pane paneLayout, slash []registeredAc
 				}
 			}
 		}
-		rows = append(rows, displayRow{text: m.control(fit(lead, prefix)) + text})
+		rows = append(rows, displayRow{text: m.quiet(fit(lead, prefix)) + text})
 	}
 	return rows, cursor
 }

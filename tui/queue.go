@@ -10,7 +10,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
-	x "github.com/javiermolinar/hush/tui/extension"
 )
 
 const maxQueueRows = 3
@@ -69,7 +68,7 @@ func (m *Model) queueRows(t *threadState, w, limit int) []displayRow {
 	start := max(0, total-limit)
 	if start > 0 && limit > 1 {
 		start++ // Reserve one row for the hidden entries, without scanning them.
-		rows = append(rows, displayRow{text: m.paint(x.Muted, fmt.Sprintf("… %d earlier pending", start))})
+		rows = append(rows, displayRow{text: m.quiet(fmt.Sprintf("… %d earlier pending", start))})
 	}
 	for i := start; i < total; i++ {
 		var item sdk.QueueItem
@@ -93,7 +92,7 @@ func (m *Model) queueRows(t *threadState, w, limit int) []displayRow {
 		if strings.TrimSpace(preview) == "" {
 			preview = "(no text)"
 		}
-		rows = append(rows, displayRow{text: m.paint(x.Muted, lead) + ansi.Truncate(preview, max(0, w-stringWidth(lead)), "…")})
+		rows = append(rows, displayRow{text: m.quiet(lead + ansi.Truncate(preview, max(0, w-stringWidth(lead)), "…"))})
 	}
 	return rows
 }

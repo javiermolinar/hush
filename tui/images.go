@@ -304,7 +304,7 @@ func (m *Model) attachmentRow(t *threadState, width int) displayRow {
 		labels = append(labels, "▣ "+oneLine(item.label))
 	}
 	if t.attaching {
-		labels = append(labels, "◌ attaching image…")
+		labels = append(labels, "○ Attaching image…")
 	}
-	return displayRow{text: m.control(ansi.Truncate(strings.Join(labels, "  "), width, "…"))}
+	return displayRow{text: m.quiet(ansi.Truncate(strings.Join(labels, "  "), width, "…"))}
 }
