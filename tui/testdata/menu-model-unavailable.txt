@@ -8,7 +8,6 @@
 
 
 
-
   Select model ────────────────────────────────────────────────────── 2 models
   › Type to filter
     ○ Reasoning              Current     │ Writer
@@ -21,4 +20,5 @@
 
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

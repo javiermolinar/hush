@@ -8,7 +8,6 @@
 
 
 
-
   Workspace plans · src ────────────────────────────────────────────────────────────────────── 3 plans
   Open plans                                         │ Review history
     ◐ Workspace profiles               Running       │ 2/5 verified · r7
@@ -21,4 +20,5 @@
 
   ──────────────────────────────────────────────────────────────────────────────── ± 4 files  +82 −18*
   you › keep this draft
-  dir src
+  Workspace src
+  › ○ src

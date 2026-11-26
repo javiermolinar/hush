@@ -2,7 +2,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -21,4 +20,5 @@
 
   ────────────────────────────────────────────────────────────────────────────
   you › check @ma
-  dir workspace
+  Workspace workspace
+  › ○ workspace

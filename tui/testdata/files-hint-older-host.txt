@@ -5,7 +5,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -17,4 +16,5 @@
   ────────────────────────────────────────
   ─────────────────────────────────────────────────────── / commands  ? all keys
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

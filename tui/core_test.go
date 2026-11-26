@@ -452,7 +452,7 @@ func TestScrollAnchorSurvivesTailGrowth(t *testing.T) {
 	content := func(frame string) string {
 		lines := strings.Split(frame, "\n")[:floor]
 		for i, row := range lines {
-			lines[i] = ansi.Cut(row, 0, m.width-2) // the scrollbar may move independently
+			lines[i] = ansi.Cut(ansi.Strip(row), 0, m.width-2) // ignore scrollbar styling at the cut boundary
 		}
 		return strings.Join(lines, "\n")
 	}

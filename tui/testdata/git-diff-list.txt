@@ -8,7 +8,6 @@
 
 
 
-
   Worktree changes · HEAD ──────────────────────────────────────────── 4 files
   /work/project/src  ⎇ feature/review
   › M src/auth/session.ts       Staged   │ src/auth/session.ts
@@ -21,4 +20,5 @@
 
   ◌ Working ────────────────────────────────────────────── ± 4 files  +82 −18*
   steer › keep this draft
-  dir src
+  Workspace src
+  › ◐ src

@@ -6,7 +6,6 @@
 
 
 
-
   Switch thread · all workspaces ─────────────────────────────────────────────────────── 6 choices
   › Workspace, thread, or message
   hush                                             │ Go TUI
@@ -23,4 +22,5 @@
 
   ────────────────────────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

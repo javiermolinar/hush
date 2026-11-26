@@ -80,7 +80,7 @@ func testCompactFrameGeometry(t *testing.T) {
 			if !strings.Contains(view, "done") || m.View().Cursor == nil || !m.frame.hasTranscript {
 				t.Fatalf("draft or transcript hidden:\n%s", view)
 			}
-			if size[1] < shortPaneHeight && strings.Contains(view, "dir workspace") {
+			if size[1] < shortPaneHeight && strings.Contains(view, "Workspace workspace") {
 				t.Fatal("optional status took space from the transcript")
 			}
 			first, second, chosen := "Option 1", "Option 2", ""
@@ -120,7 +120,7 @@ func testCompactFrameGeometry(t *testing.T) {
 			press(m, tea.KeyEscape, 0)
 			resize(80, 24)
 			if got := ansi.Strip(assertFrame(t, m)); !strings.Contains(got, "you ›") ||
-				!strings.Contains(got, "done") || !strings.Contains(got, "dir workspace") || m.editor.value() != draft {
+				!strings.Contains(got, "done") || !strings.Contains(got, "Workspace workspace") || m.editor.value() != draft {
 				t.Fatalf("normal geometry or draft not restored:\n%s", got)
 			}
 		})

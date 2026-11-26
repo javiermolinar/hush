@@ -6,7 +6,7 @@
 
 
 
-
   ──── scroll paused · ctrl+end resume
   you ›
-  dir workspa…
+  workspace
+  › ○ workspace

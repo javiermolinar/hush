@@ -9,7 +9,6 @@
 
 
 
-
   Plan review · r2 · Workspace profiles ──────────────────────────────────────
   No review yet. A fresh reviewer sees this revision and its captured draft
   requests only.
@@ -21,4 +20,5 @@
 
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

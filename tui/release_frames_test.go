@@ -184,7 +184,7 @@ func TestReleaseFrames(t *testing.T) {
 			configDialog := m.focusedDialog()
 			currentModel, _, _ := m.configCurrent(configDialog)
 			configDialog.config.levels[currentModel] = []string{"off", "low", "high", "max"}
-			if body := shot("config"); !strings.Contains(body, "settings") || !strings.Contains(body, "reasoning") || !strings.Contains(body, "folded") {
+			if body := shot("config"); !strings.Contains(body, "Settings") || !strings.Contains(body, "Reasoning") || !strings.Contains(body, "Folded") {
 				t.Fatal("configuration sheet was not captured")
 			}
 			press(m, tea.KeyEscape, 0)
@@ -248,7 +248,7 @@ func TestReleaseFrames(t *testing.T) {
 				t.Fatal("slash menu did not show the path picker entry")
 			}
 			m.openPathRoots()
-			if body := shot("path-locations"); !strings.Contains(body, "Workspace · /work/project/src/") || !strings.Contains(body, "Backend home · ~/") {
+			if body := shot("path-locations"); !strings.Contains(body, "Granted locations") || !strings.Contains(body, "/work/project/src/") || !strings.Contains(body, "Backend home") {
 				t.Fatal("path picker did not show both granted locations")
 			}
 			press(m, tea.KeyDown, 0)
@@ -260,7 +260,7 @@ func TestReleaseFrames(t *testing.T) {
 			m.editor.set("")
 			openGroupedThreadPicker(t, m)
 			if body := shot("thread-switcher"); !strings.Contains(body, "Deployment tools") ||
-				!strings.Contains(body, "needs attention") || !strings.Contains(body, "stopped") ||
+				!strings.Contains(body, "Parked") || !strings.Contains(body, "Stopped") ||
 				!strings.Contains(body, "+ New thread here") || !strings.Contains(body, "ctrl+x n new here") {
 				t.Fatal("the thread picker did not show groups, statuses, and workspace creation")
 			}

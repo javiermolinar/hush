@@ -7,18 +7,18 @@
 
 
 
-  ─ settings · this thread  default · tab switches scope ─────────────────────
-
-    thinking       off  low  high
-
-    model          fixture/one  ↵ pick
-
-  › reasoning      folded  expanded
 
 
-    Show reasoning text by default without expanding tool output.
+  Settings · Default ─────────────────────────────────────────────────────────
+    Thinking      high
+    Model         fixture/one
+  › Reasoning     Expanded
+  Show reasoning in new threads without expanding tools
 
-    ↑↓ move  ←→ change, applies now  tab scope  / models  u undo  esc close
+  ↵ Fold reasoning  Applies now
+  ↑↓ move  ←→ change  tab scope  / models  u undo  f full  esc back
+
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

@@ -19,7 +19,7 @@
 
 
 
-
   ───────────────────────────────────────────────────────────────────────────── / commands  ctrl+t threads  ? all keys
   main › ask anything
-  ◌ thread 1 · ◌ connecting
+  ◌ connecting
+  › ○ Untitled thread

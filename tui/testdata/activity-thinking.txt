@@ -1,5 +1,4 @@
 
-
 │ hi
 
   Hi. What can I help with?
@@ -17,4 +16,5 @@
     … 10 more · enter open
   ◌ Thinking · 3s ─────────────────────────────────────────────────────────────────────── esc stop
   steer ›
-  dir hush · fixture-model max                                                               $0.13
+  Workspace hush · fixture-model max                                                         $0.13
+  › ◐ hush

@@ -110,12 +110,6 @@ func footerRegistration() x.Registration {
 				return x.Outcome{x.Local{Op: openUsageOp}}
 			}},
 	}, Segments: []x.Segment{
-		{Key: "branch", Slot: x.StatusLeft, Order: 10, Priority: 35, Render: func(c x.RenderContext) x.Line {
-			if c.Thread.Branch == "" {
-				return nil
-			}
-			return x.Line{{Text: ansi.Truncate("⎇ "+oneLine(c.Thread.Branch), max(4, c.Width/3), "…"), Tone: x.Muted}}
-		}},
 		{Key: "model", Slot: x.StatusLeft, Order: 30, Priority: 46, Render: func(c x.RenderContext) x.Line {
 			t := c.Thread
 			if t.Model.ModelID == "" {
@@ -240,25 +234,6 @@ func fitTitle(title string, width int) string {
 	return out.String() + "…"
 }
 
-func tabStatus(s x.ThreadStatus) (string, x.Tone) {
-	switch s {
-	case x.Running:
-		return "●", x.Plain
-	case x.Parked:
-		return "◐", x.Warning
-	case x.Scheduled:
-		return "◷", x.Warning
-	case x.Stopped:
-		return "◌", x.Muted
-	case x.Failed:
-		return "✗", x.Danger
-	case x.Done:
-		return "✓", x.Good
-	default:
-		return "◌", x.Muted
-	}
-}
-
 func mergeRow(dst *displayRow, src displayRow, between string) {
 	if dst.text != "" && src.text != "" {
 		dst.text += between
@@ -295,16 +270,15 @@ func (m *Model) segmentRow(t *threadState, w int, left x.SegmentSlot) displayRow
 			dir = oneLine(filepath.Clean(ctx.Thread.Workspace))
 		}
 		if dir != "" {
-			room := max(8, w/3)
-			if w >= compactFooterWidth {
-				room += len("dir ")
+			prefix := "Workspace "
+			if ctx.Thread.Branch != "" {
+				prefix = "Repo "
 			}
-			add("hush/workspace", 45, -90, m.control(ansi.Truncate("dir "+dir, room, "…")))
-		}
-		if len(m.tabs) < 2 && t.info.ID != "" && (t.info.Title != "" || dir == "") {
-			glyph, tone := tabStatus(t.info.Status)
-			label := fitTitle(threadTitle(ctx.Thread), max(2, w/2-2))
-			add("hush/thread", 28, -100, m.paint(tone, glyph)+" "+m.control(label))
+			if w < compactFooterWidth {
+				prefix = ""
+			}
+			room := min(w, max(12, w/3+stringWidth(prefix)))
+			add("hush/workspace", 45, -90, m.quiet(ansi.Truncate(prefix+dir, room, "…")))
 		}
 		if t.info.Archived {
 			add("hush/archive", 25, -85, m.paint(x.Muted, "archived"))
@@ -398,7 +372,7 @@ func (m *Model) segmentRow(t *threadState, w int, left x.SegmentSlot) displayRow
 
 func (m *Model) chromeRows(t *threadState, w int) []displayRow {
 	meta := m.segmentRow(t, w, x.StatusLeft)
-	if len(m.tabs) < 2 {
+	if len(m.tabs) == 0 && !t.info.ID.Valid() {
 		return []displayRow{meta}
 	}
 	return []displayRow{meta, m.tabLayout(w)}
@@ -407,7 +381,10 @@ func (m *Model) chromeRows(t *threadState, w int) []displayRow {
 func (m *Model) tabItem(id sdk.ID, w int) displayRow {
 	state := m.threads[id]
 	t := state.info
-	glyph, tone := tabStatus(t.Status)
+	glyph, _, tone := threadPickerStatus(t.Status)
+	if glyph == "" {
+		glyph, tone = "○", x.Muted
+	}
 	if id == "" {
 		glyph = "+"
 	}
@@ -415,25 +392,31 @@ func (m *Model) tabItem(id sdk.ID, w int) displayRow {
 	if t.Forked {
 		fork = "⑂ "
 	}
-	label := fork + fitTitle(threadTitle(t), max(1, w-4-stringWidth(fork)))
-	ink := ""
-	if id == m.active {
-		label = "\x1b[1m" + label + "\x1b[22m"
-		ink = m.palette.activeTab
-	} else if t.Status == x.Parked {
-		ink = m.palette.parkedTab
+	room := max(1, w-5-stringWidth(fork)) // focus, status, and trailing space
+	branch := ""
+	if t.Branch != "" && room >= 10 {
+		branch = ansi.Truncate("⎇ "+oneLine(t.Branch), min(room-5, room/2), "…")
+		room -= stringWidth(branch) + 1
 	}
-	row := displayRow{text: m.paint(tone, glyph) + " " + label}
-	if room := w - stringWidth(row.text) - 2; room > 5 {
+	label := fork + fitTitle(threadDisplayTitle(t), room)
+	focus := "  "
+	if id == m.active {
+		focus = m.paint(x.Accent, "› ")
+		label = strongText(label)
+	}
+	row := displayRow{text: focus + m.paint(tone, glyph) + " " + label}
+	if branch != "" {
+		mergeRow(&row, displayRow{text: m.quiet(branch)}, " ")
+	}
+	if room := w - stringWidth(row.text) - 1; room > 5 {
 		mergeRow(&row, m.segmentRow(state, room-1, x.Tab), " ")
 	}
-	for i := range row.hits {
-		row.hits[i].first++
-		row.hits[i].last++
+	row.text += " "
+	if id == m.active {
+		row.text = surface(row.text, m.palette.activeTab)
 	}
-	row.text = surface(" "+row.text+" ", ink)
 	if id != "" && id != m.active {
-		row.hits = append(row.hits, spanHit{0, stringWidth(row.text), x.ActionRef{ID: activateTabID, Target: string(id)}, "switch to " + threadTitle(t)})
+		row.hits = append(row.hits, spanHit{0, stringWidth(row.text), x.ActionRef{ID: activateTabID, Target: string(id)}, "Switch to " + threadDisplayTitle(t)})
 	}
 	return row
 }
@@ -447,7 +430,7 @@ func (m *Model) tabLayout(w int) displayRow {
 	}
 	var rows []displayRow
 	for _, id := range ids {
-		rows = append(rows, m.tabItem(id, max(8, min(32, w-6))))
+		rows = append(rows, m.tabItem(id, max(8, min(40, w-6))))
 	}
 	chosen := make([]bool, len(ids))
 	active := slices.Index(ids, m.active)

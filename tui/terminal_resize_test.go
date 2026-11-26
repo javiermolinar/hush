@@ -36,7 +36,7 @@ def expect_frame(height):
             start = output.rfind(rule)
             if start != -1:
                 rows = ansi.sub(b'', output[start+len(rule):]).split(b'\r\n')
-                if len(rows) >= 3 and rows[1].strip() == 'you › resize-draft'.encode() and rows[2].startswith(b'  dir workspace'):
+                if len(rows) >= 3 and rows[1].strip() == 'you › resize-draft'.encode() and rows[2].startswith(b'  Workspace workspace'):
                     return
     raise AssertionError('prompt and footer not at the bottom of %d rows: %r' % (height, output[-800:]))
 

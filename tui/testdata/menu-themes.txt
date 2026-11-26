@@ -2,7 +2,6 @@
 
 
 
-
   Themes ──────────────────────────────────────────────────────────── 9 themes
     terminal                     Current │ violet
     gruvbox                              │ Preview the theme and fills before
@@ -21,4 +20,5 @@
 
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

@@ -8,7 +8,6 @@
 
 
 
-
   Loaded context · next submission ─────────────────────────────────────────────────── 6 lines
   Personal · APPEND_SYSTEM.md
     /backend/home/.hush/APPEND_SYSTEM.md
@@ -21,4 +20,5 @@
 
   ────────────────────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

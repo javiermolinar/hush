@@ -66,9 +66,12 @@ func TestFooterUsageDetails(t *testing.T) {
 	s.info.Usage = sdk.Usage{TotalTokens: 16_000_000, CostUSD: 5.48}
 	m.editor.set("keep the draft")
 	assertFrame(t, m)
-	y := m.height - 1
+	y := m.height - 2
 	line := ansi.Strip(m.frame.rows[y])
-	for _, want := range []string{"dir hush", "⎇ main", "test-model", "ctx ", "26%", "$5.48"} {
+	if tab := ansi.Strip(m.frame.rows[y+1]); !strings.Contains(tab, "⎇ main") {
+		t.Fatalf("missing branch on thread tab: %q", tab)
+	}
+	for _, want := range []string{"Repo hush", "test-model", "ctx ", "26%", "$5.48"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("missing %q in status %q", want, line)
 		}
@@ -267,8 +270,8 @@ func TestPinnedFooterOutlivesIntro(t *testing.T) {
 		t.Helper()
 		frame := assertFrame(t, m)
 		y := m.height - 1
-		if len(m.tabs) > 1 {
-			y-- // tab band remains the last row when there is more than one
+		if len(m.tabs) > 0 || m.active.Valid() {
+			y-- // the active thread has a tab even when it is the only one
 		}
 		line := ansi.Strip(m.frame.rows[y])
 		for _, s := range expect {

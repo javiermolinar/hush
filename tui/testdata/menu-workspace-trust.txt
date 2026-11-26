@@ -21,4 +21,4 @@
 
   ────────────────────────────────────────────────────────────────────────────
   you › keep this draft
-  dir a folder
+  Workspace a folder

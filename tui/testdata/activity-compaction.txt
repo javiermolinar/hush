@@ -1,4 +1,3 @@
-
 │ hi
 
   Hi. What can I help with?
@@ -17,4 +16,5 @@
   ─  context compacted
   ◌ Compacting context · 8s ───────────────────────────────────────────────────────────── esc stop
   steer ›
-  dir hush · fixture-model max                                                               $0.13
+  Workspace hush · fixture-model max                                                         $0.13
+  › ◐ hush

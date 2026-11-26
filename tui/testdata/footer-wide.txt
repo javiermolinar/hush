@@ -14,5 +14,5 @@
   ────────────────────────────────────────
   ◌ Working ─────────────────────────────────────────────────── esc stop  enter steer  alt+enter follow-up
   steer › Keep this draft
-  dir workspace · inbox 2 · ⎇ agent/1 · model-v1 high                               ctx ▰▰▰▰▰▱ 80% · $1.23
-   ● Working thread   ◐ ⑂ thread 2   ✓ thread 3   ◌ thread 4   ◷ thread 5
+  Repo workspace · inbox 2 · model-v1 high                                          ctx ▰▰▰▰▰▱ 80% · $1.23
+  › ◐ Working thread ⎇ agent/1    ⏸ ⑂ Untitled thread    ✓ Untitled thread    ○ Untitled thread  +1

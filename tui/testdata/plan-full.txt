@@ -14,11 +14,11 @@
     □ ○ Additional task …  Ready         │
     □ ○ Additional task …  Ready         │
     □ ○ Additional task …  Ready         │
-    □ ○ Additional task …  Ready         │
 
   Select the steps to run
   space select  tab details  ↑↓ move  f fit  esc back
 
   ○ idle ─────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

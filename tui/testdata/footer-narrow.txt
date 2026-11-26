@@ -12,5 +12,5 @@
   steer › first prompt line
           second prompt line
           third prompt line
-  dir workspa… · model-v1      ctx 80%
-   ● Working thread  +4
+  workspace · model-v1         ctx 80%
+  › ◐ Working thread ⎇ agent/1  +4

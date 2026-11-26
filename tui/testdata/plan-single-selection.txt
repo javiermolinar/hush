@@ -9,7 +9,6 @@
 
 
 
-
   Workspace profiles · Plan · r7 ──────────────────────────────────────────────────────────────────── 0/3 verified
   › ■ ○ Save a profile                       Ready         │ Save a profile
     □ ○ Restore saved profiles               Needs 1       │ Store a profile under a stable name.
@@ -21,4 +20,5 @@
 
   ○ idle ─────────────────────────────────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

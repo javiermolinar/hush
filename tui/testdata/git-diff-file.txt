@@ -7,7 +7,6 @@
 
 
 
-
   src/auth/session.ts · HEAD ───────────────────────────────────────────── 1/4
   /work/project/src  ⎇ feature/review
   @@ -41,2 +41,2 @@ refreshSession()
@@ -21,4 +20,5 @@
 
   ◌ Working ────────────────────────────────────────────── ± 4 files  +82 −18*
   steer › keep this draft
-  dir src
+  Workspace src
+  › ◐ src

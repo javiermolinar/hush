@@ -7,7 +7,6 @@
 
 
 
-
 │ hi
 
   Hi. What can I help with?
@@ -17,4 +16,5 @@
   ▸ ran 14 · 1 failed · 1m 12s                                                               18:54
   ◌ Waiting for model · 8s ────────────────────────────────────────────────────────────── esc stop
   steer ›
-  dir hush · fixture-model max                                                               $0.13
+  Workspace hush · fixture-model max                                                         $0.13
+  › ◐ hush

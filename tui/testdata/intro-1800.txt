@@ -19,7 +19,7 @@
 
 
 
-
   ───────────────────────────────────────────────────────────────────────────── / commands  ctrl+t threads  ? all keys
   main › ask anything
-  ◌ thread 1 · ◌ reconnecting · gpt-6.2-sol max                                                         ctx ▰▱▱▱▱▱ ~2%
+  ◌ reconnecting · gpt-6.2-sol max                                                                      ctx ▰▱▱▱▱▱ ~2%
+  › ○ Untitled thread

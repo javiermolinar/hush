@@ -2,7 +2,6 @@
 
 
 
-
 │ hi
 
   Hi. What can I help with?
@@ -17,4 +16,5 @@
     … 10 more · enter open
   ◌ Waiting for model · 8s ────────────────────────────────────────────────────────────── esc stop
   steer ›
-  dir hush · fixture-model max                                                               $0.13
+  Workspace hush · fixture-model max                                                         $0.13
+  › ◐ hush

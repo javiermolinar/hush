@@ -7,7 +7,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -19,4 +18,5 @@
   ↑↓ move  ↵ choose  y yes  n no  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

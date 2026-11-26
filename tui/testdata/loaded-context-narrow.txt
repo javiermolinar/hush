@@ -1,4 +1,3 @@
-│ What changed in @app/main.go:12?
   Loaded context · next sub… ─ 8 lines
   Personal · APPEND_SYSTEM.md
     /backend/home/.hush/APPEND_SYSTEM.
@@ -9,4 +8,5 @@
   ↑↓ scroll  ←→ horizontal  esc back
   ────────────────────────────────────
   you ›
-  dir workspa…
+  workspace
+  › ○ workspace

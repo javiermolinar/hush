@@ -7,7 +7,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Select model · Default ──────────────────────────────────────────────── 2 models
@@ -19,4 +18,5 @@
   ↑↓ move  ↵ use  ctrl+d make default  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────────
   you › keep this draft
-  dir workspace
+  Workspace workspace
+  › ○ workspace

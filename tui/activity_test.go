@@ -487,8 +487,9 @@ func TestTranscriptAndSingleThreadShareLeftEdge(t *testing.T) {
 			}
 		}
 	}
-	last := ansi.Strip(m.frame.rows[m.height-1])
-	if !strings.HasPrefix(last, "  dir hush · fixture-model max") || strings.Count(ansi.Strip(body), "dir hush") != 1 {
+	repo := ansi.Strip(m.frame.rows[m.height-2])
+	tab := ansi.Strip(m.frame.rows[m.height-1])
+	if !strings.HasPrefix(repo, "  Workspace hush · fixture-model max") || !strings.Contains(tab, "› ◐ ") {
 		t.Fatalf("single-thread footer:\n%s", body)
 	}
 	m.options.Fills = FillOn

@@ -8,7 +8,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
   Child ──────────────────────────────────────────────────────────────────────
   Only the top panel is drawn
@@ -21,4 +20,5 @@
   ────────────────────────────────────────────────────────────────────────────
   you › Keep the draft
         Keep the second line
-  dir workspace
+  Workspace workspace
+  › ○ workspace

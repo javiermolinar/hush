@@ -1,4 +1,3 @@
-│ What changed in @app/main.go:12?
   Commands ─────────────── 22 commands
   › Type to filter
   App
@@ -9,4 +8,5 @@
   ↑↓ move  type to filter  esc back
   ────────────────────────────────────
   you ›
-  dir workspa…
+  workspace
+  › ○ workspace

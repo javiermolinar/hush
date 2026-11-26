@@ -3,7 +3,6 @@
 
 
 
-
   Commands ─────────────────────────────────────────────────────────────────────── 22 commands
   › Type to filter
   Thread                                         │ Switch threads
@@ -26,4 +25,5 @@
 
   ────────────────────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

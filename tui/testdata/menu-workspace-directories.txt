@@ -9,7 +9,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
   New thread · Deployment tools ──────────────────────────────────── 2 choices
   › Filter working directories
@@ -21,4 +20,5 @@
 
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace

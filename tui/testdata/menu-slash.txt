@@ -1,7 +1,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -19,4 +18,5 @@
   ↑↓ move  ↵ run  tab complete  esc back
   ────────────────────────────────────────────────────────────────────────────
   you › /fork
-  dir workspace
+  Workspace workspace
+  › ○ workspace

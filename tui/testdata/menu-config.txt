@@ -7,7 +7,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Settings · This thread ─────────────────────────────────────────────────────────
@@ -19,4 +18,5 @@
   ↑↓ move  ←→ change  tab scope  / models  u undo  f full  esc back
   ────────────────────────────────────────────────────────────────────────────────
   you › keep this draft
-  dir workspace
+  Workspace workspace
+  › ○ workspace

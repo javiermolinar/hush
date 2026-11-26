@@ -6,7 +6,6 @@
 
 
 
-
   Switch thread · workspace unverified ───────────────────────────── 3 choices
   › Workspace, thread, or message
   Workspace unknown                      │ workspace
@@ -19,4 +18,5 @@
   ↑↓ move  ↵ choose  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  dir workspace
+  Workspace workspace
+  › ○ workspace
