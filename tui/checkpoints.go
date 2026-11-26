@@ -99,9 +99,9 @@ func checkpointMenu(c x.Context, v x.Invocation) x.Outcome {
 	case "bookmark", "files":
 		return recordCheckpoint(op, text)
 	case "":
-		return x.Outcome{x.SelectDialog{Placement: x.Sheet, Title: "Record at the latest committed entry", Choices: []x.Choice{
-			{ID: "bookmark", Label: "Transcript bookmark", Description: "No files captured"},
-			{ID: "files", Label: "File checkpoint", Description: "Committed HEAD only"},
+		return x.Outcome{x.SelectDialog{Placement: x.Sheet, Title: "Record checkpoint · latest committed entry", Choices: []x.Choice{
+			{ID: "bookmark", Label: "Transcript bookmark", Action: "Set label for", Description: "No files captured"},
+			{ID: "files", Label: "File checkpoint", Action: "Set label for", Description: "Committed HEAD only"},
 		}, Done: func(_ x.Context, r x.Reply[string]) x.Outcome {
 			if !r.Accepted {
 				return nil
@@ -159,7 +159,7 @@ func rewindList(_ x.Context, r x.ClientResult) x.Outcome {
 		return clientNote(r, "")
 	}
 	if len(r.Checkpoints) == 0 {
-		return showNote("No checkpoints. Use /checkpoint or /rewind entry ID.", x.Muted)
+		return showNote("No checkpoints · use /checkpoint or /rewind entry ID", x.Muted)
 	}
 	rows := make(map[string]sdk.Checkpoint, len(r.Checkpoints))
 	choices := make([]x.Choice, 0, len(r.Checkpoints))
@@ -169,7 +169,17 @@ func rewindList(_ x.Context, r x.ClientResult) x.Outcome {
 			key = "entry-" + string(v.AtEntryID)
 		}
 		rows[key] = v
-		choices = append(choices, x.Choice{ID: key, Label: "◇ " + v.Label, Description: label + " · #" + string(v.AtEntryID)})
+		title, action := v.Label, "Preview rewind from"
+		if v.Kind == "files" {
+			action = "Choose what to rewind from"
+		}
+		if title == "" {
+			title = "Transcript bookmark"
+			if v.Kind == "files" {
+				title = "File checkpoint"
+			}
+		}
+		choices = append(choices, x.Choice{ID: key, Label: title, Action: action, Description: label + " · entry #" + string(v.AtEntryID)})
 	}
 	return x.Outcome{x.SelectDialog{Title: "Rewind from a checkpoint", Placement: x.Sheet, Choices: choices,
 		Done: func(_ x.Context, selection x.Reply[string]) x.Outcome {
@@ -185,8 +195,8 @@ func rewindList(_ x.Context, r x.ClientResult) x.Outcome {
 				return previewRewind(input)
 			}
 			return x.Outcome{x.SelectDialog{Title: "Choose what to rewind", Placement: x.Sheet, Choices: []x.Choice{
-				{ID: sdk.RewindTranscript, Label: "Transcript only", Description: "Leave every checkout alone"},
-				{ID: sdk.RewindFiles, Label: "Transcript and committed files", Description: "New worktree and branch"},
+				{ID: sdk.RewindTranscript, Label: "Transcript only", Action: "Preview rewind", Description: "Leave every checkout alone"},
+				{ID: sdk.RewindFiles, Label: "Transcript and committed files", Action: "Preview rewind", Description: "New worktree and branch"},
 			}, Done: func(_ x.Context, mode x.Reply[string]) x.Outcome {
 				if mode.Accepted {
 					input.Mode = mode.Value

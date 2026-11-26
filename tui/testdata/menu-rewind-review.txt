@@ -1,0 +1,28 @@
+
+
+
+
+
+
+
+
+  Review rewind ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 12 lines
+  Operation: 3df259fa-f60e-49d6-b09d-7937e2fedd3e
+  Fork thread #1 at entry #2. Original remains reachable.
+  Restore tracked files from committed snapshot only.
+  Repository: /workspace/.git
+  Commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  Ref: refs/hush/checkpoints/77397caf-ceff-47c1-bab3-59b820b87eb5
+  New worktree: /private/runtime/rewind-worktrees-v1/3df259fa-f60e-49d6-b09d-7937e2fedd3e
+  New branch: hush/rewind/3df259fa-f60e-49d6-b09d-7937e2fedd3e
+
+  Recorded external effects (not undone):
+  #9: Published fixture release
+  Other effects may not be recorded.
+
+  ↵ Continue  Open the confirmation
+  ↵ continue  ↑↓ scroll  ←→ horizontal  f full  esc back
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

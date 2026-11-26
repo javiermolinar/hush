@@ -41,7 +41,7 @@ func (f *checkpointFixture) RewindStatus(context.Context, sdk.ID, string) (sdk.R
 	return sdk.RewindResult{}, sdk.ErrProtocol
 }
 
-func TestRewindReviewShowsExactBranchAndRecordedEffectsBeforeConfirmation(t *testing.T) {
+func TestGoldenRewindReviewShowsExactBranchAndRecordedEffectsBeforeConfirmation(t *testing.T) {
 	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
 	p := sdk.RewindPreview{ID: "3df259fa-f60e-49d6-b09d-7937e2fedd3e", ThreadID: "1", AtEntryID: "2", Mode: sdk.RewindFiles,
 		Files: &sdk.FileRestore{Commit: strings.Repeat("a", 40), Repository: "/workspace/.git",
@@ -78,6 +78,7 @@ func TestRewindReviewShowsExactBranchAndRecordedEffectsBeforeConfirmation(t *tes
 	}
 	done(m.runAction(m.host.byID[menusID+".rewind"], ""))
 	frame("Fixture checkpoint")
+	golden(t, "menu-checkpoints", m)
 	press(m, tea.KeyEnter, 0)
 	frame("Transcript and committed files")
 	press(m, tea.KeyDown, 0)
@@ -85,6 +86,7 @@ func TestRewindReviewShowsExactBranchAndRecordedEffectsBeforeConfirmation(t *tes
 	frame("Review rewind")
 	frame(p.Files.Commit)
 	frame(p.Files.Branch)
+	golden(t, "menu-rewind-review", m)
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 	assertFrame(t, m)
 	m.Update(tea.WindowSizeMsg{Width: 144, Height: 28})

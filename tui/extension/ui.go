@@ -2,13 +2,13 @@ package extension
 
 import tea "charm.land/bubbletea/v2"
 
-// Placement distinguishes a floating dialog from an under-prompt sheet.
+// Placement controls dialog lifetime; both kinds dock above the input rule.
 type Placement uint8
 
 const (
-	// Overlay pushes onto the shell's floating overlay stack (the default).
+	// Overlay pushes onto the shell's stack (the default).
 	Overlay Placement = iota
-	// Sheet opens under the prompt, below any floating overlays.
+	// Sheet replaces the current sheet, below any stacked dialogs.
 	Sheet
 )
 
@@ -26,6 +26,7 @@ type Choice struct {
 	Label       string
 	Description string
 	Disabled    bool
+	Action      string // optional verb for the consequence line; does not change acceptance
 }
 
 // SelectDialog requests a filterable list. Actions optionally expose existing
@@ -75,7 +76,7 @@ type InputDialog struct {
 
 func (InputDialog) extensionEffect() {}
 
-// CustomDialog pushes an in-process Bubble Tea v2 model onto the floating
+// CustomDialog pushes an in-process Bubble Tea v2 model onto the dialog
 // stack, when CustomModels is enabled. New receives the initial presentation
 // context and returns a fresh model. The shell drives it as a component,
 // never as a nested program. Result is polled with the latest model after

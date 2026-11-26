@@ -78,6 +78,7 @@ func (m *Model) openDialog(r ownerRoute, e x.Effect, budget *int) tea.Cmd {
 			}
 			seen[c.ID] = true
 			c.Label, c.Description = limitText(c.Label, 512), limitText(c.Description, 1024)
+			c.Action = limitText(c.Action, 128)
 			d.choices = append(d.choices, c)
 		}
 		d.filter()
@@ -729,6 +730,9 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 	}
 	if choice, ok := d.choice(); ok {
 		verb, effect := "Choose", oneLine(choice.Label)
+		if choice.Action != "" {
+			verb = oneLine(choice.Action)
+		}
 		if d.threadPicker != nil {
 			verb, effect = m.threadPickerAction(d, choice)
 		}

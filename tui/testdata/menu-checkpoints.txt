@@ -1,0 +1,28 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+  Rewind from a checkpoint ────────────────────────────────────────────────────────────────────────────────────────────────────────── 1 choice
+  › Type to filter
+  › Fixture checkpoint                                                   │ Fixture checkpoint
+                                                                         │ files · entry #2
+
+  ↵ Choose what to rewind from  Fixture checkpoint
+  ↑↓ move  ↵ choose  type to filter  esc back
+
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace
