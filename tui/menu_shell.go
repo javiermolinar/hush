@@ -40,7 +40,7 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	case d.git != nil:
 		frame = m.gitReviewRows(d, w, n)
 	case d.workTrust != nil:
-		frame.rows, frame.targets = m.workspaceTrustRows(d.workTrust, w, n)
+		frame = m.workspaceTrustRows(d, w, n)
 	case d.config != nil:
 		frame = m.configDockRows(d, w, n)
 	case d.palette:

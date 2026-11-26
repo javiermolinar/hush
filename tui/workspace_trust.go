@@ -267,80 +267,95 @@ func (m *Model) workspaceTrustKey(d *dialog, chord string) tea.Cmd {
 	}
 }
 
-func (m *Model) workspaceTrustRows(wt *workspaceTrustDialog, w, h int) (rows []string, targets []int) {
-	add := func(row string, target int) {
-		if len(rows) < h {
-			rows = append(rows, ansi.Truncate(row, w, "…"))
-			targets = append(targets, target)
-		}
-	}
-	switch {
-	case wt.cancel != nil:
+func (m *Model) workspaceTrustRows(d *dialog, w, h int) menuFrame {
+	wt := d.workTrust
+	c := menuChrome{title: "Workspace trust", keys: chromeLine(m.menuKeys(w, d.zoomKey()))}
+	if wt.cancel != nil {
 		status := "Checking workspace trust…"
 		if wt.path != "" {
 			status = "Saving workspace trust…"
 		}
-		add(m.control(status), -1)
-	case wt.decide != nil || wt.trusted:
-		label, tone := "Trust this workspace?", x.Warning
+		return m.menuShell(w, h, c, func(int) menuFrame {
+			return menuFrame{rows: []string{m.quiet(status)}, targets: []int{-1}}
+		})
+	}
+	if wt.decide != nil || wt.trusted {
+		c.title = "Trusted workspace"
 		access := strings.Split(ansi.Wrap("Tools, file browsing, and Git (whole checkout)", w, ""), "\n")
-		reserved := len(access) + 3 // heading, trust action, and dismissal
-		if wt.trusted {
-			label, tone, reserved = "Trusted workspace", x.Good, reserved-1
-		}
-		add(m.paint(tone, label), -1)
-		for _, line := range access {
-			add(m.control(line), -1)
-		}
-		var path []string
-		if w > 0 && wt.pathCells <= w*(h-reserved) {
-			path = strings.Split(ansi.Hardwrap(wt.path, w, true), "\n")
-		}
-		if len(path) != 0 && len(path)+reserved <= h {
-			for _, line := range path {
-				add(m.control(line), -1)
-			}
-			if !wt.trusted {
-				add(m.keyHint("t", "trust"), workspaceTrustGrantTarget)
-			}
-		} else {
-			add(m.control("Resize to review the full path."), -1)
-		}
+		c.minBody = len(access) + 1
 		if !wt.trusted {
-			add(m.keyHint("n", "not now")+"  "+m.keyHint("esc", "dismiss"), workspaceTrustDismissTarget)
-			return rows, targets
+			c.title = "Trust this workspace?"
+			c.consequence = chromeLine(m.quiet("Resize or zoom to review the full path"))
+			c.keys = menuLine{m.menuKeys(w, "n not now", d.zoomKey()), workspaceTrustDismissTarget}
 		}
-	case wt.onStart != nil:
-		add(m.paint(x.Warning, "Trust on the backend host"), -1)
-		label := "hush trust grant --cwd PATH"
-		if wt.notice != "" {
-			label = wt.notice
-		}
-		add(m.control(label), -1)
-		path := strconv.QuoteToGraphic(wt.cwd)
-		if space := h - len(rows) - 3; space > 0 && stringWidth(path) <= space*w {
-			lines := strings.Split(ansi.Hardwrap(path, w, true), "\n")
-			if len(lines) <= space {
-				for _, line := range lines {
-					add(m.control(line), -1)
+		return m.menuShell(w, h, c, func(budget int) menuFrame {
+			var out menuFrame
+			for _, line := range access[:min(budget, len(access))] {
+				out.add(m.quiet(line), -1)
+			}
+			room := budget - len(out.rows)
+			if room > 0 && wt.pathCells <= w*room {
+				path := strings.Split(ansi.Hardwrap(wt.path, w, true), "\n")
+				if len(path) <= room {
+					for _, line := range path {
+						out.add(line, -1)
+					}
+					if !wt.trusted {
+						// The grant target is emitted only with the whole scope above it.
+						out.consequence = menuLine{strongText("t trust") + "  " + m.quiet("Allow access to this checkout"), workspaceTrustGrantTarget}
+					}
+					return out
 				}
 			}
-		}
-		add(m.keyHint("y", "copy grant command"), workspaceTrustCopyTarget)
-		add(m.keyHint("w", "start after granting"), workspaceTrustStartTarget)
-	default:
-		add(m.paint(x.Warning, "Workspace trust"), -1)
-		if wt.notice != "" {
-			add(m.paint(x.Warning, wt.notice), -1)
-		}
-		add(m.control("On the backend host, run:"), -1)
-		for _, line := range strings.Split(ansi.Wrap("hush trust grant --cwd PATH", w, ""), "\n") {
-			add(m.control(line), -1)
-		}
-		if wt.cwd != "" {
-			add(m.paint(x.Muted, "PATH = "+gitReviewScope(wt.cwd, "", w-7)), -1)
-		}
+			if room > 0 {
+				out.add(m.quiet("Full path does not fit"), -1)
+			}
+			return out
+		})
 	}
-	add(m.keyHint("esc", "close"), -1)
-	return rows, targets
+	if wt.onStart != nil {
+		c.title = "Trust on the backend host"
+	}
+	return m.menuShell(w, h, c, func(budget int) menuFrame {
+		var out menuFrame
+		if wt.onStart != nil {
+			label := "hush trust grant --cwd PATH"
+			if wt.notice != "" {
+				label = wt.notice
+			}
+			out.add(m.quiet(label), -1)
+			path := strconv.QuoteToGraphic(wt.cwd)
+			if space := budget - 3; space > 0 && stringWidth(path) <= space*w {
+				lines := strings.Split(ansi.Hardwrap(path, w, true), "\n")
+				if len(lines) <= space {
+					for _, line := range lines {
+						out.add(line, -1)
+					}
+				}
+			}
+			if len(out.rows) < budget {
+				out.add(m.quiet("y copy grant command"), workspaceTrustCopyTarget)
+			}
+			if len(out.rows) < budget {
+				out.add(strongText("w start after granting"), workspaceTrustStartTarget)
+			}
+			return out
+		}
+		if wt.notice != "" && budget >= 2 {
+			out.add(m.paint(x.Warning, wt.notice), -1)
+		}
+		if budget-len(out.rows) >= 2 {
+			out.add(m.quiet("On the backend host, run:"), -1)
+		}
+		for _, line := range wrapped("hush trust grant --cwd PATH", w) {
+			if len(out.rows) >= budget {
+				break
+			}
+			out.add(m.quiet(line), -1)
+		}
+		if wt.cwd != "" && len(out.rows) < budget {
+			out.add(m.quiet("PATH = "+gitReviewScope(wt.cwd, "", w-7)), -1)
+		}
+		return out
+	})
 }

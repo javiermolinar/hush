@@ -40,7 +40,7 @@ func openWorkspaceTrustFixture(t testing.TB, m *Model) {
 	workspaceTrustStep(t, m, m.openWorkspaceTrust(m.route(m.active, coreID)))
 }
 
-func TestWorkspaceTrustOnFirstEntry(t *testing.T) {
+func TestGoldenWorkspaceTrustOnFirstEntry(t *testing.T) {
 	var checks, grants, dismissals int
 	opt := &WorkspaceTrustOptions{Review: func(_ context.Context, cwd string) (WorkspaceTrustPreview, error) {
 		checks++
@@ -61,7 +61,9 @@ func TestWorkspaceTrustOnFirstEntry(t *testing.T) {
 	m := modelFor(t, opts) // a fresh local TUI without an existing thread
 	workspaceTrustStep(t, m, m.syncWorkspaceTrust())
 	m.editor.set("keep this draft")
-	frame := ansi.Strip(assertFrame(t, m))
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	golden(t, "menu-workspace-trust", m)
+	frame := ansi.Strip(m.View().Content)
 	for _, want := range []string{"Trust this workspace?", "Tools, file browsing, and Git (whole checkout)", `"/work/a folder"`, "t trust", "n not now"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("missing %q in confirmation:\n%s", want, frame)

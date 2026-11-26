@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Trust this workspace? ──────────────────────────────────────────────────────
+  Tools, file browsing, and Git (whole checkout)
+  "/work/a folder"
+
+  t trust  Allow access to this checkout
+  n not now  f full  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you › keep this draft
+  dir a folder
