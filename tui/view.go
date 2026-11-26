@@ -97,7 +97,7 @@ func (m *Model) View() tea.View {
 	t := m.threads[m.active]
 	w := pane.width
 	var slash []registeredAction
-	var below []displayRow
+	var below, completions []displayRow
 	f.slashStart, f.slashEnd = m.height, m.height
 	continuation, filePicker := false, false
 	var fileChoices int
@@ -113,10 +113,9 @@ func (m *Model) View() tea.View {
 	if d != nil {
 		continuation = true // hide background completion lists
 	} else if files, n := m.fileRows(w, listBudget); len(files) > 0 {
-		below, filePicker, fileChoices = files, true, n
+		completions, filePicker, fileChoices = files, true, n
 	} else if slash = m.slashMatches(); len(slash) > 0 {
-		below = m.slashSheet(slash, w, listBudget)
-		f.slashStart, f.slashEnd = listEnd-len(below), listEnd
+		completions = m.slashSheet(slash, w, listBudget)
 	} else {
 		continuation = true
 	}
@@ -124,7 +123,7 @@ func (m *Model) View() tea.View {
 	editorRows, cursor := m.promptRows(t, pane, slash)
 	const fixedRows = 1 // live rule
 	var notice displayRow
-	free := m.height - fixedRows - len(editorRows) - len(below)
+	free := m.height - fixedRows - len(editorRows) - len(below) - len(completions)
 	var attachments []displayRow
 	if free > 1 && (t.attaching || len(t.attachments) != 0) {
 		attachments = []displayRow{m.attachmentRow(t, w)}
@@ -146,7 +145,7 @@ func (m *Model) View() tea.View {
 		widgetBelow := m.widgetRows(t, w, x.BelowEditor, min(3, room-len(widgetAbove)))
 		below = append(widgetBelow, below...)
 	}
-	f.transcriptHeight = max(0, m.height-fixedRows-len(editorRows)-len(below)-len(widgetAbove)-len(queued)-noticeRows-len(attachments))
+	f.transcriptHeight = max(0, m.height-fixedRows-len(editorRows)-len(below)-len(completions)-len(widgetAbove)-len(queued)-noticeRows-len(attachments))
 	rows := m.transcript(t, w, f.transcriptHeight)
 	origin := 0
 	// Keep short transcripts under their intro. Once the viewport fills,
@@ -299,10 +298,19 @@ func (m *Model) View() tea.View {
 			paused = "output below"
 		}
 	}
+	if len(slash) > 0 {
+		f.slashStart, f.slashEnd = y, y+len(completions)
+	}
+	for _, row := range completions {
+		add(y, row)
+		y++
+	}
 	f.ruleY = y
 	var hints []string
 	if !pane.short {
-		hints = m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)
+		if len(completions) < 3 {
+			hints = m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)
+		}
 	}
 	add(y, m.promptRule(t, w, paused, hints))
 	y++
@@ -384,66 +392,6 @@ func (m *Model) widgetRows(t *threadState, w int, where x.WidgetPlacement, n int
 		if len(out) >= n {
 			break
 		}
-	}
-	return out
-}
-
-func (m *Model) slashSheet(matches []registeredAction, w, budget int) []displayRow {
-	// Keep the selected command in view without making the transcript jump
-	// with every arrow press. All matching commands remain reachable.
-	spacer := 0
-	if budget > 2 {
-		spacer = 1
-	}
-	limit := min(5, len(matches), budget-spacer)
-	selected := min(m.slashIndex, len(matches)-1)
-	start := min(max(0, selected-limit+1), len(matches)-limit)
-	visible := matches[start : start+limit]
-	nameWidth := 0
-	keyWidth := 0
-	for _, a := range visible {
-		nameWidth = max(nameWidth, 1+stringWidth(a.action.Slash.Name))
-		keyWidth = max(keyWidth, stringWidth(m.actionBinding(a)))
-	}
-	nameWidth = min(nameWidth, max(8, w/3))
-	if w-nameWidth-keyWidth < 12 {
-		keyWidth = 0
-	}
-	out := make([]displayRow, spacer, limit+spacer)
-	for i, a := range visible {
-		active := start+i == selected
-		prefix := "  "
-		tone := x.Plain
-		if active {
-			prefix = m.paint(x.Accent, "› ")
-			tone = x.Accent
-		}
-		name := ansi.Truncate("/"+a.action.Slash.Name, nameWidth, "…")
-		note := a.action.Description
-		if note == "" {
-			note = a.action.Title
-		}
-		labelEnd := w - keyWidth
-		if keyWidth > 0 {
-			labelEnd -= 2
-		}
-		noteWidth := max(0, labelEnd-nameWidth-4)
-		line := prefix + m.paint(tone, fit(name, nameWidth))
-		if noteWidth > 0 {
-			line += "  " + m.control(ansi.Truncate(oneLine(note), noteWidth, "…"))
-		}
-		if keyWidth > 0 {
-			hint := m.actionBinding(a)
-			line = fit(line, w-stringWidth(hint)) + m.control(hint)
-		}
-		if active && m.theme.Fills {
-			line = fill(fit(line, w), m.palette.selected)
-		}
-		ref := x.ActionRef{ID: a.action.ID}
-		if ref.ID == stageSkillID {
-			ref.Target = a.skill.name + "\n" + a.skill.token
-		}
-		out = append(out, displayRow{text: line, hits: []spanHit{{0, w, ref, a.action.Title}}})
 	}
 	return out
 }

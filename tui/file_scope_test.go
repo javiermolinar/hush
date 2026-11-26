@@ -185,7 +185,7 @@ func TestNativeFileSearchDebouncesCancelsAndCompletes(t *testing.T) {
 		m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	frame := ansi.Strip(assertFrame(t, m))
-	if !strings.Contains(frame, "partial results") || !strings.Contains(frame, "› "+target) {
+	if !strings.Contains(frame, "partial results") || !strings.Contains(frame, "↵ Complete  "+target) {
 		t.Fatal(frame)
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})

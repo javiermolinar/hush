@@ -3,11 +3,6 @@
 
 
 
-
-
-
-
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -17,8 +12,13 @@
   ── go  copy     ────────────────────────
     func main() { println(42) }
   ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────── esc close
+  Workspace files ──────────────────────────────────────────────────── 1 match
+  › main.go                              │ main.go
+                                         │ @main.go
+
+  ↵ Complete  main.go
+  ↑↓ move  ↵ complete  tab complete  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
   you › check @ma
-  Workspace files · loading
-  › main.go
   dir workspace

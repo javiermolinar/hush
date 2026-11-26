@@ -120,6 +120,8 @@ func TestEditorCursor(t *testing.T) {
 func TestSlashSheetKeepsSelectionInView(t *testing.T) {
 	m, _ := demo(t, Options{Fills: FillOff})
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 22})
+	assertFrame(t, m)
+	rule := m.frame.ruleY
 	m.editor.set("/")
 	matches := m.slashMatches()
 	if len(matches) <= 5 {
@@ -130,7 +132,7 @@ func TestSlashSheetKeepsSelectionInView(t *testing.T) {
 		t.Fatal("missing prompt cursor")
 	}
 	body := ansi.Strip(frame.Content)
-	if strings.Contains(body, "enter send") || !strings.Contains(body, "enter run") || strings.Contains(body, "\n  commands\n") {
+	if strings.Contains(body, "enter send") || !strings.Contains(body, "↵ run") || m.frame.ruleY != rule || m.frame.slashEnd != rule {
 		t.Fatalf("incorrect command chrome:\n%s", body)
 	}
 	for range len(matches) - 1 {

@@ -302,8 +302,8 @@ func TestPinnedFooterOutlivesIntro(t *testing.T) {
 	status("hush", "gpt-6.2-sol", "ctx 38%")
 	m.editor.set("/")
 	status("hush", "gpt-6.2-sol", "ctx 38%")
-	if m.frame.slashEnd != m.height-1 {
-		t.Fatal("slash rows include the footer")
+	if m.frame.slashEnd != m.frame.ruleY {
+		t.Fatal("slash rows are not docked above the rule")
 	}
 	budget := maxEffects
 	m.openDialog(m.route(m.active, coreID), x.SelectDialog{Title: "Select", Placement: x.Sheet,
