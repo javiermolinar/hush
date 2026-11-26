@@ -93,8 +93,15 @@ func (m *Model) confirmPlanPreview(r ownerRoute, t *threadState, text string) (t
 
 func (m *Model) planPreviewContent(ctx x.RenderContext, t *threadState, id sdk.ID, text string) x.Content {
 	heading, _, _ := strings.Cut(text, "\n")
-	out := x.Content{activityRow(x.Line{{Text: heading, Tone: x.Muted, Hint: "Inspect plan preview",
-		Action: x.ActionRef{ID: inspectPlanPreviewID, Target: string(id)}}}, "", ctx.Width)}
+	ref := x.ActionRef{ID: inspectPlanPreviewID, Target: string(id)}
+	label, title, hasTitle := strings.Cut(heading, " · ")
+	if hasTitle {
+		label += " · "
+	}
+	out := x.Content{activityRow(x.Line{
+		{Text: label, Tone: x.Muted, Action: ref, Hint: "Inspect plan preview"},
+		{Text: title, Tone: strongTone, Action: ref, Hint: "Inspect plan preview"},
+	}, "", ctx.Width)}
 	if m.canSavePlanPreview(t, id) {
 		out = append(out, activityRow(x.Line{{Text: "Save to /plan", Tone: x.Muted, Hint: "Save this exact preview",
 			Action: x.ActionRef{ID: savePlanPreviewID, Target: string(id)}}, {Text: " · ctrl+x i w", Tone: x.Muted}}, "", ctx.Width))

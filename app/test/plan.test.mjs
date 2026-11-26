@@ -17,7 +17,8 @@ const script = fileURLToPath(new URL("./plan-pty.py", import.meta.url));
 const okay = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); return frame.result; };
 
 async function terminalPlan(t, mode) {
-  const faux = mode === "faux", scoped = mode === "scoped", batch = mode === "fileset", preview = mode === "preview";
+  const historical = mode === "historical";
+  const faux = mode === "faux" || historical, scoped = mode === "scoped", batch = mode === "fileset", preview = mode === "preview";
   const startup = mode === "startup", chat = mode === "chat";
   const promptText = preview ? "Lets work on creating a new plan to support subagents, independent reviews etc."
     : batch ? fileSetRequest : scoped ? executionRequest : createRequest;
@@ -97,9 +98,18 @@ async function terminalPlan(t, mode) {
       observer = await dial(socket);
       okay(await observer.send("hello", { versions: [1], capabilities: { plan: [1] } }));
     }
+    let original, historicalAnchor;
     if (faux) {
       const { submissionId } = okay(await peer.send("submit", { threadId, text: "!plan-fixture", requestId: "prepare-pty", whenBusy: "reject" }));
-      assert.equal(okay(await peer.send("submission.wait", { threadId, submissionId })).status, "done");
+      const seeded = okay(await peer.send("submission.wait", { threadId, submissionId }));
+      assert.equal(seeded.status, "done");
+      if (historical) {
+        historicalAnchor = seeded.answerEntryId;
+        original = threadId;
+        const next = okay(await peer.send("submit", { threadId, text: "!plan-fixture-revise", requestId: "prepare-new-head", whenBusy: "reject" }));
+        assert.equal(okay(await peer.send("submission.wait", { threadId, submissionId: next.submissionId })).status, "done");
+        threadId = okay(await peer.send("thread.fork", { threadId, atEntryId: historicalAnchor })).id;
+      }
     }
     let source, threads;
     const list = async () => okay(await peer.send("thread.list", { limit: 32 })).threads;
@@ -112,6 +122,19 @@ async function terminalPlan(t, mode) {
     }
     await exec("python3", [script, binary, socket, threadId, mode, promptText], { cwd, timeout: 16_000,
       env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } });
+    if (historical) {
+      const live = okay(await peer.send("ext.plan.wait", { threadId: original }));
+      const pin = okay(await peer.send("ext.plan.wait", { threadId }));
+      assert.equal(live.plan.revision, 2);
+      assert.equal(pin.plan.revision, 1);
+      assert.equal(pin.runAvailability, "pinned");
+      assert.equal(pin.run, null);
+      assert.deepEqual(pin.progress, []);
+      assert.deepEqual(okay(await peer.send("ext.planWorkspace.history", { threadId: original, planId: live.plan.id })).runs, []);
+      const entries = okay(await peer.send("history", { threadId, limit: 32, range: { kind: "before", beforeEntryId: null } })).entries;
+      assert.equal(entries.at(-1).id, historicalAnchor, "actions in a pinned view did not create an input");
+      return;
+    }
     if (startup || chat) {
       assert.deepEqual(await list(), threads, "browsing and running in an active thread don't create another thread");
       const view = okay(await peer.send("ext.planWorkspace.inspect", { threadId, planId: source }));
@@ -123,7 +146,9 @@ async function terminalPlan(t, mode) {
         assert.deepEqual(view.progress, []);
         assert.deepEqual(view.reports.map(r => [r.stepId, r.state]), [["restore", "done"]]);
         const { entries } = okay(await peer.send("history", { threadId, limit: 32, range: { kind: "before", beforeEntryId: null } }));
-        assert.deepEqual(entries.filter(e => e.kind === "hush.plan.chat").map(e => e.threadId), [threadId]);
+        const inputs = entries.filter(e => e.kind === "hush.plan.chat");
+        assert.deepEqual(inputs.map(e => e.threadId), [threadId]);
+        assert.equal(inputs[0].messages[0].blocks[0].text, "Plan run · r1 · Interface preferences · 1 step");
         assert.ok(!entries.some(e => e.kind === "pi.user"));
       }
       return;
@@ -199,6 +224,7 @@ async function terminalPlan(t, mode) {
 test("terminal UI browses plans at startup without creating a thread or submitting the draft", { timeout: 45_000 }, t => terminalPlan(t, "startup"));
 test("terminal UI runs an unbound dependent task here without touching the composer", { timeout: 45_000 }, t => terminalPlan(t, "chat"));
 test("terminal UI runs the scoped fixture selection", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI cannot run a fork's historical pin", { timeout: 45_000 }, t => terminalPlan(t, "historical"));
 test("terminal UI opens plans from a different Git worktree at startup", { timeout: 45_000 }, async t => {
   const home = await realpath(await mkdtemp("/tmp/hush-plan-catalog-"));
   const cwd = join(home, "source-checkout"), worktree = join(home, "other-worktree");

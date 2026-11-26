@@ -159,6 +159,9 @@ const PlanCatalog Features = 1 << 22
 // PlanWorktree enables running selected plan tasks in a new managed checkout.
 const PlanWorktree Features = 1 << 23
 
+// WorkerActivity enables read-only review worker inspection for the active parent.
+const WorkerActivity Features = 1 << 24
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.

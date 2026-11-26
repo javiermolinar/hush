@@ -99,7 +99,7 @@ func (m *Model) themeSampleRow() string {
 		if i > 0 {
 			b.WriteString("  ")
 		}
-		b.WriteString(m.palette.roles[s.role].ink.paint(s.label))
+		b.WriteString(m.ink(s.role, s.label))
 	}
 	return b.String()
 }

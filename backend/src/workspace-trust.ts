@@ -36,6 +36,12 @@ export function workspaceGit(cwd: string, signal: AbortSignal, ...args: string[]
   return runWorkspaceGit(cwd, signal, args, 512 * 1024);
 }
 
+// --no-index also applies ignore rules to an explicitly named tracked file.
+// Only the presence of a match is used; ignore patterns never enter a review.
+export async function workspaceHasIgnoredPaths(cwd: string, paths: readonly string[], signal: AbortSignal) {
+  return paths.length > 0 && !!await runWorkspaceGit(cwd, signal, ["check-ignore", "--no-index", "-z", "--stdin"], 64 * 1024, paths.join("\0") + "\0");
+}
+
 // Rewind compares every tracked path and mode. Give only this listing a
 // larger output budget; ordinary metadata and discovery keep the small cap.
 export function workspaceGitIndex(cwd: string, signal: AbortSignal, checkoutConfig: readonly string[]) {
@@ -44,7 +50,7 @@ export function workspaceGitIndex(cwd: string, signal: AbortSignal, checkoutConf
 
 // Use identical Git discovery/config inputs for the trust probe and checkout.
 // Don't inherit environment-based repository, config, or discovery overrides.
-async function runWorkspaceGit(cwd: string, signal: AbortSignal, args: string[], maxBuffer: number) {
+async function runWorkspaceGit(cwd: string, signal: AbortSignal, args: string[], maxBuffer: number, ignoreProbe?: string) {
   signal.throwIfAborted();
   // A relative or empty search component would let the requested cwd select
   // which executable is used for the pre-consent probes.
@@ -53,16 +59,22 @@ async function runWorkspaceGit(cwd: string, signal: AbortSignal, args: string[],
   const opts = ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "submodule.recurse=false",
     "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "protocol.allow=never"];
   try {
-    const { stdout } = await run("git", [...opts, ...args], {
+    const child = run("git", [...opts, ...args], {
       cwd, signal, timeout: 25_000, maxBuffer, encoding: "buffer",
       env: { PATH: path, HOME: process.env.HOME ?? "", LC_ALL: "C",
         GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
     });
+    if (ignoreProbe !== undefined) {
+      child.child.stdin?.on("error", () => {});
+      child.child.stdin?.end(ignoreProbe);
+    }
+    const { stdout } = await child;
     // The write command's output isn't needed, even on success.
     return args[0] === "worktree" && args[1] === "add" ? "" : decoder.decode(stdout);
   } catch (error) {
     signal.throwIfAborted();
     const { code, stderr } = error as { code?: number | string; stderr?: Buffer };
+    if (ignoreProbe !== undefined && code === 1 && !stderr?.length) return "";
     if (code === "ENOENT" || code === "EACCES" || code === "ENOEXEC") {
       // A disappearing cwd can also cause spawn to fail (including ENOENT).
       await directory(cwd);

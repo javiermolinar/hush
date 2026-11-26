@@ -23,7 +23,9 @@ type frameMemo struct {
 	thumbStart, thumbEnd                        int
 	top                                         rowAnchor
 	copyToken                                   uint64
-	openActivity                                string
+	openActivity, toggleThought                 string
+	planStrip                                   sdk.ID
+	planPeekable, planPeek, planOpen            bool
 	dialogToken                                 uint64
 	dialogPlanRev                               string
 	dialogPlanSelectionRev                      uint64
@@ -127,11 +129,11 @@ func (m *Model) View() tea.View {
 	const fixedRows = 1 // live rule
 	var notice displayRow
 	free := m.height - fixedRows - len(editorRows) - len(below) - len(completions)
-	var planProgress displayRow
-	if d == nil && len(completions) == 0 && free > 1 {
-		planProgress = m.planActivity(t, w)
-		if planProgress.text != "" {
-			free--
+	var planRun *planView
+	if d == nil && free > 1 {
+		planRun = m.currentPlanRun(t)
+		if planRun != nil {
+			free-- // reserve the collapsed strip before sizing the other chrome
 		}
 	}
 	var attachments []displayRow
@@ -151,14 +153,18 @@ func (m *Model) View() tea.View {
 	queued := m.queueRows(t, w, room)
 	room -= len(queued)
 	widgetAbove := m.widgetRows(t, w, x.AboveEditor, min(3, room))
+	room -= len(widgetAbove)
 	if continuation {
-		widgetBelow := m.widgetRows(t, w, x.BelowEditor, min(3, room-len(widgetAbove)))
+		widgetBelow := m.widgetRows(t, w, x.BelowEditor, min(3, room))
 		below = append(widgetBelow, below...)
+		room -= len(widgetBelow)
 	}
-	f.transcriptHeight = max(0, m.height-fixedRows-len(editorRows)-len(below)-len(completions)-len(widgetAbove)-len(queued)-noticeRows-len(attachments))
-	if planProgress.text != "" {
-		f.transcriptHeight = max(0, f.transcriptHeight-1)
+	var planRows []displayRow
+	if planRun != nil {
+		// Peek uses transcript space only; chrome below the prompt stays put.
+		planRows = m.planStripRows(t, planRun, &f, w, min(1+room, max(1, m.height*7/10)), continuation)
 	}
+	f.transcriptHeight = max(0, m.height-fixedRows-len(editorRows)-len(below)-len(completions)-len(widgetAbove)-len(queued)-noticeRows-len(attachments)-len(planRows))
 	rows := m.transcript(t, w, f.transcriptHeight)
 	origin := 0
 	// Keep short transcripts under their intro. Once the viewport fills,
@@ -177,15 +183,19 @@ func (m *Model) View() tea.View {
 		f.thumbStart = min(f.transcriptHeight-1, int(from/total*h))
 		f.thumbEnd = min(f.transcriptHeight, max(f.thumbStart+1, int(math.Ceil(to/total*h))))
 	}
-	if m.editor.value() == "" && len(t.attachments) == 0 && !t.attaching && m.focusedDialog() == nil && m.leader == "" {
+	if m.planStripKeys(t) && d == nil {
 		for i := len(rows) - 1; i >= 0; i-- {
-			if target := moreActivityTarget(rows[i].displayRow); target != "" {
-				if f.openActivity == "" || strings.HasPrefix(target, outputTargetPrefix) {
+			if f.toggleThought == "" {
+				f.toggleThought = thoughtTarget(t, rows[i])
+			}
+			if !f.planOpen && !strings.HasPrefix(f.openActivity, outputTargetPrefix) {
+				if target := moreActivityTarget(rows[i].displayRow); target != "" &&
+					(f.openActivity == "" || strings.HasPrefix(target, outputTargetPrefix)) {
 					f.openActivity = target
 				}
-				if strings.HasPrefix(target, outputTargetPrefix) {
-					break
-				}
+			}
+			if f.toggleThought != "" && (f.planOpen || strings.HasPrefix(f.openActivity, outputTargetPrefix)) {
+				break
 			}
 		}
 	}
@@ -211,11 +221,11 @@ func (m *Model) View() tea.View {
 			}
 		}
 		if target := moreActivityTarget(r); target != "" && target != f.openActivity {
-			if lead, ok := strings.CutSuffix(r.text, " · enter open"); ok {
+			if lead, ok := strings.CutSuffix(r.text, m.quiet(" · enter open")); ok {
 				const hint = " · click open"
 				r.text = lead
 				if stringWidth(lead)+stringWidth(hint) <= w {
-					r.text += hint
+					r.text += m.quiet(hint)
 				}
 			}
 		}
@@ -318,13 +328,13 @@ func (m *Model) View() tea.View {
 		add(y, row)
 		y++
 	}
-	if planProgress.text != "" {
-		add(y, planProgress)
+	for _, row := range planRows {
+		add(y, row)
 		y++
 	}
 	f.ruleY = y
 	var hints []string
-	if !pane.short {
+	if !pane.short && !f.planPeek {
 		if len(completions) < 3 {
 			hints = m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)
 		}
@@ -474,8 +484,12 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	default:
 		stateFloor = min(20, w-ruleSpace)
 	}
-	badge := m.gitDiffBadgeRow(t, w-ruleSpace-stateFloor)
 	room := w - ruleSpace - stateFloor
+	workers := m.workerBadgeRow(room)
+	if workers.text != "" {
+		room -= stringWidth(workers.text) + 2
+	}
+	badge := m.gitDiffBadgeRow(t, room)
 	if badge.text != "" {
 		room -= stringWidth(badge.text) + 2
 	}
@@ -483,6 +497,7 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	if model := m.ruleModel(t, min(w/3, room)); model != "" {
 		metadata.text = m.quiet(model)
 	}
+	mergeRow(&metadata, workers, "  ")
 	mergeRow(&metadata, badge, "  ")
 	var right displayRow
 	if paused != "" {
@@ -515,7 +530,7 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	out := m.liveActivity(t, liveWidth, phase, tool, count)
 	if phase == liveIdle {
 		if d := m.focusedDialog(); d != nil && d.plan != nil && liveWidth >= 6 {
-			out.text = m.control("○ idle")
+			out.text = m.quiet("○ idle")
 		}
 	}
 	leftWidth := stringWidth(out.text)
@@ -759,6 +774,9 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				i := p.Y - f.dialogY
 				if i >= 0 && i < len(f.dialogChoices) {
 					target := f.dialogChoices[i]
+					if d.worker != nil {
+						return m.workerClick(d, target, p.X, p.Y)
+					}
 					if target >= 0 {
 						if f.dialogListWidth > 0 && p.X >= f.dialogX+f.dialogListWidth {
 							return nil // the same row in the detail pane is not a list hit
@@ -844,9 +862,11 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				} else if p.Button == tea.MouseWheelDown {
 					m.outputMove(d, 3, 0)
 				}
-			} else if inside && (d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil || d.plan != nil) {
+			} else if inside && (d.worker != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil || d.plan != nil) {
 				move := m.planKey
-				if d.planWorkspace != nil {
+				if d.worker != nil {
+					move = m.workerKey
+				} else if d.planWorkspace != nil {
 					move = m.planWorkspaceKey
 				} else if d.planHistory != nil {
 					move = m.planHistoryKey

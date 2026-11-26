@@ -22,7 +22,7 @@ func codeCopyPoint(t *testing.T, m *Model, id string, onButton bool) tea.Mouse {
 		}
 		col := stringWidth(prefix)
 		if onButton {
-			title, _, ok := strings.Cut(header, m.codeCopyAction())
+			title, _, ok := strings.Cut(header, codeCopyAction)
 			if !ok {
 				t.Fatal("header has no copy button")
 			}

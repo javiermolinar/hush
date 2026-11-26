@@ -387,9 +387,8 @@ func (m *Model) tabItem(id sdk.ID, w int) displayRow {
 		room -= stringWidth(branch) + 1
 	}
 	label := fork + fitTitle(threadDisplayTitle(t), room)
-	focus := "  "
+	focus := m.cursorMark(id == m.active)
 	if id == m.active {
-		focus = m.paint(x.Accent, "› ")
 		label = strongText(label)
 	}
 	row := displayRow{text: focus + m.paint(tone, glyph) + " " + label}

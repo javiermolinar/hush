@@ -24,18 +24,19 @@ var markdown = goldmark.New(goldmark.WithExtensions(gfm.Table, gfm.Strikethrough
 // The immutable-entry cache owns layouts. The live cache additionally keeps a
 // stable prefix and completed code lines, so each new token only lays out the tail.
 type markdownStream struct {
-	width              int
-	theme              uint64
-	workspace          string
-	text               string
-	stable, scanned    int
-	blank, unsafe      bool
-	plainDoc, refsSeen bool
-	fence              string
-	fenceAt            int
-	completed          []string
-	codeCount          int
-	open               *openFence
+	width           int
+	theme           uint64
+	workspace       string
+	text            string
+	stable, scanned int
+	blank, unsafe   bool
+	plainDoc        bool
+	refsSeen        bool
+	fence           string
+	fenceAt         int
+	completed       []string
+	codeCount       int
+	open            *openFence
 }
 
 type openFence struct {
@@ -116,7 +117,8 @@ func (d *document) children(parent ast.Node, w int) []string {
 	return out
 }
 
-// Quiet documents keep Markdown's layout and links but add no nested ink.
+// Quiet reasoning and the pinned live slot own one foreground per row. Keep
+// Markdown layout and links but don't add nested weight or syntax colors.
 func (d *document) meta(s string) string {
 	if d.key.plainDoc {
 		return s
@@ -124,21 +126,12 @@ func (d *document) meta(s string) string {
 	return d.m.quiet(s)
 }
 
-func (d *document) emphasis(s string) string {
-	if d.key.plainDoc {
-		return s
-	}
-	return strongText(s)
-}
-
 func (d *document) block(n ast.Node, w int) []string {
 	w = max(1, w)
 	switch v := n.(type) {
-	case *ast.Heading:
-		return wrapped(d.emphasis(d.inline(n, true)), w)
 	case *ast.ThematicBreak:
 		return []string{d.meta("· · ·")}
-	case *ast.Paragraph, *ast.TextBlock:
+	case *ast.Heading, *ast.Paragraph, *ast.TextBlock:
 		return wrapped(d.inline(n, true), w)
 	case *ast.FencedCodeBlock:
 		return d.code(d.codeSource(n), strings.ToLower(string(v.Language(d.src))), w, true)
@@ -233,7 +226,7 @@ func (d *document) inline(n ast.Node, links bool) string {
 					break
 				}
 			}
-			if links && !d.key.plainDoc {
+			if links && !d.key.plainDoc && s != "" {
 				s = surface(s, d.m.palette.softInk)
 			}
 		case *ast.Link:
@@ -258,7 +251,10 @@ func (d *document) inline(n ast.Node, links bool) string {
 				s = d.m.hyperlink(s, "", safeURL(dest), d.key.plainDoc)
 			}
 		case *ast.Emphasis:
-			s = d.emphasis(d.inline(v, links))
+			s = d.inline(v, links)
+			if v.Level == 2 && !d.key.plainDoc {
+				s = d.m.ink(roleStrong, s)
+			}
 		case *table.Strikethrough:
 			s = d.inline(v, links)
 			if !d.key.plainDoc {
@@ -343,7 +339,7 @@ func (d *document) layoutTable(n *table.Table, w int) []string {
 			if len(out) > 0 {
 				out = append(out, "")
 			}
-			out = append(out, wrapped(d.emphasis(r[0]), w)...)
+			out = append(out, wrapped(r[0], w)...)
 			for j := 1; j < min(len(r), len(widths)); j++ {
 				out = append(out, wrapped(d.meta(data[0][j]+": ")+r[j], w)...)
 			}
@@ -394,10 +390,7 @@ func (d *document) frameCode(lang string, width, index int, copyable bool) (stri
 	}
 	action := ""
 	if copyable && width >= 12 {
-		action = " copy     "
-		if !d.key.plainDoc {
-			action = d.m.codeCopyAction()
-		}
+		action = codeCopyAction
 	}
 	actionWidth := stringWidth(action)
 	title = ansiCut(title, max(0, width-actionWidth-1))
@@ -470,22 +463,19 @@ func (d *document) codeLine(s, lang string, w int, state hlState) ([]string, hlS
 }
 
 func (m *Model) diffRows(s string, w int, quiet bool) []string {
+	rows := strings.Split(ansi.Hardwrap(s, max(1, w), true), "\n")
 	if quiet {
-		return strings.Split(ansi.Hardwrap(s, max(1, w), true), "\n")
+		return rows
 	}
-	tone := x.Muted
+	role := roleQuiet
 	switch {
 	case strings.HasPrefix(s, "+") && !strings.HasPrefix(s, "+++"):
-		tone = x.Good
+		role = roleSuccess
 	case strings.HasPrefix(s, "-") && !strings.HasPrefix(s, "---"):
-		tone = x.Danger
+		role = roleNormal // a deletion isn't a failure; the sign identifies it
 	}
-	rows := strings.Split(ansi.Hardwrap(s, max(1, w), true), "\n")
 	for i, r := range rows {
-		rows[i] = m.paint(tone, r)
-		if tone != x.Muted && m.theme.Fills {
-			rows[i] = fill(fit(rows[i], w), m.palette.diffFill(tone))
-		}
+		rows[i] = m.ink(role, r)
 	}
 	return rows
 }
@@ -664,9 +654,7 @@ const (
 )
 
 // Reserve the same cells for the action and its confirmation.
-func (m *Model) codeCopyAction() string {
-	return " " + m.paint(x.Accent, "copy") + "     "
-}
+const codeCopyAction = " copy     "
 
 func codeCopyLink(id string) string { return oscLink + ";" + codeCopyScheme + id + oscEnd }
 
@@ -714,10 +702,7 @@ func (m *Model) paintCopiedCode(line, link string, sweep int) (string, bool) {
 		return line, false
 	}
 	header, after, closed := strings.Cut(rest, oscLinkEnd)
-	title, rule, button := strings.Cut(header, m.codeCopyAction())
-	if !button {
-		title, rule, button = strings.Cut(header, " copy     ")
-	}
+	title, rule, button := strings.Cut(header, codeCopyAction)
 	if !closed || !button {
 		return line, false
 	}

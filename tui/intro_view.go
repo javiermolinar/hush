@@ -161,28 +161,25 @@ func (m *Model) introReportRows(i *introState, w int, out []displayRow) []displa
 			s, _, _ = strings.Cut(s, " · ")
 		}
 		s = ansi.Truncate(s, width, "…")
+		if mono {
+			return glyph + s
+		}
 		progress := i.motion.fadeProgress(k)
-		if !isRunStatus && !mono && progress < 1 {
+		if !isRunStatus && progress < 1 {
 			if faded := m.palette.fadeIntro(i.memo.inks.bg, roleForTone(label.tone), s, progress); faded != "" {
 				return faded
 			}
 		}
 		if isRunStatus {
-			if !mono {
-				glyph = m.paint(label.tone, glyph)
-			}
 			if progress < .65 {
-				s = m.paint(x.Muted, s)
+				s = m.quiet(s)
 			}
-			return glyph + s
+			return m.paint(label.tone, glyph) + s
 		}
-		if !mono || label.tone == x.Muted {
-			s = m.paint(label.tone, s)
+		if progress < .65 {
+			return m.quiet(s)
 		}
-		if progress < .65 && label.tone != x.Muted {
-			s = m.paint(x.Muted, s)
-		}
-		return s
+		return m.paint(label.tone, s)
 	}
 	add := func(s string) { out = append(out, displayRow{text: fit(s, w)}) }
 	add("")

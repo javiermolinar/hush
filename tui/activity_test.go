@@ -248,16 +248,32 @@ func TestExpandShowsOnlyReadableThoughts(t *testing.T) {
 	redacted := entry(4, "assistant", "")
 	redacted.Messages[0].Blocks = []sdk.Block{{Type: "omitted", Kind: "redactedThinking"}}
 	s.merge([]sdk.Entry{r, redacted})
-	if len(s.shown) != 2 || len(s.detailShown) != 3 {
-		t.Fatal("default view or details indexed the wrong block")
+	if len(s.shown) != 3 {
+		t.Fatal("projection must show readable reasoning, not redacted thinking")
 	}
-	if strings.Contains(ansi.Strip(m.View().Content), "Thought") {
-		t.Fatal("collapsed thought was displayed")
-	}
-	press(m, 'o', tea.ModCtrl)
 	frame := ansi.Strip(assertFrame(t, m))
-	if !strings.Contains(frame, "an actual thought") || strings.Count(frame, "Thought") != 1 {
-		t.Fatalf("expected only real thought details:\n%s", frame)
+	if strings.Count(frame, "Thought ▸") != 1 || strings.Contains(frame, "an actual thought") {
+		t.Fatalf("expected a summary without thought content:\n%s", frame)
+	}
+	press(m, tea.KeyTab, 0)
+	frame = ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "an actual thought") || strings.Count(frame, "Thought ▾") != 1 || s.expanded {
+		t.Fatalf("Tab must expand just the thought:\n%s", frame)
+	}
+	press(m, tea.KeyTab, 0)
+	if frame = ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Thought ▸") || strings.Contains(frame, "an actual thought") {
+		t.Fatalf("second Tab did not refold the thought:\n%s", frame)
+	}
+	m.editor.set("/cop")
+	assertFrame(t, m)
+	press(m, tea.KeyTab, 0)
+	if m.editor.value() != "/copy " || s.entries["3"].reasoningDetails(s) {
+		t.Fatal("thought disclosure must not take Tab from command completion")
+	}
+	m.editor.set("")
+	press(m, 'o', tea.ModCtrl)
+	if frame = ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "an actual thought") || !s.expanded {
+		t.Fatalf("existing Ctrl+O no longer expands all details:\n%s", frame)
 	}
 }
 

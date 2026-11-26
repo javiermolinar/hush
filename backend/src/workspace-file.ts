@@ -1,12 +1,14 @@
-import { constants } from "node:fs";
+import { constants, realpath } from "node:fs";
 import { lstat, open, readlink, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { promisify } from "node:util";
 
 const maxFileBytes = 32 * 1024;
 const readFlags = constants.O_RDONLY | constants.O_NONBLOCK;
 // These flags are not exposed by Node. They are stable on the release targets.
 const linuxOPath = 0o10000000; // Linux open(2): inspect an inode without opening it for I/O.
 const darwinNoFollowAny = 0x20000000; // Darwin sys/fcntl.h: reject symlinks in *all* components.
+const nativePath = promisify(realpath.native);
 
 export const workspaceFileError = "Expected a readable, single-link regular UTF-8 file of at most 32 KiB inside the thread's working directory (no symlinks).";
 
@@ -33,13 +35,18 @@ async function openInspection(path: string, limit: number, signal?: AbortSignal)
   throw new Error(workspaceFileError);
 }
 
-export async function readScopedText(cwd: string, path: string, limit: number, signal?: AbortSignal) {
+export async function readScopedText(cwd: string, path: string, limit: number, signal?: AbortSignal, options?: { exact: true }) {
   // Require a physical workspace path too: resolving cwd with realpath here
   // would let a replaced workspace root redirect reads out of that workspace.
   if (!isAbsolute(cwd) || !path || Buffer.byteLength(path) > 1024 || isAbsolute(path) || path.includes("\0") ||
       path.includes("\\") || path.split("/").includes("..")) throw new Error(workspaceFileError);
   signal?.throwIfAborted();
-  const file = await openInspection(join(cwd, path), limit, signal);
+  const name = join(cwd, path);
+  // On case-insensitive volumes, a spelling drift may still open a file.
+  // Use the OS's canonical spelling; fs.realpath's JS cache is insufficient.
+  const exactName = options?.exact && process.platform === "darwin";
+  if (exactName && await nativePath(name) !== name) throw new Error(workspaceFileError);
+  const file = await openInspection(name, limit, signal);
   try {
     const info = await file.stat({ bigint: true });
     if (!info.isFile() || info.nlink !== 1n || info.size > BigInt(limit)) throw new Error(workspaceFileError);
@@ -57,8 +64,14 @@ export async function readScopedText(cwd: string, path: string, limit: number, s
     if (length > limit || bytes.includes(0)) throw new Error(workspaceFileError);
     const after = await file.stat({ bigint: true });
     if (after.nlink !== 1n || after.ctimeNs !== info.ctimeNs) throw new Error(workspaceFileError);
-    return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), length,
-      stamp: `${info.dev}:${info.ino}:${info.birthtimeNs}:${info.ctimeNs}` };
+    if (options?.exact) {
+      const named = await lstat(name, { bigint: true });
+      if (!named.isFile() || named.dev !== info.dev || named.ino !== info.ino || named.ctimeNs !== info.ctimeNs ||
+          exactName && await nativePath(name) !== name)
+        throw new Error(workspaceFileError);
+    }
+    return { text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: options?.exact }).decode(bytes), length,
+      executable: (info.mode & 0o100n) !== 0n, stamp: `${info.dev}:${info.ino}:${info.birthtimeNs}:${info.ctimeNs}` };
   } finally { await file.close(); }
 }
 

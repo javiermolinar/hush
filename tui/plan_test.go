@@ -58,6 +58,7 @@ func testPlanFrameGeometry(t *testing.T) {
 func TestGoldenPlanPicker(t *testing.T) {
 	m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
 	m.Update(tea.WindowSizeMsg{Width: 116, Height: 24})
+	setTypographyPalette(m, typographyPalettes[1])
 	d := planPickerFixture(m, s)
 	press(m, tea.KeySpace, 0)
 	golden(t, "plan-single-selection", m)
@@ -76,7 +77,7 @@ func TestGoldenPlanPicker(t *testing.T) {
 	for i, line := range lines {
 		if strings.HasPrefix(line, "↵ Run 2") {
 			if i < 1 || lines[i-1] != "" || !strings.Contains(m.frame.rows[m.frame.dialogY+i], "\x1b[1m↵ Run 2") ||
-				i+2 != len(lines)-1 || !strings.Contains(m.frame.rows[m.frame.dialogY+i+1], "\x1b[2mspace select") || lines[i+2] != "" {
+				i+2 != len(lines)-1 || !strings.Contains(m.frame.rows[m.frame.dialogY+i+1], m.quiet(lines[i+1])) || lines[i+2] != "" {
 				t.Fatalf("expected emphasized Run and muted keys separated from body and rule: %q", lines)
 			}
 			break
@@ -96,7 +97,7 @@ func TestGoldenPlanPicker(t *testing.T) {
 func TestPlanDockUsesInputRuleWithoutMovingDraft(t *testing.T) {
 	for _, width := range []int{40, 116} {
 		m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
-		m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 36})
 		enableGitDiffFixture(m, s)
 		s.queue = []sdk.QueueItem{{Mode: "followUp", Text: "queued example"}}
 		m.editor.set("Keep this draft\nincluding its second line")
@@ -122,6 +123,7 @@ func TestPlanDockUsesInputRuleWithoutMovingDraft(t *testing.T) {
 		check()
 		before := m.frame.dialogY
 		s.plan.snapshot.Plan.Steps[0].Description = strings.Repeat("More detail about the task. ", 32)
+		s.plan.snapshot.Revision = strings.Repeat("e", 64)
 		press(m, tea.KeyTab, 0)
 		check()
 		if m.frame.dialogY >= before {
@@ -446,36 +448,48 @@ func TestRunNamedPlanHerePreservesThreadAndDraftAcrossReceiptRetry(t *testing.T)
 }
 
 func TestGoldenPlanWorkspaceDockAndStatuses(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
 	m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
 	m.Update(tea.WindowSizeMsg{Width: 104, Height: 24})
+	setTypographyPalette(m, typographyPalettes[1])
 	enableGitDiffFixture(m, s)
 	m.editor.set("keep this draft")
 	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace
 	assertFrame(t, m)
 	rule := m.frame.ruleY
 	p := &planWorkspacePicker{lease: 84, ready: true, rows: []sdk.PlanSummary{
-		{ID: "running", Title: "Workspace profiles", Status: "running", Revision: 2, Verified: 1, Total: 3},
+		{ID: "running", Title: "Workspace profiles", Status: "running", Revision: 2, Verified: 1, Total: 3, Closed: true},
 		{ID: "needs-check", Title: "Track config files", Status: "attention", Revision: 1, Total: 2},
+		{ID: "reported", Title: "Apply settings", Status: "pending", Revision: 1, ReportedDone: 6, Total: 6},
+		{ID: "verified", Title: "Restore settings", Status: "complete", Revision: 1, Verified: 2, Total: 2},
+		{ID: "pending", Title: "Write documentation", Status: "pending", Revision: 1, Total: 2},
 		{ID: "closed", Title: "Review history", Status: "pending", Revision: 7, Verified: 2, Total: 5, Closed: true},
 	}}
-	d := &dialog{route: m.route(m.active, menusID), token: m.token(), planWorkspace: p, selected: 2}
+	d := &dialog{route: m.route(m.active, menusID), token: m.token(), planWorkspace: p, selected: len(p.rows) - 1}
 	m.pushDialog(d)
 	golden(t, "plan-catalog", m)
 	body := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Workspace plans", "Open plans", "Closed plans", "Running", "Needs check", "2/5 verified · r7", "c reopen", "± 4 files", "keep this draft"} {
+	for _, want := range []string{"Workspace plans", "Closing plan", "Open plans", "Closed plans", "2/5 verified · r7", "c reopen", "± 4 files", "keep this draft"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q:\n%s", want, body)
 		}
 	}
 	f := m.frame
+	panel := strings.Join(f.rows[f.dialogY:f.ruleY], "\n")
+	for _, want := range []string{m.paint(x.Warning, "◐"), m.paint(x.Danger, "✗"), m.quiet("–"), m.paint(x.Good, "✓"), m.quiet("○")} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("wrong status role: missing %q in %q", want, panel)
+		}
+	}
 	if f.ruleY != rule || f.dialogY+f.dialogHeight != rule {
 		t.Fatal("workspace picker did not dock above the existing input rule")
 	}
-	// A reorder caused by a peer opening or closing a plan keeps focus by ID.
+	// A reorder caused by a peer reopening a plan keeps focus by ID.
 	token := d.token
-	rows := append([]sdk.PlanSummary{p.rows[2]}, p.rows[:2]...)
+	rows := append([]sdk.PlanSummary{p.rows[0], p.rows[len(p.rows)-1]}, p.rows[1:len(p.rows)-1]...)
+	rows[1].Closed = false
 	m.receivePlanWorkspace(planWorkspaceMsg{lease: p.lease, ok: true, update: sdk.PlanWorkspaceUpdate{Plans: rows}})
-	if d.selected != 0 || d.token == token {
+	if d.selected != 1 || d.token == token {
 		t.Fatal("workspace update did not preserve focus and invalidate stale mouse targets")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})

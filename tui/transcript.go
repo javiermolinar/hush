@@ -23,11 +23,11 @@ type threadState struct {
 	directory                                                *sdk.ThreadDirectoryRow
 	directoryBase                                            tabMetadata
 	gitDiff                                                  gitDiffState
-	plan                                                     planView
+	plan, chatPlan                                           planView
 	planDraft                                                planDraftState
 	life, revision                                           uint64
 	info                                                     extension.Thread
-	ids, shown, detailShown                                  []sdk.ID
+	ids, shown                                               []sdk.ID
 	projected                                                activityProjection
 	customEntries                                            map[string]bool
 	entries                                                  map[sdk.ID]*record
@@ -76,17 +76,18 @@ const (
 )
 
 type record struct {
-	entry                                        extension.Entry
-	cache                                        blockCache
-	visible, readableThought, override, expanded bool
-	voice                                        voice
-	bursts                                       map[int]*toolBurst
-	burstViews                                   map[int]burstView
-	burstAnchor                                  sdk.ID
-	afterBurst                                   uint64 // message slots with prose after a tool burst
-	expandEpoch                                  uint64
-	thought                                      time.Duration
-	hasImages                                    bool
+	entry                       extension.Entry
+	cache                       blockCache
+	visible, override, expanded bool
+	thoughts                    int
+	voice                       voice
+	bursts                      map[int]*toolBurst
+	burstViews                  map[int]burstView
+	burstAnchor                 sdk.ID
+	afterBurst                  uint64 // message slots with prose after a tool burst
+	expandEpoch                 uint64
+	thought                     time.Duration
+	hasImages                   bool
 }
 type renderKey struct {
 	owner               sdk.ID
@@ -96,6 +97,7 @@ type renderKey struct {
 	theme               uint64
 	expanded            bool
 	reasoning, plainDoc bool
+	liveSlot            bool
 	workspace           string
 	revision, viewEpoch uint64
 	context, navigation uint64
@@ -118,6 +120,7 @@ type displayRow struct {
 	text                string
 	hits                []spanHit
 	user, card, tabBand bool
+	thought             bool
 	image               *imageDemand
 }
 
@@ -248,7 +251,7 @@ func (t *threadState) merge(values []sdk.Entry) []*record {
 		if e.ThreadID == t.info.ID {
 			t.planDraft.observe(e)
 		}
-		if e.Kind != planPreviewEntry && !checkpointMarker(e.Kind) && lessID(t.lastAnswerID, e.ID) {
+		if e.Kind != planPreviewEntry && e.Kind != sdk.ReviewNoticeKind && !checkpointMarker(e.Kind) && lessID(t.lastAnswerID, e.ID) {
 			var parts []string
 			for _, msg := range r.entry.Record.Messages {
 				if msg.Role != "assistant" {
@@ -293,18 +296,12 @@ func (t *threadState) merge(values []sdk.Entry) []*record {
 }
 
 func (t *threadState) index(id sdk.ID) int      { return indexEntry(t.ids, id) }
-func (t *threadState) shownIndex(id sdk.ID) int { return indexEntry(t.visibleIDs(), id) }
+func (t *threadState) shownIndex(id sdk.ID) int { return indexEntry(t.shown, id) }
 func (t *threadState) reasoningVisible() bool {
 	if t.detailsSet || t.expanded {
 		return t.expanded
 	}
 	return t.reasoningDefault
-}
-func (t *threadState) visibleIDs() []sdk.ID {
-	if t.expanded || t.reasoningVisible() {
-		return t.detailShown
-	}
-	return t.shown
 }
 func indexEntry(ids []sdk.ID, id sdk.ID) int {
 	i, _ := slices.BinarySearchFunc(ids, id, func(a, b sdk.ID) int {
@@ -328,7 +325,7 @@ func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
 	if i == -1 {
 		return m.introRows(t.intro, width)
 	}
-	shown := t.visibleIDs()
+	shown := t.shown
 	live := i == len(shown)
 	key := renderKey{owner: t.info.ID, width: width, theme: m.theme.Revision, expanded: t.expanded, reasoning: t.reasoningVisible(), workspace: t.info.Workspace}
 	ctx := m.renderContext(t, width, recordRows, live)
@@ -452,7 +449,7 @@ func (m *Model) layoutBlocks(ctx extension.RenderContext, key renderKey, content
 		first := len(rows)
 		if b.Lines != nil {
 			for _, line := range b.Lines[:min(ctx.MaxLines, len(b.Lines))] {
-				rows = append(rows, m.layoutLine(ctx, line, &bytes, ctx.MaxLines-len(rows))...)
+				rows = append(rows, m.layoutSpans(ctx, line, &bytes, ctx.MaxLines-len(rows), key.liveSlot)...)
 				if len(rows) >= ctx.MaxLines || bytes <= 0 {
 					break
 				}
@@ -461,13 +458,15 @@ func (m *Model) layoutBlocks(ctx extension.RenderContext, key renderKey, content
 			text := limitText(b.Text, bytes)
 			bytes -= len(text)
 			key.block = i
-			key.plainDoc = b.Tone == extension.Muted
+			key.plainDoc = b.Tone == extension.Muted || key.liveSlot
 			lines := m.renderDocument(key, b.Format, text, limitText(b.Language, 128), ctx.Width, ctx.Thread.Workspace, ctx.Live)
 			if ctx.Live && len(lines) > ctx.MaxLines-len(rows) {
 				lines = lines[len(lines)-(ctx.MaxLines-len(rows)):]
 			}
+			role := contentRole(b.Tone, key.liveSlot)
 			for _, line := range lines[:min(ctx.MaxLines-len(rows), len(lines))] {
-				rows = append(rows, displayRow{text: m.paint(b.Tone, line), user: b.Format == extension.UserText})
+				rows = append(rows, displayRow{text: m.ink(role, line), user: b.Format == extension.UserText,
+					thought: role == roleQuiet && b.Format == extension.Markdown})
 			}
 		}
 		if len(cards) > 0 && i >= cards[0].start {
@@ -483,6 +482,10 @@ func (m *Model) layoutBlocks(ctx extension.RenderContext, key renderKey, content
 }
 
 func (m *Model) layoutLine(ctx extension.RenderContext, line extension.Line, bytes *int, budget int) []displayRow {
+	return m.layoutSpans(ctx, line, bytes, budget, false)
+}
+
+func (m *Model) layoutSpans(ctx extension.RenderContext, line extension.Line, bytes *int, budget int, liveSlot bool) []displayRow {
 	if budget <= 0 || ctx.Width <= 0 {
 		return nil
 	}
@@ -497,6 +500,7 @@ func (m *Model) layoutLine(ctx extension.RenderContext, line extension.Line, byt
 		v := limitText(span.Text, *bytes)
 		*bytes -= len(v)
 		text := safeText(v)
+		role := contentRole(span.Tone, liveSlot)
 		i, ok := m.host.byID[span.Action.ID]
 		hit := ok && m.eligibleFor(m.host.actions[i], ctx.Thread.ID, span.Action.Target)
 		for n, part := range strings.Split(text, "\n") {
@@ -523,11 +527,7 @@ func (m *Model) layoutLine(ctx extension.RenderContext, line extension.Line, byt
 					continue
 				}
 				w := ansi.StringWidth(first)
-				if hit && span.Tone == extension.Muted {
-					row.text += m.control(first)
-				} else {
-					row.text += m.paint(span.Tone, first)
-				}
+				row.text += m.ink(role, first)
 				if hit && w > 0 {
 					ref := span.Action
 					ref.Args = limitText(ref.Args, maxPromptBytes)
@@ -555,7 +555,7 @@ type transcriptLine struct {
 
 func (m *Model) tail(t *threadState, w, h int) []transcriptLine {
 	out := make([]transcriptLine, 0, h)
-	for i := len(t.visibleIDs()); i >= t.firstBlock() && len(out) < h; i-- {
+	for i := len(t.shown); i >= t.firstBlock() && len(out) < h; i-- {
 		block := m.blockRows(t, i, w)
 		for j := len(block) - 1; j >= 0 && len(out) < h; j-- {
 			out = append(out, transcriptLine{block[j], rowAnchor{t.idAt(i), j}})
@@ -577,7 +577,7 @@ func (t *threadState) blockIndex(id sdk.ID) int {
 	case introEntry:
 		return t.firstBlock()
 	case "":
-		return len(t.visibleIDs())
+		return len(t.shown)
 	default:
 		return t.shownIndex(id)
 	}
@@ -587,8 +587,8 @@ func (t *threadState) idAt(i int) sdk.ID {
 	if i == -1 && t.intro != nil {
 		return introEntry
 	}
-	if i >= 0 && i < len(t.visibleIDs()) {
-		return t.visibleIDs()[i]
+	if i >= 0 && i < len(t.shown) {
+		return t.shown[i]
 	}
 	return ""
 }
@@ -602,7 +602,7 @@ func (m *Model) transcript(t *threadState, w, h int) []transcriptLine {
 	}
 	out := make([]transcriptLine, 0, h)
 	i := t.blockIndex(t.anchor.id)
-	for j := i; j <= len(t.visibleIDs()) && len(out) < h; j++ {
+	for j := i; j <= len(t.shown) && len(out) < h; j++ {
 		block := m.blockRows(t, j, w)
 		start := 0
 		if j == i {
@@ -622,7 +622,7 @@ func (m *Model) scrollSpan(t *threadState, rows []transcriptLine, w int) (from, 
 		return
 	}
 	first := t.firstBlock()
-	count := len(t.visibleIDs())
+	count := len(t.shown)
 	total = float64(count - first)
 	last := rows[len(rows)-1].anchor
 	if last.id == "" || t.stream.Present && t.blockIndex(last.id) == count-1 && len(m.blockRows(t, count, w)) != 0 {
@@ -647,7 +647,7 @@ func (m *Model) scrollSpan(t *threadState, rows []transcriptLine, w int) (from, 
 
 func (m *Model) scroll(amount int) tea.Cmd {
 	t := m.threads[m.active]
-	if amount == 0 || !m.canScrollTranscript() || len(t.visibleIDs()) == 0 && t.intro == nil && !t.stream.Present {
+	if amount == 0 || !m.canScrollTranscript() || len(t.shown) == 0 && t.intro == nil && !t.stream.Present {
 		return nil
 	}
 	w := m.pane().width
@@ -660,14 +660,14 @@ func (m *Model) scroll(amount int) tea.Cmd {
 		}
 		top := m.frame.top
 		if !m.frame.hasTranscript {
-			last := max(t.firstBlock(), len(t.visibleIDs())-1)
+			last := max(t.firstBlock(), len(t.shown)-1)
 			top = rowAnchor{t.idAt(last), max(0, len(m.blockRows(t, last, w))-1)}
 		}
 		t.anchor, t.following = top, false
 	}
 	i := t.blockIndex(t.anchor.id)
 	j := t.anchor.row
-	for amount != 0 && i >= t.firstBlock() && i <= len(t.visibleIDs()) {
+	for amount != 0 && i >= t.firstBlock() && i <= len(t.shown) {
 		rows := m.blockRows(t, i, w)
 		j = min(j, max(0, len(rows)-1))
 		if amount < 0 {
@@ -687,7 +687,7 @@ func (m *Model) scroll(amount int) tea.Cmd {
 				j += amount
 				break
 			}
-			if i == len(t.visibleIDs()) {
+			if i == len(t.shown) {
 				t.following = true
 				break
 			}

@@ -280,6 +280,13 @@ func (s *session) receive(f map[string]any) error {
 		if err := optionalEnvelope(f, version, PlanChatVersion); err != nil {
 			return err
 		}
+	} else if ok && method == planChatActivityWait {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planChatActivity]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanChatActivityVersion); err != nil {
+			return err
+		}
 	} else if ok && method == planDraftSave {
 		s.mu.Lock()
 		version := s.hello.Capabilities[planDraftCapability]
@@ -292,6 +299,24 @@ func (s *session) receive(f map[string]any) error {
 		version := s.hello.Capabilities[planReviewCapability]
 		s.mu.Unlock()
 		if err := optionalEnvelope(f, version, PlanReviewVersion); err != nil {
+			return err
+		}
+	} else if ok && (method == workerActivityWait || method == workerActivityInspect) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[workerActivityCapability]
+		base := s.hello.Capabilities[delegationCapability]
+		s.mu.Unlock()
+		if base != DelegationVersion {
+			return ErrProtocol
+		}
+		if err := optionalEnvelope(f, version, WorkerActivityVersion); err != nil {
+			return err
+		}
+	} else if ok && (method == reviewStart || method == reviewGet || method == reviewStop) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[delegationCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, DelegationVersion); err != nil {
 			return err
 		}
 	} else if ok && method == loadedContextGet {

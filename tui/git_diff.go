@@ -86,7 +86,11 @@ func (m *Model) gitDiffBadgeRow(t *threadState, room int) displayRow {
 		label, _, _ = strings.Cut(label, "  ")
 	}
 	if w := stringWidth(label); w <= room {
-		return displayRow{text: m.control(label), hits: []spanHit{{0, w, x.ActionRef{ID: gitDiffID}, "review worktree changes"}}}
+		tone := x.Muted
+		if t.gitDiff.err != nil {
+			tone = x.Warning
+		}
+		return displayRow{text: m.paint(tone, label), hits: []spanHit{{0, w, x.ActionRef{ID: gitDiffID}, "review worktree changes"}}}
 	}
 	return displayRow{}
 }
@@ -670,7 +674,7 @@ func (m *Model) gitPatchRows(v *gitPatchView, width, height int) []string {
 			case "add":
 				sign, tone = "+", x.Good
 			case "remove":
-				n, sign, tone = line.OldLine, "−", x.Danger
+				n, sign = line.OldLine, "−" // a removed line is not a failure
 			}
 			prefix := strings.Repeat(" ", gitLineGutter)
 			if part == 0 {

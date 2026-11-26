@@ -1,5 +1,4 @@
-import type { Context } from "@earendil-works/chord/context";
-import { defineDoc, defineTool, LiveDoc, type ConversationId, type EntryId, type Harness, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineTool, LiveDoc, type ConversationId, type EntryId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { planChatKind, planTaskKind, type PlanFileEdit, type PlanFileScope, type PlanThinking } from "../../server/src/plan.js";
 import { WireError } from "../../server/src/wire.js";
 import { PlanFileError, planFileBytes, validFileText, type FileProposal, type PlanFileTarget, type FileVersion, type PlanFiles, type PlanWorkspace, type Replacement } from "./plan-files.js";
@@ -53,7 +52,7 @@ export async function checkPlanAdmission(tx: Tx, owner: ConversationId, operatio
 
 type Caller = { generation: TaskId } | { tool: TaskId };
 
-async function planTurnScope(tx: Tx, owner: ConversationId, caller: Caller): Promise<{ turn?: TaskTurn } | undefined> {
+export async function planTurnScope(tx: Tx, owner: ConversationId, caller: Caller): Promise<{ turn?: TaskTurn } | undefined> {
   const active = await foregroundPlan(tx, owner);
   const live = await tx.doc(LiveDoc, owner);
   const run = live.run;
@@ -147,11 +146,4 @@ export function planTurnTools(files: PlanFiles) {
     },
   });
   return [read, replace, stage];
-}
-
-export function inspectPlanTurn(h: Harness, owner: ConversationId, caller: Caller, ctx: Context) {
-  return h.commit(async tx => {
-    const scope = await planTurnScope(tx, owner, caller);
-    return scope && { authorized: !!scope.turn?.work, fileSet: !!scope.turn?.work && "files" in scope.turn.work };
-  }, ctx);
 }

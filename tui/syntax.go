@@ -123,7 +123,7 @@ func (sx *syntax) tokens(l string, st hlState) ([]codeSpan, hlState) {
 		out = append(out, codeSpan{s: s, role: role})
 	}
 	i, plainFrom := 0, 0
-	flush := func() { emit(l[plainFrom:i], roleText) }
+	flush := func() { emit(l[plainFrom:i], roleNormal) }
 	// what the line above left open
 	if st.comment != "" {
 		end := strings.Index(l, st.comment)
@@ -156,7 +156,7 @@ func (sx *syntax) tokens(l string, st hlState) ([]codeSpan, hlState) {
 			for k < len(l) && (isIdentByte(l[k]) || l[k] == '-' || l[k] == ':') {
 				k++
 			}
-			emit(l[i:j], roleText)
+			emit(l[i:j], roleNormal)
 			emit(l[j:k], roleSyntaxKeyword)
 			i, plainFrom = k, k
 			continue

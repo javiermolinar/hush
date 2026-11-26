@@ -259,13 +259,25 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) menuFrame {
 	return m.menuShell(w, n, c, func(h int) menuFrame {
 		return m.menuColumns(w, h, func(width, height int) []string { return m.menuDetail(pick.Title, progress, width, height) }, func(lw, budget int) menuFrame {
 			var out menuFrame
-			grouped := budget >= 3 && p.rows[len(p.rows)-1].Closed
+			// The first row can be the thread's active run even while closing.
+			closingFirst := p.page == 0 && len(p.rows) > 1 && p.rows[0].Closed && p.rows[0].Status == "running" && !p.rows[1].Closed
+			group := func(i int) string {
+				switch {
+				case i == 0 && closingFirst:
+					return "Closing plan"
+				case p.rows[i].Closed:
+					return "Closed plans"
+				default:
+					return "Open plans"
+				}
+			}
+			grouped := budget >= 3 && (closingFirst || p.rows[len(p.rows)-1].Closed)
 			first, _ := menuWindow(d.selected, len(p.rows), budget)
 			if grouped {
 				first = d.selected
 				for cost := 2; first > 0; {
 					step := 1
-					if p.rows[first-1].Closed != p.rows[first].Closed {
+					if group(first-1) != group(first) {
 						step++
 					}
 					if cost+step > budget {
@@ -276,27 +288,14 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) menuFrame {
 			}
 			for i := first; i < len(p.rows) && budget > 0; i++ {
 				r := p.rows[i]
-				if grouped && (i == first || r.Closed != p.rows[i-1].Closed) {
+				if grouped && (i == first || group(i) != group(i-1)) {
 					if budget < 2 {
 						break
 					}
-					heading := "Open plans"
-					if r.Closed {
-						heading = "Closed plans"
-					}
-					out.add(m.quiet(heading), -1)
+					out.add(m.quiet(group(i)), -1)
 					budget--
 				}
-				status, tone := workspacePlanStatus(r)
-				icon := "○"
-				switch status {
-				case "Running", "Closing":
-					icon = "◐"
-				case "Complete":
-					icon = "✓"
-				case "Closed", "Needs check":
-					icon = "⏸"
-				}
+				status, icon, tone := workspacePlanStatus(r)
 				if v := t.plan.snapshot; v.Plan != nil && v.Plan.ID == r.ID && v.RunAvailability != sdk.PlanRunPinned && status == "Pending" {
 					status = "Bound"
 				}
@@ -308,22 +307,22 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) menuFrame {
 	})
 }
 
-func workspacePlanStatus(p sdk.PlanSummary) (string, x.Tone) {
+func workspacePlanStatus(p sdk.PlanSummary) (label, icon string, tone x.Tone) {
 	switch {
-	case p.Status == "complete":
-		return "Complete", x.Good
+	case p.Total > 0 && p.Verified == p.Total:
+		return "Complete", "✓", x.Good
 	case p.Closed && p.Status == "running":
-		return "Closing", x.Warning
+		return "Closing", "◐", x.Warning
 	case p.Closed:
-		return "Closed", x.Muted
+		return "Closed", "⏸", x.Muted
 	case p.Status == "running":
-		return "Running", x.Warning
+		return "Running", "◐", x.Warning
 	case p.Status == "attention":
-		return "Needs check", x.Warning
-	case p.Verified+p.ReportedDone == p.Total:
-		return "Reported done", x.Good
+		return "Needs check", "✗", x.Danger
+	case p.ReportedDone > 0 && p.Verified+p.ReportedDone == p.Total:
+		return "Reported done", "–", x.Muted
 	default:
-		return "Pending", x.Plain
+		return "Pending", "○", x.Muted
 	}
 }
 

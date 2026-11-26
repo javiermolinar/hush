@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, fstatSync, realpathSync, writeSync } from "node:fs";
-import { chmod } from "node:fs/promises";
+import { chmod, realpath } from "node:fs/promises";
 import { flushCompileCache } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createCoreServer, type NativeHost } from "../../server/src/index.js";
 import { WireError } from "../../server/src/wire.js";
+import { joinReviewsName, spawnReviewsName } from "../../server/src/delegation.js";
 import { runAuthCommand } from "./auth.js";
 import { registerBundledOAuthFlows } from "./auth-providers.js";
 import { CredentialWrites, credentialAdvice, credentialConfigurationFailed, hushCredentialStore } from "./credentials.js";
@@ -27,10 +28,14 @@ import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
 import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
-import { Plans, checkPlanWorktree, fixtureExtensions, isPlanWorker, planChatExecution, recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
+import { Plans, checkPlanWorktree, fixtureExtensions, isPlanWorker, planChatExecution, planFixtureTaskKind,
+  recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
 import { checkPlanAdmission, foregroundPlan, PlanForeground } from "./plan-turn.js";
-import { PlanReviews, planReviewExtension } from "./plan-review.js";
+import { PlanReviews, planReviewExtension, planReviewTaskKind } from "./plan-review.js";
 import { planAuthor } from "./plan-author.js";
+import { ToolPolicy } from "./tool-policy.js";
+import { ReviewSnapshots } from "./review-snapshot.js";
+import { Delegation } from "./delegation.js";
 import { PlanDrafts } from "./plan-draft.js";
 import { planAcceptance, type PlanAcceptance } from "./plan-acceptance.js";
 import { PlanFiles } from "./plan-files.js";
@@ -85,6 +90,7 @@ export interface RunningBackend {
   root: Conversation;
   server: ReturnType<typeof createCoreServer>;
   runtime: Models;
+  reviewSnapshots?: ReviewSnapshots;
   readOnlyReason?: string;
   closed: Promise<void>;
   close(): Promise<void>;
@@ -220,16 +226,23 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
         gitDiff?.invalidate();
         workspaceFiles?.invalidateSearch();
       }) : undefined;
-    const author = planEnabled ? planAuthor(() => h!, cwd => resources.directory(cwd), fauxPlan, planFiles) : undefined;
+    const protectedDirs = planEnabled ? await Promise.all([config.agentDir, config.dataDir!].map(dir => realpath(dir))) : [];
+    const policy = planEnabled && trust ? new ToolPolicy(() => h!, trust, cwd => resources.directory(cwd), protectedDirs, fauxPlan) : undefined;
+    const author = policy && planAuthor(() => h!, cwd => resources.directory(cwd), fauxPlan, policy, planFiles);
+    const protect = (ext: Extension) => policy?.protect(ext) ?? ext;
+    const reviewSnapshots = policy && trust && !fauxPlan && !modelIssue
+      ? new ReviewSnapshots(() => h!, trust, cwd => resources.directory(cwd), protectedDirs) : undefined;
     const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, coding,
-      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxTools] : []), ...(author ? [author] : [])];
+      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxTools] : []), ...(author ? [author] : [])].map(protect);
     const planAdmission = planEnabled && !config.faux ? checkPlanAdmission : undefined;
     const schedules = config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork,
       planAdmission && (async (tx, id) => !!await foregroundPlan(tx, id))) : undefined;
     const checkpoints = trust && config.dataDir ? new CheckpointService(() => h!, config.dataDir, trust) : undefined;
     for (const extension of base) registry.install(extension);
-    if (fauxPlan) for (const extension of fixtureExtensions) registry.install(extension);
+    if (fauxPlan) for (const extension of fixtureExtensions) registry.install(protect(extension));
     if (planEnabled) registry.install(planReviewExtension);
+    const reviewSnapshotExtension = reviewSnapshots && protect(reviewSnapshots.extension());
+    if (reviewSnapshotExtension) registry.install(reviewSnapshotExtension);
     if (schedules) registry.install(schedules.extension);
     if (checkpoints) registry.install(checkpoints.extension);
     if (manifest?.format === 1) {
@@ -279,8 +292,28 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     if (scopedPlans) registry.install(scopedPlans.extension);
     else if (planEnabled) registry.install(scopedRecovery);
     const validateSelection = nativeSelectionValidator(runtime, requireModel);
+    const delegation: Delegation | undefined = reviewSnapshots && reviewSnapshotExtension && trust && policy
+      ? new Delegation(() => h!, reviewSnapshots, reviewSnapshotExtension, cwd => resources.directory(cwd), storeIdentity,
+        validateSelection, () => selection) : undefined;
+    if (delegation) {
+      const tools = protect(delegation.parent);
+      // An ordinary steer or follow-up reapplies the native loadout. Keep the
+      // implementation installed; the exact placed submission gates dispatch.
+      base.push(tools);
+      registry.install(tools);
+      registry.install(protect(delegation.reviewer));
+    }
     const host: NativeHost = {
       defaults, requireModel, checkAdmission: planAdmission, validateSelection,
+      privateConversation: policy && ((id, ctx) => h!.commit(async tx => {
+        const owner = (await tx.conversation(id))?.owner;
+        if (!owner) return false;
+        // Only the existing plan-owned transcripts are public. Missing policy
+        // or task data must never move a code reviewer into native history.
+        const task = await tx.task(owner.taskId);
+        return !task || task.conversationId !== owner.conversationId || task.owner !== undefined ||
+          task.kind !== planReviewTaskKind && task.kind !== planFixtureTaskKind;
+      }, ctx)),
       async checkMutation(conv, ctx) {
         if (planEnabled && await isPlanWorker(h!, conv.id, ctx)) throw new WireError("not_found");
       },
@@ -308,6 +341,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const harness = h = await Harness.open(store, {
       models: runtime, registry, settings, readOnly: !!modelIssue,
       env: async ({ cwd, conversationId, read }, ctx) => {
+        if (await policy?.hidesWorkspace(conversationId, read, ctx)) return undefined;
         // Scoped tools use the file helper, not the normal work environment.
         // A terminal reservation left by a fault must not restrict later chat.
         const run = planAdmission && (await read.snapshot(PlanForeground, conversationId, ctx))?.run;
@@ -350,7 +384,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     };
     if (!config.ephemeral) {
       const tools = base.flatMap(ext => ext.tools ?? [])
-        .filter(tool => !tool.deferred && (tool.callers === undefined || tool.callers.includes("model")));
+        .filter(tool => tool.name !== spawnReviewsName && tool.name !== joinReviewsName &&
+          !tool.deferred && (tool.callers === undefined || tool.callers.includes("model")));
       intro = new IntroReports(harness, root, resources, runtime, startedAtMs, () => ({ ...defaultModel(), tools }),
         host.prepare!, host.requireModel, planAdmission);
     }
@@ -380,7 +415,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, readOnlyReason, capabilities: { intro, threadDirectory, images,
       schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
-      plan: plans, planChat: chatPlans && plans, planWorktree: plans?.worktrees, planDraft: planDrafts, planReview: planReviews,
+      plan: plans, planChat: chatPlans && plans, planWorktree: plans?.worktrees, planDraft: planDrafts, planReview: planReviews, delegation,
       gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
       workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });
@@ -398,7 +433,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     void harness.closed.then(() => { if (!closing) void close().catch(() => {}); });
     check();
     if (!config.supervisor) timer = setInterval(check, Math.min(250, Math.max(15, Math.ceil(config.idleMs / 4))));
-    return { harness, root, server, runtime, readOnlyReason, closed: stopped.promise, close };
+    return { harness, root, server, runtime, reviewSnapshots, readOnlyReason, closed: stopped.promise, close };
   } catch (err) {
     await close().catch(() => {});
     throw err;

@@ -9,11 +9,14 @@ import (
 )
 
 const (
-	PlanChatVersion = 1
-	planChat        = "planChat"
-	planChatRun     = "ext.planChat.run"
-	planChatPlans   = "ext.planChat.workspace"
-	planChatInspect = "ext.planChat.inspect"
+	PlanChatVersion         = 1
+	PlanChatActivityVersion = 1
+	planChat                = "planChat"
+	planChatRun             = "ext.planChat.run"
+	planChatPlans           = "ext.planChat.workspace"
+	planChatInspect         = "ext.planChat.inspect"
+	planChatActivity        = "planChatActivity"
+	planChatActivityWait    = "ext.planChatActivity.wait"
 )
 
 func validPlanReports(reports []PlanTaskReport, steps map[string]bool) bool {
@@ -54,6 +57,17 @@ func (c *Client) WatchNamedPlanAt(ctx context.Context, cwd, planID string) <-cha
 	w := planChatWatch(planChatInspect)
 	if planChatCWD(cwd) && token(planID) {
 		w.params = map[string]any{"cwd": cwd, "planId": planID}
+	}
+	return c.watchPlan(ctx, w)
+}
+
+// WatchChatPlanActivity follows Run here inputs admitted in this thread,
+// independently of its plan binding. A fork does not inherit this activity.
+func (c *Client) WatchChatPlanActivity(ctx context.Context, thread ID) <-chan PlanUpdate {
+	w := workspaceWatch{method: planChatActivityWait, capability: planChatActivity, version: PlanChatActivityVersion,
+		base: planChat, baseVersions: []uint64{PlanChatVersion}}
+	if thread.Valid() {
+		w.params = map[string]any{"threadId": thread}
 	}
 	return c.watchPlan(ctx, w)
 }

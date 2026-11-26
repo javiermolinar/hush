@@ -54,8 +54,10 @@ shell, or general test-suite execution. Prose `checks` are not executed.
 ## Browse, close, and reopen
 
 `/plan` lists plans across the connected store's workspaces, including other
-worktrees. Open plans precede closed plans; in each group, the current workspace
-comes first. Plans from another workspace show their source and open read-only.
+worktrees. The current thread's active run is first, even while closing. Among
+remaining plans, open plans precede closed plans, and the current workspace
+comes first in each group. Plans from another workspace show their source and
+open read-only.
 Switch to a thread in that workspace to attach, run, review, or change the plan's
 status. Without `planCatalog:1`, the picker lists only the current workspace.
 
@@ -284,6 +286,15 @@ records `hush.plan.result` there. This does not open a subagent or worker
 conversation. An independent review still uses its explicitly separate,
 read-only reviewer conversation.
 
+With `planChatActivity:1` negotiated alongside `planChat:1`,
+`ext.planChatActivity.wait {threadId, after?}` follows the oldest unsettled
+Run here input admitted to that thread, or the last settled one. It returns
+an `ext.plan.wait`-shaped snapshot with an independent watch cursor and
+`runAvailability: "disabled"`. With no activity, `plan` and `run` are null.
+This read-only projection works for unbound and worktree threads without
+changing their plan bindings. A fork does not inherit it. Chat steps share
+one native submission; reports are still advisory, not verification.
+
 ### Worktree launch (`planWorktree:1`)
 
 Offer `planWorktree:1` with `planChat:1`, `planWorkspace:1`, and `plan:1`.
@@ -323,8 +334,10 @@ except for the read-only operations negotiated by `planCatalog:1`.
   `{id, title, revision, verified, total, status, closed}` rows and returns
   `{revision, plans, more}`. Page numbers start at zero. Status is `pending`,
   `running`, `attention`, or `complete`; `closed` is a separate lifecycle flag.
-  Follow page updates using the page's opaque token. New plans or lifecycle
-  changes can move rows across pages.
+  The calling thread's oldest active run is first, including queued Run here
+  runs when `planChat:1` is negotiated. Remaining plans are ordered newest first,
+  with open plans before closed ones. Follow page updates using that thread's
+  opaque token. New plans, runs, or lifecycle changes can move rows across pages.
 - `ext.planWorkspace.inspect {threadId, planId, after?}` watches the named live
   head. It does not change the active binding.
 - `ext.planWorkspace.use {threadId, planId}` explicitly changes the thread's
@@ -352,10 +365,11 @@ records settle as interrupted on upgrade and are not replayed.
 
 Offer `planCatalog:1` with `plan:1` and `planWorkspace:1`. Send
 `ext.planCatalog.wait {threadId, page, after?}` for the same bounded page shape
-and wait semantics as `ext.planWorkspace.wait`. Open plans precede closed plans.
-Within each group the calling thread's workspace is first, followed by other
-workspaces in sorted path order; newest-created plans appear first within each
-workspace. Rows from other workspaces add `workspace`, their recorded backend
+and wait semantics as `ext.planWorkspace.wait`, including precedence for the
+calling thread's active run. Among remaining plans, open plans precede closed
+plans. Within each group the calling thread's workspace is first, followed by
+other workspaces in sorted path order; newest-created plans appear first within
+each workspace. Rows from other workspaces add `workspace`, their recorded backend
 working directory. The backend mirrors existing committed workspace summaries;
 creating or changing a plan can wake the page even in a different workspace.
 On reconnect, start without `after`. `ext.planWorkspace.wait` remains scoped.

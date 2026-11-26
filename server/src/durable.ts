@@ -11,6 +11,7 @@ import { Cursors } from "./cursor.js";
 import { environmentEntry, environmentInputKind, type ClientEnvironment } from "./client-environment.js";
 import { projectImageBytes, type ImageRef, type ImagesHost, type ImageSubmission } from "./images.js";
 import { planReviewKind } from "./plan-review.js";
+import { reviewParentKind, workerNoticeKind } from "./delegation.js";
 import { planChatKind, planRunKind, planTaskKind, planResultKind, planPreviewKind, planPreviewSavedKind } from "./plan.js";
 import { scheduleReportKind } from "./scheduling.js";
 import { checkpointKind, effectKind } from "./checkpoints.js";
@@ -74,10 +75,10 @@ function projectMessage(message: Message) {
 }
 const projectEntry = (entry: EntryRecord) => ({
   id: id(entry.id), threadId: id(entry.conversationId),
-  kind: entry.kind === environmentInputKind ? "pi.user" : entry.kind,
+  kind: entry.kind === environmentInputKind || entry.kind === reviewParentKind ? "pi.user" : entry.kind,
   messages: (entry.kind === scheduleReportKind || entry.kind === checkpointKind || entry.kind === effectKind ||
     entry.kind === planRunKind || entry.kind === planTaskKind || entry.kind === planChatKind || entry.kind === planResultKind || entry.kind === planReviewKind ||
-    entry.kind === planPreviewKind || entry.kind === planPreviewSavedKind) &&
+    entry.kind === planPreviewKind || entry.kind === planPreviewSavedKind || entry.kind === workerNoticeKind) &&
     object(entry.data) && typeof entry.data.text === "string" && typeof entry.data.timestampMs === "number" ? [{ role: "assistant", timestampMs: entry.data.timestampMs,
       stopReason: "stop", blocks: [{ type: "text", text: entry.data.text }] }] :
     (entry.model ?? []).map(projectMessage),
@@ -177,10 +178,32 @@ function projectSubmission(row: SubmissionRecord | undefined, thread: Conversati
   }
 }
 
-async function visible(conv: Conversation, at: string, ctx: Context) {
+export function visibleEntry(entry: EntryRecord, owner: ConversationId, delegation: boolean) {
+  return entry.kind !== workerNoticeKind || delegation && entry.conversationId === owner;
+}
+
+async function visible(conv: Conversation, at: string, ctx: Context, delegation = false) {
   const bound = entryID(at);
   const exact = await conv.entries({ minEntryId: bound, maxEntryId: bound }, 1, undefined, ctx);
-  return exact.items[0]?.id === bound;
+  const entry = exact.items[0];
+  return entry?.id === bound && visibleEntry(entry, conv.id, delegation);
+}
+
+async function visibleEntries(conv: Conversation, query: Parameters<Conversation["entries"]>[0], limit: number,
+    delegation: boolean, ctx: Context) {
+  const found: EntryRecord[] = [];
+  let cursor: Cursor | undefined;
+  // A series of display-only outcomes cannot make an old peer page over an
+  // invisible anchor. Bound pathological histories (e.g. very deep forks).
+  let scanned = 0;
+  do {
+    const page = await conv.entries(query, limit - found.length, cursor, ctx);
+    for (const entry of page.items) if (visibleEntry(entry, conv.id, delegation)) found.push(entry);
+    cursor = page.next;
+    scanned += page.items.length;
+    if (scanned > 2_048) throw new WireError("limit");
+  } while (cursor !== undefined && found.length < limit);
+  return found;
 }
 
 type Call = Exclude<CoreRequest, { method: "hello" | "subscribe" }>;
@@ -206,6 +229,8 @@ export interface NativeHost {
   defaults?(cwd: string | undefined, context: Context): Promise<AgentChange>;
   /** Hosts can keep internal worker conversations inspectable but not mutable or forkable by peers. */
   checkMutation?(conv: Conversation, context: Context): Promise<void>;
+  /** A host can keep a delegated transcript private while projecting its committed public notice. */
+  privateConversation?(id: ConversationId, context: Context): Promise<boolean>;
   /** Guard native input and settings admission. Manual compaction is checked before asking Durable to start it. */
   checkAdmission?(tx: Tx, threadId: ConversationId, operation: "input" | "continue" | "configure" | "compact" | "reset"): Promise<void>;
   prepare?(input: Readonly<{ threadId?: string; cwd?: string; text?: string; skillToken?: string }>, context: Context):
@@ -278,6 +303,13 @@ export class DurableAdapter {
     return this.harness.observeConversation(conv.id, observer, ctx, window);
   }
 
+  get filtersWorkerNotices() { return this.host?.privateConversation !== undefined; }
+
+  async windowPredecessors(owner: ConversationId, at: EntryId, limit: number, delegation: boolean, ctx: Context) {
+    const conv = await this.#get(String(owner), ctx);
+    return visibleEntries(conv, { maxEntryId: at, order: "descending" }, limit, delegation, ctx);
+  }
+
   get supportsCatalogCreation() { return typeof this.host?.validateSelection === "function"; }
 
   async createCatalogThread(params: CatalogCreation, ctx: Context) {
@@ -292,14 +324,20 @@ export class DurableAdapter {
     return { id: id(conv.id) };
   }
 
-  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment, skillToken?: string): Promise<Admission> {
+  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment, skillToken?: string, delegation = false): Promise<Admission> {
     switch (request.method) {
       case "thread.new": return { result: await this.#createThread(request.params, ctx) };
       case "thread.list": {
         const { limit, cursor } = request.params;
-        const next = cursor === undefined ? undefined : this.#cursors.decode<Cursor>("list", cursor);
-        const page = await this.harness.commit(tx => tx.scanConversations({ order: "ascending" }, limit, next), ctx);
-        return { result: { threads: page.items.map(projectThread), nextCursor: page.next ? this.#cursors.encode("list", page.next) : null } };
+        let next = cursor === undefined ? undefined : this.#cursors.decode<Cursor>("list", cursor);
+        const threads: ReturnType<typeof projectThread>[] = [];
+        for (let i = 0; i < 64; i++) {
+          const page = await this.harness.commit(tx => tx.scanConversations({ order: "ascending" }, limit - threads.length, next), ctx);
+          for (const row of page.items) if (!row.owner || !await this.host?.privateConversation?.(row.id, ctx)) threads.push(projectThread(row));
+          next = page.next;
+          if (!next || threads.length === limit) break;
+        }
+        return { result: { threads, nextCursor: next ? this.#cursors.encode("list", next) : null } };
       }
       case "submission.get": {
         const params = request.params;
@@ -307,6 +345,7 @@ export class DurableAdapter {
         const row = "requestId" in params
           ? await this.harness.commit(tx => tx.submissionByRequest(tid, params.requestId), ctx)
           : await (await this.harness.submission(submissionID(params.submissionId), ctx))?.status(ctx);
+        if (row?.conversationId === tid && await this.host?.privateConversation?.(tid, ctx)) throw notFound();
         return { result: projectSubmission(row, tid) };
       }
       case "submission.wait": {
@@ -314,6 +353,7 @@ export class DurableAdapter {
         const sub = await this.harness.submission(submissionID(request.params.submissionId), ctx);
         if (!sub) throw notFound();
         projectSubmission(await sub.status(ctx), tid);
+        if (await this.host?.privateConversation?.(tid, ctx)) throw notFound();
         return { wait: sub.wait(ctx).then(row => projectSubmission(row, tid)) };
       }
     }
@@ -321,7 +361,7 @@ export class DurableAdapter {
     const conv = await this.#get(request.params.threadId, ctx);
     if (request.method !== "history" && request.method !== "thread.wait") await this.host?.checkMutation?.(conv, ctx);
     switch (request.method) {
-      case "history": return { result: await this.#history(conv, request.params, ctx) };
+      case "history": return { result: await this.#history(conv, request.params, ctx, delegation) };
       case "thread.fork": {
         const { threadId, atEntryId } = request.params;
         if (!(await visible(conv, atEntryId, ctx))) throw notFound();
@@ -484,33 +524,34 @@ export class DurableAdapter {
 
   async #get(id: string, ctx: Context) {
     const conv = await this.harness.conversation(threadID(id), ctx);
-    if (!conv) throw notFound();
+    if (!conv || await this.host?.privateConversation?.(conv.id, ctx)) throw notFound();
     return conv;
   }
 
-  async #history(conv: Conversation, { threadId, range: input, limit }: Params["history"], ctx: Context) {
-    const range = input.kind === "cursor" ? this.#cursors.decode<ExplicitRange>("history:" + threadId, input.cursor) : input;
+  async #history(conv: Conversation, { threadId, range: input, limit }: Params["history"], ctx: Context, delegation: boolean) {
+    const namespace = "history:" + threadId + (delegation ? ":delegation" : "");
+    const range = input.kind === "cursor" ? this.#cursors.decode<ExplicitRange>(namespace, input.cursor) : input;
     const ascending = range.kind === "after";
     const lower = range.kind === "after" ? range.afterEntryId : null;
     const upper = range.kind === "after" ? range.throughEntryId : range.beforeEntryId;
     if (ascending && lower === null && upper === null) return { threadId, entries: [], nextCursor: null };
     if ((ascending && upper === null) || (lower !== null && Number(lower) > Number(upper))) throw new WireError("invalid_cursor");
     for (const bound of new Set([lower, upper])) {
-      if (bound !== null && (!durableID(bound) || !(await visible(conv, bound, ctx)))) throw new WireError("invalid_cursor");
+      if (bound !== null && (!durableID(bound) || !(await visible(conv, bound, ctx, delegation)))) throw new WireError("invalid_cursor");
     }
-    const page = await conv.entries({
+    const entries = await visibleEntries(conv, {
       order: ascending ? "ascending" : "descending",
       minEntryId: lower === null ? undefined : entryID(lower),
       maxEntryId: upper === null ? undefined : entryID(upper),
-    }, limit + 2, undefined, ctx);
-    const eligible = page.items.filter(entry => id(entry.id) !== (ascending ? lower : upper));
+    }, limit + 2, delegation, ctx);
+    const eligible = entries.filter(entry => id(entry.id) !== (ascending ? lower : upper));
     const selected = eligible.slice(0, limit);
     const last = selected.at(-1);
     const next: ExplicitRange | null = eligible.length > limit && last
       ? (range.kind === "after" ? { ...range, afterEntryId: id(last.id) } : { ...range, beforeEntryId: id(last.id) }) : null;
     return {
       threadId, entries: (ascending ? selected : selected.reverse()).map(projectEntry),
-      nextCursor: next ? this.#cursors.encode("history:" + threadId, next) : null,
+      nextCursor: next ? this.#cursors.encode(namespace, next) : null,
     };
   }
 }

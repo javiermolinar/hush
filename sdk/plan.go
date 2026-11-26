@@ -282,6 +282,10 @@ func (c *Client) watchPlan(ctx context.Context, w workspaceWatch) <-chan PlanUpd
 		if err != nil || !v.valid() {
 			return PlanUpdate{}, "", ErrProtocol
 		}
+		if w.method == planChatActivityWait && (v.RunAvailability != PlanRunDisabled || v.Workspace != "" ||
+			v.Plan != nil && (v.Run == nil || !v.Run.Chat || v.Run.OwnerThreadID != w.params["threadId"])) {
+			return PlanUpdate{}, "", ErrProtocol
+		}
 		return PlanUpdate{Snapshot: v}, v.Revision, nil
 	}, func(err error) PlanUpdate { return PlanUpdate{Err: err} })
 }

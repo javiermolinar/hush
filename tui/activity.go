@@ -71,7 +71,7 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 		}
 		return x.Content{{Text: label, Tone: x.Muted}}, nil
 	}
-	needsGap := false
+	needsGap, shownThought := false, false
 	space := func() {
 		if needsGap {
 			out = append(out, gap)
@@ -92,21 +92,19 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 			continue
 		}
 		needsGap = needsGap || r.afterBurst&(1<<i) != 0
-		shownThought := false
 		for _, b := range msg.Blocks {
 			switch b.Type {
 			case "thinking":
-				if !ctx.ReasoningExpanded || strings.TrimSpace(b.Text) == "" {
+				if strings.TrimSpace(b.Text) == "" {
 					continue
 				}
 				if !shownThought {
 					space()
-					label := "Thought"
-					if r.thought.Round(time.Second) > 0 {
-						label += " · " + elapsedLabel(r.thought)
-					}
-					out = append(out, x.Block{Text: label, Tone: x.Muted})
+					out = append(out, thoughtSummary(ctx, r))
 					shownThought = true
+				}
+				if !ctx.ReasoningExpanded {
+					continue
 				}
 			case "toolCall":
 				continue
@@ -124,6 +122,41 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 		}
 	}
 	return out, cards
+}
+
+func thoughtSummary(ctx x.RenderContext, r *record) x.Block {
+	label := "Thought"
+	if r.thought > 0 {
+		label += " · " + elapsedLabel(r.thought)
+	}
+	if r.thoughts > 1 {
+		label += " · " + nounCount(r.thoughts, "part")
+	}
+	mark, hint := " ▸", "show reasoning"
+	if ctx.ReasoningExpanded {
+		mark, hint = " ▾", "hide reasoning"
+	}
+	label = ansi.Truncate(label, max(0, ctx.Width-stringWidth(mark)), "…") + mark
+	return activityRow(activityTarget(x.Line{{Text: label, Tone: x.Muted}}, string(r.entry.Record.ID), hint), "", ctx.Width)
+}
+
+// Tab toggles the latest visible thought. In a long expanded block its
+// header may already be above the viewport, but the visible block still closes.
+func thoughtTarget(t *threadState, line transcriptLine) string {
+	r := t.entries[line.anchor.id]
+	if r == nil || r.thoughts == 0 {
+		return ""
+	}
+	id := string(line.anchor.id)
+	if line.thought {
+		return id
+	}
+	for _, hit := range line.hits {
+		if hit.action.ID == expandRowID && hit.action.Target == id {
+			return id
+		}
+	}
+	return ""
 }
 
 func (m *Model) applyActivity(t *threadState, s sdk.State, now time.Time, newRows []*record) {
@@ -396,7 +429,7 @@ func (m *Model) liveActivity(t *threadState, width int, phase livePhase, tool *x
 			content, handled = m.liveFailureContent(ctx, t), true
 		}
 		if handled {
-			if rows := m.layoutContent(ctx, renderKey{}, content); len(rows) > 0 {
+			if rows := m.layoutContent(ctx, renderKey{liveSlot: tool != nil}, content); len(rows) > 0 {
 				return rows[0]
 			}
 			return displayRow{}
@@ -404,7 +437,8 @@ func (m *Model) liveActivity(t *threadState, width int, phase livePhase, tool *x
 	}
 	a := t.activity
 	spinner := [...]string{"◌", "◔", "◑", "◕"}
-	label, icon, tone := "", spinner[m.phase], x.Accent
+	label, icon := "", spinner[m.phase]
+	attention := false
 	since := a.since
 	switch phase {
 	case liveCompacting:
@@ -413,7 +447,7 @@ func (m *Model) liveActivity(t *threadState, width int, phase livePhase, tool *x
 		r := t.stream.Value.Retry
 		left := max(0, int64(r.AtMS)-m.now.UnixMilli()+999) / 1000
 		label = fmt.Sprintf("Retry %d · %ds", t.stream.Value.Attempt, left)
-		icon, tone, since = "⟳", x.Warning, time.Time{}
+		icon, attention, since = "⟳", true, time.Time{}
 	case liveToolRunning:
 		label = a.intent
 		if label == "" {
@@ -425,7 +459,7 @@ func (m *Model) liveActivity(t *threadState, width int, phase livePhase, tool *x
 		}
 		since = a.tools[tool.CallID]
 	case liveToolParked:
-		icon, tone, since = "◐", x.Warning, a.tools[tool.CallID]
+		icon, attention, since = "◐", tool.Status != "sleeping", a.tools[tool.CallID]
 		label = "Waiting on " + tool.Name
 		if tool.Status == "sleeping" {
 			label = "Sleeping"
@@ -462,10 +496,10 @@ func (m *Model) liveActivity(t *threadState, width int, phase livePhase, tool *x
 	room := width - stringWidth(icon+" ") - stringWidth(suffix)
 	label = strings.TrimSpace(oneLine(limitText(label, 512)))
 	label = ansi.Truncate(label, room, "…")
-	if tone == x.Warning {
-		return displayRow{text: m.paint(tone, icon) + " " + m.liveText(label+suffix)}
+	if attention {
+		return displayRow{text: m.ink(roleWarning, icon) + " " + m.ink(roleLive, label+suffix)}
 	}
-	return displayRow{text: m.liveText(icon + " " + label + suffix)}
+	return displayRow{text: m.ink(roleLive, icon+" "+label+suffix)}
 }
 
 func (m *Model) canHintFork() bool {

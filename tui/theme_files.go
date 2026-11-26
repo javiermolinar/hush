@@ -119,7 +119,7 @@ func decodeTheme(name string, source []byte) (namedTheme, error) {
 // Keep the template's keys and the validator in sync via colorRoles.
 var themeExample = [roleCount]string{
 	roleControl:       "#babdd8",
-	roleMuted:         "#a6adc8",
+	roleQuiet:         "#a6adc8",
 	roleAccent:        "#8b9df5",
 	roleLink:          "#89dceb",
 	roleSuccess:       "#a6e3a1",

@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  Plan run · r3 · Tooling and delegation · 3 steps
+  ▸ plan r3  ––––––  0/6  Run here finished
+  ───────────────────────────────────────────────────── / commands  ? all keys
+  you ›
+  Workspace workspace
+  › ○ workspace

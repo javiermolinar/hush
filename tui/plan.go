@@ -35,20 +35,30 @@ type planView struct {
 	sending     bool
 	awaiting    sdk.ID
 	note        string
+	strip       planStripEvents
 }
 
 type planPicker struct {
-	named        string
-	workspace    string // nonempty for a read-only preview from another workspace
-	expected     string // a workspace row may not follow a different binding mid-inspection
-	view         planView
-	cancel       context.CancelFunc
-	changing     bool
-	focus        int
-	details      bool
-	scroll       int
-	selected     map[string]bool
-	selectionRev uint64
+	named         string
+	workspace     string // nonempty for a read-only preview from another workspace
+	expected      string // a workspace row may not follow a different binding mid-inspection
+	activityRun   sdk.ID // a read-only Run here inspection, independent of the binding
+	view          planView
+	cancel        context.CancelFunc
+	changing      bool
+	focus         int
+	details       bool
+	scroll        int
+	selected      map[string]bool
+	selectionRev  uint64
+	detailMeasure planDetailMeasure
+	detailHeight  int
+}
+
+type planDetailMeasure struct {
+	plan         *sdk.PlanDefinition
+	revision     string
+	width, limit int
 }
 
 type planWatchMsg struct {
@@ -98,6 +108,9 @@ func awaitPlanWatch(f feedLease, source <-chan sdk.PlanUpdate) tea.Cmd {
 }
 
 func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
+	if f := m.chatPlanFeed; f.token != 0 && msg.token == f.token && f.owner == m.active {
+		return m.receiveChatPlanWatch(msg)
+	}
 	f := m.planFeed
 	if f.token == 0 || msg.token != f.token || f.owner != m.active {
 		return nil
@@ -110,13 +123,14 @@ func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
 	}
 	v.err = msg.update.Err
 	v.ready = v.err == nil
+	var flash tea.Cmd
 	if v.ready {
 		next := msg.update.Snapshot
 		old := v.snapshot.Plan
 		changed := old != nil && (next.Plan == nil || old.ID != next.Plan.ID || old.Revision != next.Plan.Revision)
 		if changed || next.Closed != v.snapshot.Closed {
 			for _, d := range m.overlays {
-				if d.plan != nil && d.plan.named == "" {
+				if d.plan != nil && d.plan.named == "" && d.plan.activityRun == "" {
 					d.plan.selected = nil
 					d.plan.focus, d.plan.scroll = 0, 0
 				}
@@ -133,12 +147,13 @@ func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
 				v.awaiting = ""
 			}
 		}
+		flash = m.recordPlanEvents(f.owner, v, next)
 		v.snapshot = next
 		if next.Run != nil && v.awaiting != "" && !lessID(next.Run.ID, v.awaiting) {
 			v.awaiting = ""
 		}
 		for _, d := range m.overlays {
-			if d.plan != nil && d.plan.named == "" {
+			if d.plan != nil && d.plan.named == "" && d.plan.activityRun == "" {
 				for id := range d.plan.selected {
 					if v.progress(id).State == "verified" {
 						delete(d.plan.selected, id)
@@ -148,7 +163,7 @@ func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
 			}
 		}
 	}
-	return awaitPlanWatch(f, msg.source)
+	return tea.Batch(awaitPlanWatch(f, msg.source), flash)
 }
 
 func (m *Model) draftPlanAvailable() bool {
@@ -174,6 +189,9 @@ func (m *Model) openPlan(r ownerRoute) tea.Cmd {
 }
 
 func (m *Model) planViewFor(d *dialog) *planView {
+	if d.plan.activityRun != "" {
+		return &m.threads[d.route.owner].chatPlan
+	}
 	if d.plan.named != "" {
 		return &d.plan.view
 	}
@@ -194,7 +212,11 @@ func (m *Model) openPlanSteps(r ownerRoute, expected string) tea.Cmd {
 		}
 	}
 	d := &dialog{route: r, token: m.token(), plan: picker}
-	m.showChatSelection(d, m.planViewFor(d))
+	v := m.planViewFor(d)
+	m.showChatSelection(d, v)
+	if v.ready && picker.matches(v) {
+		m.focusPlanFailure(m.threads[r.owner], v, picker)
+	}
 	return tea.Batch(m.pushDialog(d), m.syncPlanWatch())
 }
 
@@ -290,6 +312,9 @@ func (v *planView) selection(p *planPicker) (ids []string, reason string) {
 }
 
 func (p *planPicker) matches(v *planView) bool {
+	if p.activityRun != "" {
+		return v.snapshot.Run != nil && v.snapshot.Run.ID == p.activityRun
+	}
 	return p.expected == "" || v.snapshot.Plan != nil && v.snapshot.Plan.ID == p.expected
 }
 
@@ -299,7 +324,12 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 	if !v.ready || v.snapshot.Plan == nil || !p.matches(v) {
 		return nil
 	}
-	if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
+	if p.activityRun != "" {
+		switch chord {
+		case "enter", "s", "w", "x":
+			return nil
+		}
+	} else if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
 		switch chord {
 		case "v":
 			if p.workspace != "" {
@@ -378,7 +408,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 }
 
 func (m *Model) togglePlanStep(v *planView, p *planPicker) {
-	if p.workspace != "" || !v.ready || v.snapshot.Plan == nil || !p.matches(v) || v.locked() || v.request != nil ||
+	if p.activityRun != "" || p.workspace != "" || !v.ready || v.snapshot.Plan == nil || !p.matches(v) || v.locked() || v.request != nil ||
 		m.threads[m.active].plan.chatRequest != nil || m.threads[m.active].plan.worktree != nil || !(m.planAvailable() || m.planChatAvailable(v)) {
 		return
 	}
@@ -461,40 +491,95 @@ func (m *Model) closeRunPicker(d *dialog) tea.Cmd {
 	return closePicker
 }
 
-func (v *planView) label(s sdk.PlanStep, selected map[string]bool) (string, x.Tone) {
-	switch v.progress(s.ID).State {
+type planStepState uint8
+
+const (
+	planStepPending planStepState = iota
+	planStepRunning
+	planStepVerified
+	planStepFailed
+	planStepReported
+	planStepBlocked
+	planStepStates
+)
+
+var planStepStyles = [planStepStates]struct {
+	mark, label string
+	tone        x.Tone
+}{
+	{"○", "pending", x.Muted},
+	{"●", "running", x.Warning},
+	{"✓", "verified", x.Good},
+	{"✗", "failed", x.Danger},
+	{"–", "reported done", x.Muted},
+	{"⏸", "needs attention", x.Warning},
+}
+
+func (v *planView) stepState(id string, chatLive bool) planStepState {
+	state := v.progress(id).State
+	if state == "verified" {
+		return planStepVerified
+	}
+	if run := v.snapshot.Run; run != nil && run.Chat && run.State == "running" && slices.Contains(run.StepIDs, id) {
+		if chatLive {
+			return planStepRunning
+		}
+		return planStepPending
+	}
+	switch state {
 	case "running":
-		return "Running", x.Accent
-	case "verified":
-		return "Verified", x.Good
+		return planStepRunning
+	case "failed":
+		return planStepFailed
 	}
-	if v.snapshot.Chat {
-		if run := v.snapshot.Run; run != nil && run.Chat && run.State == "running" && slices.Contains(run.StepIDs, s.ID) {
-			return "In run", x.Accent
+	switch v.taskReport(id).State {
+	case "done":
+		return planStepReported
+	case "blocked", "incomplete":
+		return planStepBlocked
+	}
+	return planStepPending
+}
+
+func (v *planView) stepDisplay(s sdk.PlanStep, selected map[string]bool, chatLive bool) (label, mark string, tone x.Tone) {
+	state := v.stepState(s.ID, chatLive)
+	style := planStepStyles[state]
+	switch state {
+	case planStepVerified:
+		return "Verified", style.mark, style.tone
+	case planStepRunning:
+		if v.snapshot.Run != nil && v.snapshot.Run.Chat {
+			return "In run", "◐", style.tone
 		}
-		switch v.taskReport(s.ID).State {
-		case "done":
-			return "Reported done", x.Good
-		case "blocked":
-			return "Blocked", x.Warning
-		case "incomplete":
-			return "Incomplete", x.Warning
+		return "Running", "◐", style.tone
+	case planStepFailed:
+		return "Not verified", style.mark, style.tone
+	case planStepReported:
+		return "Reported done", style.mark, style.tone
+	case planStepBlocked:
+		if v.taskReport(s.ID).State == "incomplete" {
+			return "Incomplete", style.mark, style.tone
 		}
-		return "Pending", x.Muted
+		return "Blocked", style.mark, style.tone
 	}
-	if v.progress(s.ID).State == "failed" {
-		return "Not verified", x.Danger
+	if !v.snapshot.Chat && s.Blocker != "" {
+		blocked := planStepStyles[planStepBlocked]
+		return "Blocked", blocked.mark, blocked.tone
 	}
-	if s.Blocker != "" {
-		return "Blocked", x.Warning
-	}
-	if v.snapshot.RunAvailability == sdk.PlanRunScoped && s.Edit == nil && s.Scope == nil {
-		return "Draft only", x.Muted
-	}
+	return v.pendingStepLabel(s, selected), style.mark, style.tone
+}
+
+func (v *planView) pendingStepLabel(s sdk.PlanStep, selected map[string]bool) string {
 	run := v.snapshot.Run
 	active := run != nil && run.State == "running"
 	if active && slices.Contains(run.StepIDs, s.ID) {
-		return "Queued", x.Muted
+		return "Queued"
+	}
+	if v.snapshot.Chat {
+		return "Pending"
+	}
+	if v.snapshot.RunAvailability == sdk.PlanRunScoped && s.Edit == nil && s.Scope == nil {
+		return "Draft only"
 	}
 	var needs, waits int
 	count := func(id string) {
@@ -514,34 +599,15 @@ func (v *planView) label(s sdk.PlanStep, selected map[string]bool) (string, x.To
 		count(s.After)
 	}
 	if needs != 0 {
-		return fmt.Sprintf("Needs %d", needs), x.Muted
+		return fmt.Sprintf("Needs %d", needs)
 	}
 	if active || !planRunnable(v.snapshot.RunAvailability) {
-		return "Pending", x.Muted
+		return "Pending"
 	}
 	if waits != 0 {
-		return fmt.Sprintf("After %d", waits), x.Muted
+		return fmt.Sprintf("After %d", waits)
 	}
-	return "Ready", x.Plain
-}
-
-func (v *planView) stepIcon(s sdk.PlanStep, status string) (string, x.Tone) {
-	switch v.progress(s.ID).State {
-	case "verified":
-		return "✓", x.Good
-	case "running":
-		return "◐", x.Warning
-	case "failed":
-		return "✗", x.Danger
-	}
-	switch status {
-	case "In run":
-		return "◐", x.Warning
-	case "Blocked", "Incomplete":
-		return "⏸", x.Warning
-	default:
-		return "○", x.Muted
-	}
+	return "Ready"
 }
 
 func (m *Model) planRows(d *dialog, w, n int) menuFrame {
@@ -553,6 +619,9 @@ func (m *Model) planRows(d *dialog, w, n int) menuFrame {
 		switch {
 		case v.ready && !p.matches(v):
 			status, tone = "Plan binding changed · open it again from the list", x.Warning
+			if p.activityRun != "" {
+				status = "Current run changed · reopen from the strip"
+			}
 		case v.err != nil:
 			status, tone = "Plan connection unavailable · reopen to retry", x.Danger
 		case !v.ready:
@@ -566,22 +635,24 @@ func (m *Model) planRows(d *dialog, w, n int) menuFrame {
 			return menuFrame{rows: []string{m.paint(tone, status)}, targets: []int{-1}}
 		})
 	}
-	var verified, done int
+	var verified, reported int
 	for _, s := range plan.Steps {
 		if v.progress(s.ID).State == "verified" {
 			verified++
-		}
-		if v.done(s.ID) {
-			done++
+		} else if v.taskReport(s.ID).State == "done" {
+			reported++
 		}
 	}
 	c.title, c.scope = plan.Title, fmt.Sprintf("Plan · r%d", plan.Revision)
 	c.count = fmt.Sprintf("%d/%d verified", verified, len(plan.Steps))
-	if done != verified {
-		c.count = fmt.Sprintf("%d/%d done · %d verified", done, len(plan.Steps), verified)
+	if reported != 0 {
+		c.count += fmt.Sprintf(" · %d reported done", reported)
 	}
 	t := m.threads[d.route.owner]
-	canSelect := p.workspace == "" && !v.locked() && v.request == nil && t.plan.chatRequest == nil && t.plan.worktree == nil
+	run := v.snapshot.Run
+	// We can distinguish queued from live for this thread's chat runs only.
+	chatLive := run != nil && (run.OwnerThreadID != t.info.ID || chatRunLive(t, run))
+	canSelect := p.activityRun == "" && p.workspace == "" && !v.locked() && v.request == nil && t.plan.chatRequest == nil && t.plan.worktree == nil
 	bar, preview, runnable := m.planRunBar(d, v, w)
 	c.consequence = chromeLine(bar + preview)
 	if runnable && stringWidth(bar) <= w {
@@ -608,10 +679,10 @@ func (m *Model) planRows(d *dialog, w, n int) menuFrame {
 		}
 	}
 	hints = append(hints, move, d.zoomKey())
-	if p.workspace == "" && d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanReview) {
+	if p.activityRun == "" && p.workspace == "" && d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanReview) {
 		hints = append(hints, "v review")
 	}
-	if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
+	if p.activityRun == "" && d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
 		hints = append(hints, "h history")
 		if p.workspace == "" && !v.snapshot.Closed {
 			hints = append(hints, "c close plan")
@@ -623,7 +694,11 @@ func (m *Model) planRows(d *dialog, w, n int) menuFrame {
 	if scoped && strings.Contains(c.keys.text, "s scoped") {
 		c.keys.target = planScopedTarget
 	}
-	worktree, worktreeAction := m.planWorktreeBar(d, v)
+	var worktree string
+	var worktreeAction int
+	if p.activityRun == "" {
+		worktree, worktreeAction = m.planWorktreeBar(d, v)
+	}
 	return m.menuShell(w, n, c, func(h int) menuFrame {
 		showWorktree := worktree != "" && n >= 4 && h > 1
 		if showWorktree {
@@ -637,11 +712,7 @@ func (m *Model) planRows(d *dialog, w, n int) menuFrame {
 			start, end := menuWindow(p.focus, len(plan.Steps), lh)
 			for i := start; i < end; i++ {
 				s := plan.Steps[i]
-				state, stateTone := v.label(s, p.selected)
-				glyph, tone := v.stepIcon(s, state)
-				if tone == x.Muted {
-					tone = stateTone
-				}
+				state, glyph, tone := v.stepDisplay(s, p.selected, chatLive)
 				item := menuItem{title: s.Title, icon: glyph, state: state, tone: tone, focus: i == p.focus}
 				if canSelect || len(p.selected) != 0 {
 					item.selection = "□"
@@ -665,6 +736,12 @@ func (m *Model) planRows(d *dialog, w, n int) menuFrame {
 
 func (m *Model) planRunBar(d *dialog, v *planView, width int) (bar, preview string, runnable bool) {
 	p := d.plan
+	if p.activityRun != "" {
+		if v.snapshot.Run.State == "failed" {
+			return m.paint(x.Danger, v.planFailureReason("Run failed")), "", false
+		}
+		return m.control(planRunSummary(m.threads[d.route.owner], v.snapshot.Run)), "", false
+	}
 	if p.workspace != "" {
 		return m.control("Read-only · " + oneLine(p.workspace)), "", false
 	}
@@ -807,13 +884,49 @@ func (v *planView) unselected(p *planPicker, first string) (count int, dependent
 }
 
 func (m *Model) planDetailWindow(v *planView, p *planPicker, width, height int) []string {
-	rows := m.planDetails(v, v.snapshot.Plan.Steps[p.focus], width)
-	from := min(p.scroll, max(0, len(rows)-height))
-	return rows[from:min(len(rows), from+height)]
+	plan := v.snapshot.Plan
+	rows := m.planDetails(v, plan.Steps[p.focus], width)
+	if len(rows) >= height {
+		from := min(p.scroll, len(rows)-height)
+		return rows[from : from+height]
+	}
+
+	// Fit the dock to the tallest step, not the focused step. In the
+	// stacked layout this also keeps the list's viewport from changing size.
+	key := planDetailMeasure{plan, v.snapshot.Revision, width, height}
+	if p.detailMeasure != key {
+		tallest := len(rows)
+		for i, step := range plan.Steps {
+			if i != p.focus {
+				tallest = max(tallest, len(m.planDetails(v, step, width)))
+				if tallest >= height {
+					break
+				}
+			}
+		}
+		p.detailMeasure, p.detailHeight = key, min(tallest, height)
+	}
+	if p.detailHeight > len(rows) {
+		rows = append(rows, make([]string, p.detailHeight-len(rows))...)
+	}
+	return rows
 }
 
 func (m *Model) planDetails(v *planView, s sdk.PlanStep, width int) []string {
 	rows := wrapped(strongText(oneLine(s.Title)), width)
+	if run := v.snapshot.Run; run != nil && slices.Contains(run.StepIDs, s.ID) {
+		reason := ""
+		if !run.Chat && v.progress(s.ID).State == "failed" {
+			reason = v.planFailureReason("Verification failed")
+		} else if run.State == "failed" && run.StepIDs[0] == s.ID && planFailureMask(v.snapshot) == planRunFailed {
+			reason = v.planFailureReason("Run failed")
+		}
+		if reason != "" {
+			for _, line := range wrapped(reason, width) {
+				rows = append(rows, m.paint(x.Danger, line))
+			}
+		}
+	}
 	for _, line := range wrapped(oneLine(s.Description), width) {
 		rows = append(rows, m.quiet(line))
 	}
@@ -917,46 +1030,4 @@ func (v *planView) activity() string {
 		}
 	}
 	return s
-}
-
-func (m *Model) planActivity(t *threadState, width int) displayRow {
-	v := &t.plan
-	run := v.snapshot.Run
-	if width < 10 || !v.ready || !m.planAvailable() || run == nil {
-		return displayRow{}
-	}
-	var marks strings.Builder
-	if len(run.StepIDs) <= 20 {
-		for _, id := range run.StepIDs {
-			switch v.progress(id).State {
-			case "verified":
-				marks.WriteString(m.paint(x.Good, "✓"))
-			case "running":
-				marks.WriteString(m.paint(x.Warning, "◐"))
-			case "failed":
-				marks.WriteString(m.paint(x.Danger, "✗"))
-			default:
-				mark, tone := "○", x.Muted
-				if run.Chat {
-					switch v.taskReport(id).State {
-					case "blocked", "incomplete":
-						mark, tone = "⏸", x.Warning
-					default:
-						if run.State == "running" {
-							mark, tone = "◐", x.Warning
-						}
-					}
-				}
-				marks.WriteString(m.paint(tone, mark))
-			}
-		}
-	}
-	label := v.activity()
-	if marks.Len() != 0 && stringWidth(marks.String())+12 < width {
-		label = marks.String() + "  " + m.quiet(label)
-	} else {
-		label = m.quiet(label)
-	}
-	text := ansi.Truncate(label, width, "…")
-	return displayRow{text: text, hits: []spanHit{{0, stringWidth(text), x.ActionRef{ID: planID}, "Open plan"}}}
 }

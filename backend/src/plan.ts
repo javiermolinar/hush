@@ -3,17 +3,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, configure, defineDoc, defineDocFamily, defineEntry, defineExtension, defineTask, defineTool, InboxDoc, LiveDoc, SubmissionSettled,
   type AgentChange, type AgentState, type Conversation, type ConversationId, type Cursor, type Harness, type DocumentReader, type LiveState, type Observation, type Observer, type Storage, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
-import { planChatKind, planHistoryPageSize, planStepLimit, planWorkspacePageSize, planRunKind, planTaskKind, planResultKind,
+import { planChatKind, planHistoryPageSize, planStepLimit, planRunKind, planTaskKind, planResultKind,
   type PlanAttachment, type PlanChatHost, type PlanClosure, type PlanDefinition, type PlanHistoryQuery,
   type PlanHost, type PlanInspectAt, type PlanProgress, type PlanRun, type PlanRunRecord, type PlanRunState, type PlanSelection, type PlanSnapshot,
-  type PlanStep, type PlanSummary, type PlanTaskReport, type PlanWorkspaceAt, type PlanWorkspaceQuery, type PlanWorktreeCheckout,
+  type PlanStep, type PlanTaskReport, type PlanWorkspaceAt, type PlanWorkspaceQuery, type PlanWorktreeCheckout,
   type PlanWorktreeHost, type PlanWorktreeSource } from "../../server/src/plan.js";
 import { checkPreparedModel, type NativeHost } from "../../server/src/durable.js";
 import type { PlanReviewTarget } from "../../server/src/plan-review.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { PlanFileError, type PlanFiles, type FileProposal, type PlanFileTarget } from "./plan-files.js";
 import type { PlanAcceptance } from "./plan-acceptance.js";
-import { PlanCatalog, projectPlanSummary, type WorkspacePlans } from "./plan-catalog.js";
+import { PlanCatalog, planInventoryPage, type ActivePlanRun, type WorkspacePlans } from "./plan-catalog.js";
 import { observe } from "./workspace-changes.js";
 import { ThreadPresentationDoc, threadLabel } from "./thread-presentation.js";
 import { checkoutIdentity, planWorktreeIdentity, type PlannedCheckout, type PlanWorktreeIdentity, type ThreadWorktrees } from "./worktrees.js";
@@ -33,6 +33,9 @@ type PlanState = { cursor: string; revision: number; workspace: string; members:
   fixture: boolean; progress: PlanProgress[]; run?: PlanRun; previousTask?: string;
   closed?: true; halt?: true; lifecycle?: string; publication?: { stage?: string }; reports?: PlanTaskReport[] };
 type Receipt = Omit<PlanSelection, "threadId" | "requestId"> & { runId: string; chat?: true };
+type ChatRunRef = Pin & { runId: string };
+type ChatRunView = Pin & { run: PlanRun; progress: PlanProgress[]; reports: PlanTaskReport[] };
+type ChatActivity = { cursor: string; pending: ChatRunRef[]; last?: ChatRunView };
 type Assignment = { checks?: string[]; evidence?: string[] };
 type WorktreeSelection = Pick<PlanSelection, "planId" | "revision" | "stepIds" | "requestId">;
 type WorktreeAllocation = WorktreeSelection & PlannedCheckout & { identity?: PlanWorktreeIdentity; lifecycle?: string };
@@ -73,6 +76,12 @@ const Receipts = defineDoc<{ records: { requestId: string; receipt: Receipt }[] 
   kind: "hush.plan-fixture-receipts", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({ records: [] }), checkpointWhen: () => true,
 });
+// Run here does not bind a plan to its thread. Follow its native inputs
+// separately, oldest first, and don't copy activity into forks.
+const ChatActivity = defineDoc<ChatActivity>({
+  kind: "hush.plan-chat-activity", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: () => ({ cursor: cursor(), pending: [] }), checkpointWhen: () => true,
+});
 const Work = defineDoc<Assignment>({
   kind: "hush.faux-plan-assignment", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({}), checkpointWhen: () => true,
@@ -81,7 +90,7 @@ const WorkspaceCatalog = defineDocFamily<WorkspacePlans, null>({
   kind: "hush.plan-workspace", version: 1, family: true, scope: "session",
   initial: () => ({ cursor: cursor(), rows: [] }), checkpointWhen: () => true,
 });
-const CatalogReady = defineDoc<{ ready?: true }>({
+const CatalogReady = defineDoc<{ ready?: true; runOrder?: true }>({
   kind: "hush.plan-workspace-indexed", version: 1, scope: "session", initial: () => ({}), checkpointWhen: () => true,
 });
 const RunLog = defineDocFamily<{ runs: PlanRunRecord[] }, null>({
@@ -108,10 +117,18 @@ async function refreshCatalog(tx: Tx, planId: string, state: PlanState, definiti
   const total = "steps" in plan ? plan.steps.length : plan.total, verified = verifiedCount(state);
   const status = verified === total ? "complete" : state.run?.state === "running" ? "running" : state.run?.state === "failed" ? "attention" : "pending";
   const reportedDone = reportedCount(state);
-  const row: PlanSummary = { id: planId, title: plan.title, revision: state.revision, total, verified, status, closed: !!state.closed,
-    ...(reportedDone && { reportedDone }) };
+  let activeRun: ActivePlanRun | undefined;
+  if (state.run?.state === "running") {
+    const { id, chat } = state.run;
+    // Scripted runs predate ownerThreadId on the head; their log has it.
+    const ownerThreadId = state.run.ownerThreadId ?? (await logRun(tx, planId, id))?.threadId;
+    if (ownerThreadId) activeRun = { id, ownerThreadId, ...(chat && { chat }) };
+  }
+  const row = { id: planId, title: plan.title, revision: state.revision, total, verified, status, closed: !!state.closed,
+    ...(reportedDone && { reportedDone }), ...(activeRun && { activeRun }) } satisfies WorkspacePlans["rows"][number];
   if (previous && previous.revision === row.revision && previous.verified === verified && (previous.reportedDone ?? 0) === reportedDone &&
-      previous.status === status && previous.closed === row.closed) return;
+      previous.status === status && previous.closed === row.closed && previous.activeRun?.id === activeRun?.id &&
+      previous.activeRun?.ownerThreadId === activeRun?.ownerThreadId && previous.activeRun?.chat === activeRun?.chat) return;
   if (index < 0) catalog.rows.push(row);
   else catalog.rows[index] = row;
   catalog.cursor = cursor();
@@ -258,7 +275,8 @@ type Phase = { phase: "next" } | { phase: "submit"; stepId: string; worker: Conv
   | { phase: "interrupted"; uncertain: boolean };
 const next = { status: "running", checkpoint: { phase: "next" } } as const;
 const doneSignal = "settled";
-const fixtureTask = "hush.plan-fixture-run", scopedTask = scopedPlanTask;
+export const planFixtureTaskKind = "hush.plan-fixture-run";
+const scopedTask = scopedPlanTask;
 type RunInput = Pin & { scoped?: ScopedRun };
 // One scoped writer batch per store. Nested workspaces and aliases must
 // not bypass exclusivity; disjoint-workspace concurrency is a later slice.
@@ -270,6 +288,10 @@ const ExecutionClaim = defineDoc<{ taskId?: string; owner?: ConversationId }>({
 const samePlanModel = (agent: Readonly<AgentState>, expected: PlanRunModel) =>
   agent.model?.provider === expected.model.provider && agent.model.modelId === expected.model.modelId &&
   (agent.thinkingLevel ?? "off") === expected.thinking;
+
+function planRunHeading(plan: PlanDefinition, steps: number) {
+  return `Plan run · r${plan.revision} · ${plan.title.replace(/\s+/gu, " ").trim()} · ${steps} ${steps === 1 ? "step" : "steps"}`;
+}
 
 async function reportTurn(tx: Tx, kind: typeof planRunKind | typeof planResultKind, threadId: string, runId: string,
     text: string, fields: { stepId?: string; planId?: string; revision?: number; stepIds?: string[]; outcome?: string } = {}) {
@@ -285,6 +307,12 @@ export async function recoverPlanGeneration(h: Harness, ctx: Context) {
   // conversation-owned and must be canceled separately. Never continue it.
   const live = (await h.snapshot(LiveDoc, claim.owner, ctx))?.run;
   if (live?.first === run.turn.entry && live.inputs.includes(run.turn.submission)) await h.abortTask(live.taskId, ctx);
+}
+
+function chatRunView({ planId, revision }: Pin, run: PlanRun, state: Pick<PlanState, "progress" | "reports">): ChatRunView {
+  return { planId, revision, run: { ...run, stepIds: [...run.stepIds] },
+    progress: state.progress.map(p => ({ ...p, ...(p.evidence && { evidence: [...p.evidence] }) })),
+    reports: state.reports?.map(r => ({ ...r })) ?? [] };
 }
 
 async function finishRun(tx: Tx, planId: string, state: PlanState, outcome: Exclude<PlanRunState, "running">, message?: string) {
@@ -312,6 +340,13 @@ async function finishRun(tx: Tx, planId: string, state: PlanState, outcome: Excl
         ?? (outcome === "done" ? "No task outcomes reported." : undefined);
       await reportTurn(tx, planResultKind, row.threadId, row.id,
         `${label}${state.run.failure ? "\n" + state.run.failure : ""}${details ? "\n" + details : ""}`, { outcome });
+      const activity = await tx.doc(ChatActivity, thread(row.threadId));
+      const index = activity.pending.findIndex(r => r.runId === row.id);
+      if (index >= 0) {
+        activity.pending.splice(index, 1);
+        activity.last = chatRunView({ planId, revision: state.revision }, state.run, state);
+        activity.cursor = cursor();
+      }
     } else if (row.turns) {
       const foreground = await tx.doc(PlanForeground, thread(row.threadId));
       if (String(foreground.run?.id) === row.id) delete foreground.run;
@@ -345,7 +380,7 @@ async function verifyStep(tx: Tx, planId: string, state: PlanState, stepId: stri
   return next;
 }
 
-function coordinator(name: typeof scopedTask | typeof fixtureTask, files?: PlanFiles, acceptance?: PlanAcceptance) {
+function coordinator(name: typeof scopedTask | typeof planFixtureTaskKind, files?: PlanFiles, acceptance?: PlanAcceptance) {
   return defineTask<RunInput, Phase, null>({
     name, version: name === scopedTask ? 2 : 1, initial: () => next.checkpoint,
     ...(name === scopedTask && { migrate(input: unknown, checkpoint: unknown, fromVersion: number) {
@@ -558,7 +593,7 @@ function coordinator(name: typeof scopedTask | typeof fixtureTask, files?: PlanF
   });
 }
 
-const executeFixture = coordinator(fixtureTask);
+const executeFixture = coordinator(planFixtureTaskKind);
 export const fixtureExtensions = [defineExtension({ name: "hush-faux-plan-execution", tasks: [executeFixture] }), worker];
 // Keep the task kind registered even without file execution so a restart can
 // settle an interrupted Run without authorizing a write.
@@ -757,11 +792,11 @@ export class Plans implements PlanHost, PlanChatHost {
       settled && ((state, abort) => settled(abort).then(() => state)));
   }
 
-  // Upgrade earlier stores once without opening conversations or repinning forks.
-  // This is off the startup path. New authoring already updates the index in its commit.
+  // Upgrade earlier stores (including summaries without active run order) once
+  // without opening conversations or repinning forks. This is off the startup path.
   async #indexExistingPlans() {
     const h = this.harness, ctx = BACKGROUND_CONTEXT;
-    if ((await h.snapshot(CatalogReady, ctx))?.ready) return;
+    if ((await h.snapshot(CatalogReady, ctx))?.runOrder) return;
     let continuation: Cursor | undefined;
     do {
       const page = await this.storage.scanDocuments({ scope: { kind: "session" }, at: "current", kind: State.definition.kind }, 32, continuation, ctx);
@@ -771,13 +806,13 @@ export class Plans implements PlanHost, PlanChatHost {
       }, ctx);
       continuation = page.next;
     } while (continuation);
-    await h.commit(async tx => { (await tx.doc(CatalogReady)).ready = true; }, ctx);
+    await h.commit(async tx => { Object.assign(await tx.doc(CatalogReady), { ready: true, runOrder: true }); }, ctx);
   }
 
   async workspace(q: PlanWorkspaceQuery, signal: AbortSignal, chat = false) {
     const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const cwd = await this.harness.commit(tx => this.#threadWorkspace(tx, thread(q.threadId)), ctx);
-    return this.#workspacePage(cwd, q, signal, chat);
+    return this.#workspacePage(cwd, q, signal, chat, q.threadId);
   }
 
   async workspaceAt(q: PlanWorkspaceAt, signal: AbortSignal, browse = false) {
@@ -803,16 +838,13 @@ export class Plans implements PlanHost, PlanChatHost {
     return cwd;
   }
 
-  async #workspacePage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean) {
+  async #workspacePage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean, threadId?: string) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     await this.#ensureCatalog(signal);
     if (!(await h.snapshot(WorkspaceCatalog, cwd, ctx))) await h.commit(tx => tx.doc(WorkspaceCatalog, cwd, null), ctx);
-    const token = (catalog: Readonly<WorkspacePlans>) => createHash("sha256").update(`${catalog.cursor}:${q.page}:${chat}`).digest("hex");
+    const token = (catalog: Readonly<WorkspacePlans>) => createHash("sha256").update(JSON.stringify([catalog.cursor, q.page, chat, threadId])).digest("hex");
     const catalog = await observed(observer => h.observeDoc(WorkspaceCatalog, cwd, observer, ctx), token, q.after, signal);
-    const ordered = catalog.rows.slice().reverse().sort((a, b) => Number(a.closed) - Number(b.closed));
-    const first = q.page * planWorkspacePageSize;
-    const plans = ordered.slice(first, first + planWorkspacePageSize).map(row => projectPlanSummary(row, chat));
-    return { revision: token(catalog), plans, more: ordered.length > first + planWorkspacePageSize };
+    return { revision: token(catalog), ...planInventoryPage([[undefined, catalog.rows]], q.page, chat, threadId) };
   }
 
   #ensureCatalog(signal: AbortSignal) {
@@ -822,14 +854,14 @@ export class Plans implements PlanHost, PlanChatHost {
   async catalog(q: PlanWorkspaceQuery, signal: AbortSignal, chat = false) {
     const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const cwd = await this.harness.commit(tx => this.#threadWorkspace(tx, thread(q.threadId)), ctx);
-    return this.#catalogPage(cwd, q, signal, chat);
+    return this.#catalogPage(cwd, q, signal, chat, q.threadId);
   }
 
-  async #catalogPage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean) {
+  async #catalogPage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean, threadId?: string) {
     await this.#ensureCatalog(signal);
     const { kind, version } = WorkspaceCatalog.definition;
     const index = this.#allWorkspaces ??= new PlanCatalog(this.harness, this.storage, kind, version);
-    return index.page(cwd, q.page, q.after, signal, chat);
+    return index.page(cwd, q.page, q.after, signal, chat, threadId);
   }
 
   async history(q: PlanHistoryQuery, signal: AbortSignal, chat = false, browse = false, worktrees = false) {
@@ -910,20 +942,9 @@ export class Plans implements PlanHost, PlanChatHost {
     const availability = (state: Readonly<PlanState>) => workspace !== undefined || !compatible(state) ? "disabled"
       : owner === undefined || !state.members.includes(owner) ? "unbound" : state.fixture ? "fixture" : this.scoped ? "scoped" : "disabled";
     const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}:${showChatFields(state)}:${workspace ?? ""}`).digest("hex");
-    // An unexpected task fault may settle without running its abort callback.
-    // Race its receipt against the head update; neither wait survives detach.
     const settle = (state: Readonly<PlanState>, abort: AbortSignal) => {
       if (workspace !== undefined || state.run?.state !== "running" || !compatible(state)) return;
-      const task = Number(state.run.id) as TaskId, context = withAbortSignal(abort, BACKGROUND_CONTEXT);
-      return h.waitForTask(task, context).then(async () => {
-        await h.commit(async tx => {
-          const head = await tx.doc(State, planId, null);
-          if (state.run?.id === head.run?.id && head.run?.state === "running") {
-            await failRun(tx, planId, head, "Run interrupted. Inspect changes before retrying.");
-          }
-        }, context);
-        return await h.snapshot(State, planId, context) ?? state;
-      });
+      return this.#settleRun(planId, state.run.id, abort).then(async () => await h.snapshot(State, planId, ctx) ?? state);
     };
     const state = await observed(observer => h.observeDoc(State, planId, observer, ctx), token, after, signal, settle);
     if (!named && owner !== undefined && !state.members.includes(owner)) return this.wait(String(owner), undefined, signal, undefined, chat);
@@ -937,6 +958,44 @@ export class Plans implements PlanHost, PlanChatHost {
       ...(workspace !== undefined && { workspace }), ...(showChat && { reports: state.reports ?? [] }),
       ...(showChat && workspace === undefined && { chat: true as const }),
       ...(verifiedCount(state) === plan.steps.length && { complete: true as const }) };
+  }
+
+  // An unexpected task fault may settle without its abort callback. Both
+  // watches race the task's receipt against doc updates, and detach on EOF.
+  async #settleRun(planId: string, runId: string, signal: AbortSignal) {
+    const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    await h.waitForTask(Number(runId) as TaskId, ctx);
+    await h.commit(async tx => {
+      const head = await tx.doc(State, planId, null);
+      if (head.run?.id === runId && head.run.state === "running") {
+        await failRun(tx, planId, head, "Run interrupted. Inspect changes before retrying.");
+      }
+    }, ctx);
+  }
+
+  async activity(id: string, after: string | undefined, signal: AbortSignal): Promise<PlanSnapshot> {
+    const h = this.harness, owner = thread(id), ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    if (!(await h.snapshot(ChatActivity, owner, ctx))) await h.commit(async tx => {
+      await checkThread(tx, owner);
+      await tx.doc(ChatActivity, owner);
+    }, ctx);
+    await observed<ChatActivity>(observer => h.observeDoc(ChatActivity, owner, observer, ctx), a => a.cursor, after, signal,
+      (a, abort) => {
+        const ref = a.pending[0];
+        if (ref) return this.#settleRun(ref.planId, ref.runId, abort).then(() => a);
+      });
+    const { cursor, view } = await h.commit(async tx => {
+      const { cursor, pending, last } = await tx.doc(ChatActivity, owner);
+      const ref = pending[0];
+      if (!ref) return { cursor, view: last && chatRunView(last, last.run, last) };
+      const state = await tx.doc(State, ref.planId, null);
+      if (state.revision !== ref.revision || state.run?.id !== ref.runId) throw new WireError("internal");
+      return { cursor, view: chatRunView(ref, state.run, state) };
+    }, ctx);
+    const base = { revision: cursor, runAvailability: "disabled" as const };
+    if (!view) return { ...base, plan: null, progress: [], run: null };
+    const { planId, revision, ...activity } = view;
+    return { ...base, ...activity, plan: await this.#definition({ planId, revision }, ctx), chat: true as const };
   }
 
   async attach(q: PlanAttachment, signal: AbortSignal, replace = false) {
@@ -1145,12 +1204,15 @@ export class Plans implements PlanHost, PlanChatHost {
     await configure(tx, owner, chat.agent);
     const submission = await target.submit(tx, { type: "input", whenBusy: "followUp", content,
       entry: { kind: planChatKind, data: { planId: q.planId, revision: q.revision, timestampMs: Date.now(),
-        text: `Plan run · ${plan.title} · r${q.revision}\nSelected: ${steps.map(s => s.title).join(", ")}` } } });
+        text: planRunHeading(plan, stepIds.length) } } });
     const tracker = await tx.createTask(chat.task, { planId: q.planId, revision: q.revision, submission },
       { ownership: { kind: "conversation" }, conversationId: owner, background: true });
     const id = String(tracker);
     delete state.halt;
     state.run = { id, stepIds, state: "running", chat: true, ownerThreadId: q.threadId, submissionId: String(submission) };
+    const activity = await tx.doc(ChatActivity, owner);
+    activity.pending.push({ planId: q.planId, revision: q.revision, runId: id });
+    activity.cursor = cursor();
     (await tx.doc(RunLog, q.planId, null)).runs.push({ id, revision: q.revision, threadId: q.threadId, stepIds, state: "running", chat: true,
       ...(worktree && { worktree: true as const }), workers: [] });
     receipts.push({ requestId: q.requestId, receipt: { runId: id, chat: true, planId: q.planId, revision: q.revision, stepIds: q.stepIds } });
@@ -1272,9 +1334,11 @@ export class Plans implements PlanHost, PlanChatHost {
         claim.taskId = id;
         claim.owner = owner;
         (await tx.doc(PlanForeground, owner)).run = { id: taskId };
-        await reportTurn(tx, planRunKind, q.threadId, id, `Plan run · ${plan.title} · r${q.revision}\nSelected: ${steps.map(s => s.title).join(", ")}`,
+        await reportTurn(tx, planRunKind, q.threadId, id, planRunHeading(plan, stepIds.length),
           { planId: q.planId, revision: q.revision, stepIds });
       }
+      // A previously failed task is pending again when selected for retry.
+      state.progress = state.progress.filter(p => p.state !== "failed" || !stepIds.includes(p.stepId));
       state.run = { id, stepIds, state: "running", ...(scoped && { ownerThreadId: q.threadId }) };
       (await tx.doc(RunLog, q.planId, null)).runs.push({ id, revision: q.revision, threadId: q.threadId,
         stepIds: stepIds.slice(), state: "running", workers: [], ...(scoped && { turns: [] }) });

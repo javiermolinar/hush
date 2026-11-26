@@ -7,6 +7,7 @@ export const planWorkspaceVersion = 1;
 export const planCatalogVersion = 1;
 export const planDraftVersion = 1;
 export const planChatVersion = 1;
+export const planChatActivityVersion = 1;
 export const planWorktreeVersion = 1;
 export const planPreviewKind = "hush.plan.preview";
 export const planPreviewSavedKind = "hush.plan.preview-saved";
@@ -95,6 +96,7 @@ export interface PlanHost {
 export type PlanWorkspaceAt = Omit<PlanWorkspaceQuery, "threadId"> & { cwd: string };
 export type PlanInspectAt = { cwd: string; planId: string; after?: string };
 export interface PlanChatHost {
+  activity?(threadId: string, after: string | undefined, signal: AbortSignal): Promise<PlanSnapshot>;
   runInChat(selection: PlanSelection, signal: AbortSignal): Promise<{ runId: string }>;
   workspaceAt(query: PlanWorkspaceAt, signal: AbortSignal, browse?: boolean): Promise<PlanWorkspace>;
   inspectAt(query: PlanInspectAt, signal: AbortSignal, browse?: boolean): Promise<PlanSnapshot>;

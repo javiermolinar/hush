@@ -28,7 +28,7 @@ Use one component for menus, pickers, and panels. Extend that component for vari
 5. **Consequence line:** start with the primary action in Strong and say what Enter will do now: `↵ Run 2 @ r1  Save a profile → Restore saved profiles · 2 unselected`. If Enter can't work, say why and change nothing.
 6. **Key line:** one line using the same vocabulary: `↑↓ move`, `space select`, `↵ primary action`, `/ filter`, `tab details`, `f full`, `esc back`. Show applicable actions only. Esc goes back exactly one level.
 
-Use `✓` for verified, `◐` for running, `○` for pending, `⏸` for parked or blocked, and `✗` for failed. Amber means live or needs attention; red means failed.
+Use `✓` for verified, `◐` for running, `○` for pending, `⏸` for parked or blocked, and `✗` for failed. Use amber for blocked or needs-attention states and red for failures. In plan UI, green is only for verified outcomes. Reported done uses a quiet `–`, pending uses a quiet `○`, and running uses amber (`●` on the strip).
 
 Settings is the only variant without a detail pane. Cycle values with `←→` and apply immediately; `u` undoes; `tab` switches between this thread and the default. Show a one-line description for the focused setting.
 

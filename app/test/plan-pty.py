@@ -85,10 +85,20 @@ try:
             os.write(master, b"\x1b[B ")
             wait_for("Run here Restore preferences")
             os.write(master, b"\r")
-            wait_for("Plan run finished", "reported done")
+            wait_for("Plan run finished", "reported done", "plan r1")
+            os.write(master, b"\x18ik")  # Inspect the unbound run without using the draft.
+            wait_for("Interface preferences · Plan · r1", "Run here finished")
         else:
             os.write(master, b"\x1b")
             wait_for("Workspace plans")
+    elif mode == "historical":
+        wait_for("ask anything")
+        submit("/plan")
+        wait_for("Workspace plans", "Workspace profiles revised", "p pinned revision")
+        os.write(master, b"p")
+        wait_for("Workspace profiles · Plan · r1", "Pinned revision · cannot run")
+        os.write(master, b" ws\r\x1b")
+        wait_for("Workspace plans", "Workspace profiles revised")
     elif mode == "worktree":
         def pick_restore(count):
             os.write(master, b"/plan")
@@ -134,7 +144,7 @@ try:
         wait_for("all workspaces", "Interface preferences", "Read-only", "source-", "checkout", "preview")
         os.write(master, b"\r")
         wait_for("Save preferences", "Read-only")
-        os.write(master, b"ac s\r\x1b")
+        os.write(master, b"ac ws\r\x1b")
         wait_for("all workspaces")
         os.write(master, b"\x1b")
     elif mode == "preview":
@@ -153,7 +163,8 @@ try:
         open_plan("Interface preferences", "0/2 verified · r1")
         wait_for("Interface preferences · Plan · r1", "Select tasks to run here", "Pending")
         os.write(master, b"\x1b[B")
-        wait_for("Restore preferences", "Load the saved preferences")
+        # The renderer can reuse the unchanged suffix " preferences." from the prior row.
+        wait_for("Restore preferences", "Load the saved", "Round-trip preserves the selected theme")
         os.write(master, b"v")
         wait_for("Plan review · r1 · Interface preferences", "No review yet", "Start review")
         os.write(master, b"\r")

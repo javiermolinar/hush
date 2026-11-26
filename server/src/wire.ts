@@ -10,7 +10,7 @@ export const durableID = (v: unknown): v is string =>
   typeof v === "string" && /^[1-9][0-9]{0,15}$/.test(v) && String(Number(v)) === v && Number.isSafeInteger(Number(v));
 
 type Model = { provider: string; modelId: string };
-type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type Thread = { threadId: string };
 export type ExplicitRange = { kind: "before"; beforeEntryId: string | null }
   | { kind: "after"; afterEntryId: string | null; throughEntryId: string | null };

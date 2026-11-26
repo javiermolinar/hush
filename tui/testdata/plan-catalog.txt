@@ -4,14 +4,14 @@
 
 
 
-
-
-
-
-  Workspace plans · src ────────────────────────────────────────────────────────────────────── 3 plans
-  Open plans                                         │ Review history
-    ◐ Workspace profiles               Running       │ 2/5 verified · r7
-    ⏸ Track config files               Needs check   │
+  Workspace plans · src ────────────────────────────────────────────────────────────────────── 6 plans
+  Closing plan                                       │ Review history
+    ◐ Workspace profiles               Closing       │ 2/5 verified · r7
+  Open plans                                         │
+    ✗ Track config files               Needs check   │
+    – Apply settings                   Reported done │
+    ✓ Restore settings                 Complete      │
+    ○ Write documentation              Pending       │
   Closed plans                                       │
   › ⏸ Review history                   Closed        │
 

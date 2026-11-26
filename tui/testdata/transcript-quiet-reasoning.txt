@@ -13,7 +13,7 @@
   ── go  copy     ────────────────────────
     func main() { println(42) }
   ────────────────────────────────────────
-  Thought
+  Thought ▾
   Reasoning heading
 
   Quiet words and the guide.

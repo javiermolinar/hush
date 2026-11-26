@@ -105,6 +105,7 @@ func TestFrameGeometry(t *testing.T) {
 	t.Run("thread-picker", testThreadPickerFrameGeometry)
 	t.Run("loaded-context", testLoadedContextFrameGeometry)
 	t.Run("plan-picker", testPlanFrameGeometry)
+	t.Run("plan-strip", testPlanStripFrameGeometry)
 	t.Run("plan-preview", testPlanPreviewFrameGeometry)
 	t.Run("plan-review", testPlanReviewFrameGeometry)
 	t.Run("configuration", testConfigFrameGeometry)
@@ -421,8 +422,10 @@ func TestInlineMaterialsKeepTheirOwnCells(t *testing.T) {
 						if cell.Style.Underline != uv.UnderlineStyleSingle || cell.Style.Bg != nil || cell.Style.Fg != nil {
 							t.Fatalf("bad web link cell: %+v", cell)
 						}
-					case cell.Style.Bg != nil || cell.Style.Attrs&uv.AttrBold != 0:
-						if (mode == FillOn) != (cell.Style.Bg != nil) || cell.Style.Fg != nil || cell.Style.Underline != uv.UnderlineStyleNone {
+					case cell.Style.Attrs&uv.AttrBold != 0:
+						t.Fatalf("inline code without a link is not Strong: %+v", cell)
+					case cell.Style.Bg != nil:
+						if mode != FillOn || cell.Style.Fg != nil || cell.Style.Underline != uv.UnderlineStyleNone {
 							t.Fatalf("bad chip cell: %+v", cell)
 						}
 						if cell.Content != " " {

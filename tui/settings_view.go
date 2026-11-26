@@ -5,7 +5,6 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
-	x "github.com/javiermolinar/hush/tui/extension"
 )
 
 func modelRef(model sdk.Model) string {
@@ -146,9 +145,8 @@ func (m *Model) configDockRows(d *dialog, w, n int) menuFrame {
 		for i := lo; i < hi; i++ {
 			value := values[i]
 			focus := configSetting(i) == p.selected
-			label, cursor := value.title, "  "
+			label, cursor := value.title, m.cursorMark(focus)
 			if focus {
-				cursor = m.paint(x.Accent, "› ")
 				label = strongText(label)
 			}
 			text := fit(cursor+label, labels) + "  " + ansi.Truncate(oneLine(value.value), max(0, w-labels-2), "…")

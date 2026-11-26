@@ -7,8 +7,9 @@ import type { PlanDefinition } from "../../server/src/plan.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { notePlanReviewChange, readPlanRevision, type Plans, type PlanSources } from "./plan.js";
 import type { PlanRunModel } from "./plan-turn.js";
+import { admitToolProfile } from "./tool-policy.js";
 
-const taskKind = "hush.plan-review";
+export const planReviewTaskKind = "hush.plan-review";
 const settled = "review-settled";
 const reviewTimeout = 180_000;
 const attemptLimit = 4;
@@ -107,14 +108,16 @@ type Phase = { phase: "open" } | { phase: "submit"; reviewer: ConversationId } |
   | { phase: "settle"; reviewer: ConversationId; submission: SubmissionId; deadline: number };
 
 const reviewTask = defineTask<Pin, Phase, null>({
-  name: taskKind, version: 1, initial: () => ({ phase: "open" }),
+  name: planReviewTaskKind, version: 1, initial: () => ({ phase: "open" }),
   phases: {
     open: (task, runtime, ctx) => runtime.commit(async tx => {
       const row = await attempt(tx, task.input, task.id);
       if (!row) return ended;
       // Fresh child, not a fork. Replace the inherited loadout in the creating
       // commit, before there is any provider input or callable tool.
-      const { id } = await tx.createConversation({ ownership: { kind: "task", taskId: task.id } });
+      const child = await tx.createConversation({ ownership: { kind: "task", taskId: task.id } });
+      const { id } = child;
+      await admitToolProfile(tx, child, { kind: "reviewer", target: { kind: "plan", ...task.input } });
       await configure(tx, id, { extensions: [], tools: [], modelTools: [], cwd: null, compaction: { enabled: false }, maxTurns: 1,
         instructions, model: row.model, thinkingLevel: row.thinking });
       row.reviewerThreadId = String(id);
@@ -219,7 +222,7 @@ export class PlanReviews implements PlanReviewHost {
       }
       if (row?.state === "complete") throw invalid("This revision already has a review.");
       if (attempts.length >= attemptLimit) throw new WireError("limit");
-      const { items: [active] } = await tx.scanTasks({ kind: taskKind, conversationId: owner, order: "descending" }, 1);
+      const { items: [active] } = await tx.scanTasks({ kind: planReviewTaskKind, conversationId: owner, order: "descending" }, 1);
       if (active && active.state.status !== "terminal") throw new WireError("busy");
       const { model, thinkingLevel = "off" } = await tx.doc(AgentDoc, owner);
       if (!model) throw invalid("Choose a model for this thread before starting a review.");

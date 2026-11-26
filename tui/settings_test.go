@@ -241,7 +241,7 @@ func TestReasoningExpandedIndependentOfToolDetails(t *testing.T) {
 	s.streamRevision++
 	m.Update(tea.WindowSizeMsg{Width: 84, Height: 20})
 
-	if rows := m.blockRows(s, len(s.visibleIDs()), 80); strings.Contains(ansi.Strip(rowsText(rows)), "Live reasoning") {
+	if rows := m.blockRows(s, len(s.shown), 80); strings.Contains(ansi.Strip(rowsText(rows)), "Live reasoning") {
 		t.Fatal("folded mode exposed live reasoning")
 	}
 	m.applySettings(sdk.SettingsSnapshot{Model: configModel().Model, ThinkingLevel: "high", Reasoning: sdk.ReasoningExpanded})
@@ -253,7 +253,7 @@ func TestReasoningExpandedIndependentOfToolDetails(t *testing.T) {
 	if !strings.Contains(ansi.Strip(rowsText(rows)), "Inspect the stored reasoning") {
 		t.Fatalf("committed reasoning missing: %s", rowsText(rows))
 	}
-	live := m.blockRows(s, len(s.visibleIDs()), 80)
+	live := m.blockRows(s, len(s.shown), 80)
 	if !strings.Contains(ansi.Strip(rowsText(live)), "Live reasoning") {
 		t.Fatalf("live reasoning missing: %s", rowsText(live))
 	}

@@ -94,6 +94,33 @@ resolves for the active thread’s next submission. The inspector lists paths,
 not contents. Hush [discovers skills](backend/README.md#standalone-skills) from
 personal roots and trusted workspaces. Use `/skills` to stage one without submitting.
 
+## Request an independent code review
+
+Use `hush review start` to review exact files in a trusted thread's dirty checkout:
+
+```sh
+hush review start --thread 7 --request-id api-review --tracked src/api.go \
+  --untracked src/new_test.go --reviewer 'API=Check the error paths.' \
+  --check 'errors=Inspect error handling on the pinned change' \
+  --evidence 'tests:Local test excerpt=3 tests passed'
+hush review status --thread 7 --request-id api-review
+```
+
+The backend pins the staged and unstaged versions and posts one advisory result
+per worker in the parent thread. It does not start another parent turn by default.
+Pass a second `--reviewer` (or use one or two `--brief` flags instead) to request
+two reviews, and `--parallel` to let them overlap.
+Pass `--prompt 'Launch the reviewers and join their results before answering'` to
+start an explicit parent turn that can spawn and join the reserved workers.
+Click the worker count or press `ctrl+x i j` in the parent thread to inspect
+briefs, pinned evidence, and advisory reports. Enter opens a read-only transcript
+from the evidence panel. Where Rex is available, `o` opens that transcript in a
+right pane. Use `x` in the evidence panel or `hush review stop HANDLE --thread 7`
+to stop just that worker. Closing a panel or pane does not stop work.
+Retry a lost launch reply with the same request ID and arguments. Supplied test
+excerpts are not rerun, and review does not verify or approve work. See the
+[native review contract](protocol/v1/delegation.md).
+
 ## TUI themes
 
 Hush uses the terminal palette by default. Open `/theme` (or `?` → **Themes**) and use ↑/↓ or

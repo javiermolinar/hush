@@ -122,8 +122,13 @@ test("managed format-1 compatibility is opt-in and preserves identity and histor
   ok(await hello());
   const identity = ok(await connection.send("ext.storeIdentity.get", {}));
   const { id } = ok(await connection.send("ext.threadDirectory.new", { title: "Retained format-1 thread" }));
-  const input = await submit(connection, id, "existing prompt", "legacy-1");
-  assert.equal((await wait(connection, id, input.submissionId)).status, "done");
+  // Seed plain predecessor-compatible history, not a format-2 plan/policy
+  // turn relabeled as a legacy record. Native admission would set that loadout.
+  const thread = await app.harness.conversation(Number(id), context);
+  await thread.configure({ extensions: [], tools: [] }, context);
+  const seeded = await thread.submit({ type: "input", content: "existing prompt", requestId: "legacy-1" }, context);
+  assert.equal((await seeded.wait(context)).status, "done");
+  const input = { submissionId: String(seeded.id) };
   await app.close();
 
   // Seed the legacy manifest shape on an otherwise identical schema and binding.

@@ -52,16 +52,17 @@ type modelCatalogDraftBackend interface {
 }
 
 type menuCapabilities struct {
-	token      uint64
-	features   x.Features
-	directory  bool
-	gitWatch   bool
-	files      bool
-	fileSearch bool
-	scopeWatch bool
-	skills     bool
-	skillDraft bool
-	context    bool
+	token            uint64
+	features         x.Features
+	directory        bool
+	gitWatch         bool
+	files            bool
+	fileSearch       bool
+	scopeWatch       bool
+	skills           bool
+	skillDraft       bool
+	context          bool
+	chatPlanActivity bool
 }
 
 // A cold backend can miss the startup probe, and a fresh session has no feed
@@ -142,8 +143,10 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, planWorkspace := m.backend.(planWorkspaceBackend)
 	_, planCatalog := m.backend.(planCatalogBackend)
 	_, planReview := m.backend.(planReviewBackend)
+	_, workers := m.backend.(workerActivityBackend)
 	_, planDraft := m.backend.(planDraftBackend)
 	_, planChat := m.backend.(planChatBackend)
+	_, chatPlanActivity := m.backend.(chatPlanActivityBackend)
 	_, planWorktree := m.backend.(planWorktreeBackend)
 	_, loadedContext := m.backend.(loadedContextBackend)
 	_, native := m.backend.(modelCatalogBackend)
@@ -152,7 +155,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, settings := m.backend.(settingsBackend)
 	native = native && m.options.Services.Models == nil
 	if !ok || !native && !titles && !directory && !worktrees && !archive &&
-		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings && !plans {
+		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings && !plans && !workers {
 		return nil
 	}
 	token := m.token()
@@ -200,6 +203,9 @@ func (m *Model) menuProbe() tea.Cmd {
 				}
 			}
 		}
+		if workers && hello.Capabilities["delegation"] == sdk.DelegationVersion && hello.Capabilities["workerActivity"] == sdk.WorkerActivityVersion {
+			f |= x.WorkerActivity
+		}
 		if settings && hello.Capabilities["settings"] == sdk.SettingsVersion {
 			f |= x.Settings
 		}
@@ -226,13 +232,14 @@ func (m *Model) menuProbe() tea.Cmd {
 		contextVersion := hello.Capabilities["loadedContext"]
 		searchable := fileVersion == sdk.WorkspaceFileSearchVersion || fileVersion == sdk.WorkspaceFileProjectPathsVersion
 		return menuCapabilities{token: token, features: f, directory: managed && directory,
-			gitWatch:   f.Has(x.GitDiff) && gitWatch && hello.Capabilities["gitDiffWatch"] == sdk.GitDiffWatchVersion,
-			scopeWatch: scopeWatch && hello.Capabilities["workspaceScopeWatch"] == sdk.WorkspaceScopeWatchVersion,
-			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || searchable),
-			fileSearch: files && fileSearch && searchable,
-			skills:     skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),
-			skillDraft: skillDraft && skillVersion == sdk.WorkspaceSkillDraftVersion,
-			context:    loadedContext && (contextVersion == sdk.LoadedContextAgentsVersion || contextVersion == sdk.LoadedContextVersion)}
+			chatPlanActivity: f.Has(x.PlanChat) && chatPlanActivity && hello.Capabilities["planChatActivity"] == sdk.PlanChatActivityVersion,
+			gitWatch:         f.Has(x.GitDiff) && gitWatch && hello.Capabilities["gitDiffWatch"] == sdk.GitDiffWatchVersion,
+			scopeWatch:       scopeWatch && hello.Capabilities["workspaceScopeWatch"] == sdk.WorkspaceScopeWatchVersion,
+			files:            files && (fileVersion == sdk.WorkspaceFilesVersion || searchable),
+			fileSearch:       files && fileSearch && searchable,
+			skills:           skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),
+			skillDraft:       skillDraft && skillVersion == sdk.WorkspaceSkillDraftVersion,
+			context:          loadedContext && (contextVersion == sdk.LoadedContextAgentsVersion || contextVersion == sdk.LoadedContextVersion)}
 	}
 }
 
@@ -570,6 +577,9 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 		}),
 		da("plan", "Open plan", "", "i n", "plan", x.Plans, func(_ x.Context, _ x.Invocation) x.Outcome {
 			return x.Outcome{x.Local{Op: openPlanOp}}
+		}),
+		da("plan-run", "Open current plan run", "", "i k", "", x.Plans, func(_ x.Context, v x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: openPlanRunOp, Text: v.Target}}
 		}),
 		da("loaded-context", "Show loaded context", "", "i a", "", x.LoadedContext, func(_ x.Context, _ x.Invocation) x.Outcome {
 			return x.Outcome{x.Local{Op: openLoadedContextOp}}

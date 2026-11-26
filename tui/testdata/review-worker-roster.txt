@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+  Review workers · This thread ───────────────────────────────────── 6 workers
+  › ◐ API reader              Running    │ API reader
+    • Regression reader       Reported   │ Running · Read pinned versions of
+    ⏸ Missing receipt         Unresolved │ api.go
+    ✗ Slow reader             Timed out  │
+    ○ Stopped reader          Cancelled  │
+    ✗ Unavailable reader      Failed     │
+
+  ↵ Inspect worker  Read brief, evidence, and report
+  ↑↓ move  tab details  f full  esc back
+
+  ────────────────────────────────────────────────────────────────── 6 workers
+  you › Unsent draft
+  Workspace workspace
+  › ○ workspace

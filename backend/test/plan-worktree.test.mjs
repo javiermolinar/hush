@@ -12,7 +12,7 @@ import { call, createRequest, draftArgs, planProvider } from "./plan-provider.mj
 
 const exec = promisify(execFile), prepare = "ext.planWorktree.prepare", start = "ext.planWorktree.start";
 const ok = f => { assert.equal(f.ok, true, JSON.stringify(f)); return f.result; };
-const caps = { plan: [1], planWorkspace: [1], planChat: [1], planCatalog: [1], planWorktree: [1], threadDirectory: [2] };
+const caps = { plan: [1], planWorkspace: [1], planChat: [1], planChatActivity: [1], planCatalog: [1], planWorktree: [1], threadDirectory: [2] };
 
 async function setup(t, answer, { name = "Preference round trip", inside = false, alternate = false } = {}) {
   const root = await realpath(await mkdtemp("/tmp/hush-plan-wt-"));
@@ -131,6 +131,10 @@ test("a named checkout runs the selected tasks only after explicit trust and rec
   assert.equal(settled.run.ownerThreadId, allocation.threadId);
   assert.deepEqual(settled.reports, reports);
   assert.deepEqual(settled.progress, []);
+  const activity = await b.rpc("ext.planChatActivity.wait", { threadId: allocation.threadId });
+  assert.deepEqual(activity.run, settled.run);
+  assert.equal(activity.plan.id, pick.planId);
+  assert.equal((await b.rpc("ext.plan.wait", { threadId: allocation.threadId })).plan, null);
   assert.ok(lost.p.frames.every(f => f.id !== "lost-start"));
   lost.p.close();
   await h.close();

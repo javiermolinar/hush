@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
 import { planFilePath, planScopeFileLimit, type PlanFileEdit } from "../../server/src/plan.js";
 import { object } from "../../server/src/wire.js";
+import { allowedExecutionPath, bindExecutionWorkspace, sameExecutionWorkspace, type ExecutionWorkspace } from "./execution-workspace.js";
 import type { WorkspaceTrust } from "./workspace-trust.js";
 
-export type PlanWorkspace = { cwd: string; root: string; device: string; inode: string; birth: string; grant: string };
+export type PlanWorkspace = ExecutionWorkspace;
 export type FileVersion = { hash: string; inode: string };
 export type Replacement = { oldText: string; newText: string };
 
@@ -18,10 +18,6 @@ export const validFileText = (text: string) => text.isWellFormed() && !text.incl
 const helperVersion = 2;
 const digest = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const sameVersion = (a: FileVersion, b: FileVersion) => a.hash === b.hash && a.inode === b.inode;
-const within = (from: string, to: string) => {
-  const path = relative(from, to);
-  return !isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`);
-};
 
 const failures = {
   scope: "Expected an existing, single-link plain UTF-8 file of at most 32 KiB in the declared scope.",
@@ -67,21 +63,17 @@ export class PlanFiles {
     return new PlanFiles(helper, trust, await Promise.all(protectedDirs.map(dir => realpath(dir))), changed);
   }
 
-  async bind(cwd: string, signal?: AbortSignal): Promise<PlanWorkspace> {
-    const w = await this.trust.binding(cwd, signal);
-    return { cwd, root: w.path, device: String(w.device), inode: String(w.inode), birth: String(w.birth), grant: w.stamp };
-  }
+  bind(cwd: string, signal?: AbortSignal) { return bindExecutionWorkspace(this.trust, cwd, signal); }
 
   async #check(w: PlanWorkspace, paths: readonly string[], signal?: AbortSignal) {
-    if (/(?:^|\/)\.git(?:\/|$)/i.test(w.root) || paths.some(path =>
-      !planFilePath(path) || this.protectedDirs.some(dir => within(dir, join(w.root, path))))) {
+    if (paths.some(path => !planFilePath(path) || !allowedExecutionPath(w.root, path, this.protectedDirs))) {
       throw new PlanFileError("The declared file is outside plan execution scope.");
     }
     const current = await this.bind(w.cwd, signal).catch(() => {
       signal?.throwIfAborted();
       throw new PlanFileError("Workspace trust is no longer valid. No replacement was applied.");
     });
-    if (current.root !== w.root || current.device !== w.device || current.inode !== w.inode || current.birth !== w.birth || current.grant !== w.grant) {
+    if (!sameExecutionWorkspace(current, w)) {
       throw new PlanFileError("Workspace trust changed since Run was authorized.");
     }
     signal?.throwIfAborted();

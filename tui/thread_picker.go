@@ -319,7 +319,7 @@ func threadPickerStatus(status x.ThreadStatus) (icon, label string, tone x.Tone)
 	case "":
 		return "", "", x.Plain
 	case x.Running:
-		return "◐", "Running", x.Warning
+		return "◐", "Running", x.Accent
 	case x.Parked:
 		return "⏸", "Parked", x.Warning
 	case x.Failed:
@@ -329,7 +329,7 @@ func threadPickerStatus(status x.ThreadStatus) (icon, label string, tone x.Tone)
 	case x.Done:
 		return "✓", "Done", x.Good
 	case x.Scheduled:
-		return "○", "Scheduled", x.Warning
+		return "○", "Scheduled", x.Muted
 	default:
 		return "○", "Idle", x.Muted
 	}

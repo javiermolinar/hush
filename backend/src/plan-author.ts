@@ -1,92 +1,19 @@
-import type { Context } from "@earendil-works/chord/context";
 import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
-import { defineDoc, defineExtension, defineTool, GenerationTask, hook, LiveDoc, ToolTask, UserEntry,
-  type ConversationId, type EntryId, type EntryRecord, type Harness, type Tx } from "@earendil-works/pi-durable";
-import { environmentInputKind } from "../../server/src/client-environment.js";
+import { defineExtension, defineTool, GenerationTask, hook, type Harness } from "@earendil-works/pi-durable";
 import { planFilePath, planFilePathPattern, planScopeFileLimit, planScopeWriteLimit, planScriptLimit, planStepID, planStepLimit, planThinkingLevels, type PlanStep } from "../../server/src/plan.js";
 import { WireError } from "../../server/src/wire.js";
 import type { PlanFiles } from "./plan-files.js";
-import { allowsPlanFileTool, inspectPlanTurn, isPlanFileTool, planTaskInstructions, planTurnTools } from "./plan-turn.js";
+import { planTaskInstructions, planTurnTools } from "./plan-turn.js";
+import { draftPrompt, draftProposalTool, draftSources, readPlanTool, type DraftMode } from "./plan-draft-intent.js";
+import { allowsTool, type ToolPolicy } from "./tool-policy.js";
 import { previewPlan, type DraftProposal } from "./plan-draft.js";
-import { currentPlan, hasChatAssignment, planReportName, planReportTool, planRevisionLimit, proposePlan, type PlanSources } from "./plan.js";
+import { currentPlan, hasChatAssignment, planReportName, planReportTool, planRevisionLimit, proposePlan } from "./plan.js";
 
-const readTool = "hush_plan_current", writeTool = "hush_plan_propose", previewTool = "hush_plan_preview";
-const planTool = (name: string) => name === readTool || name === writeTool || name === previewTool;
-type DraftMode = "save" | "preview";
-const authorTool = (mode: DraftMode) => mode === "preview" ? previewTool : writeTool;
-const allowsDraftTool = (mode: DraftMode, name: string) => name === "read" || name === readTool || name === authorTool(mode);
 const result = (text: string) => ({ output: [{ type: "text" as const, text }] });
 const failed = (text: string) => ({ ...result(text), isError: true });
 const workspaceUnavailable = "The workspace is not authorized for plan drafting.";
-const draftPrompt = "Start your request with ‘Create a plan …’ or ‘Revise the plan …’ to save a draft in /plan.";
 const advertised = `${draftPrompt} Start with ‘Preview a plan …’ to show a draft without saving it. Saving a plan does not authorize implementation. Do not write a Markdown file as a substitute for saving to /plan.`;
-const protectedPrompt = (mode: DraftMode) => `This request is for a draft only. You may inspect files to draft it. Do not implement, run commands, or edit files. Use ${readTool} to read the current plan before replacing a revision. Use baseRevision 0 for a new plan. A closed or completed plan cannot be revised. Create a separate plan only if the user asked for a new one. ${mode === "preview" ? "Show" : "Save"} structured tasks and acceptance checks with ${authorTool(mode)}, not in Markdown or as chat text alone. Describe outcomes and relevant checks in prose. Use dependencies and blockers only as helpful context. Tasks can run in chat with normal tools without declaring file scopes. If the user asks for isolated, verified edits, optionally specify edit.path and edit.contains for one exact replacement in an existing small text file, or scope.write (1–4 existing files), optional scope.read (maximum 8 files total), and scope.acceptance (label and JavaScript body). That body receives frozen files keyed by path, without tools, shell, imports, or network, and must return false before and true after. Isolated scopes cannot create files, write undeclared paths, or run project tests. ${mode === "preview" ? "After showing a preview, say it is not saved and point to Save to /plan. If that action is unavailable, ask the user to start a new message with ‘Create a plan from the preview above’." : "Once saved, tell the user to open /plan. If the save conflicts, report that the plan changed rather than overwriting it."}`;
-
-// Preview wording grants no authority to save. Both modes are based only on
-// placed user inputs, never on instructions in model or tool output.
-const explicitDraft = /^(?:(?:can|could|would|will) you\s+)?(?:please[ ,]+)?(?:plan\s*:|(?:create|draft|write|make|prepare|outline|propose|revise|update|amend|edit)\s+(?:(?:a|an|the|this|my|our)\s+)?(?:(?:new|existing)\s+)?plan(?=$|\s|:|[.,?!](?:\s|$)))/i;
-const previewDraft = /^(?:preview\s+|let['’]?s\s+(?:work\s+on\s+(?:(?:creating|drafting|writing)\s+)?|(?:create|draft|write)\s+))(?:(?:a|an|the|this|my|our)\s+)?(?:(?:new|existing)\s+)?plan(?=$|\s|:|[.,?!](?:\s|$))/i;
-const DraftTurn = defineDoc<{ first?: EntryId; mode?: DraftMode }>({
-  kind: "hush.plan-draft-turn", version: 1, scope: "conversation", history: "latest", fork: "initial",
-  initial: () => ({}), checkpointWhen: () => true,
-});
-
-function draftInput(entry: EntryRecord | undefined, owner: ConversationId, fixture: boolean) {
-  if (!entry || entry.conversationId !== owner || !UserEntry.is(entry) && entry.kind !== environmentInputKind) return;
-  const msg = entry.model?.find(m => m.role === "user");
-  if (!msg) return;
-  const text = typeof msg.content === "string" ? msg.content : msg.content.filter(b => b.type === "text").map(b => b.text).join("\n");
-  const request = text.trimStart();
-  const mode: DraftMode | undefined = explicitDraft.test(request) || fixture && (request === "!plan-fixture" || request === "!plan-fixture-revise") ? "save"
-    : previewDraft.test(request) ? "preview" : undefined;
-  if (!mode) return;
-  const limit = 3000;
-  return { mode, entryId: String(entry.id), text: text.slice(0, limit).toWellFormed(),
-    partial: text.length > limit || typeof msg.content !== "string" && msg.content.some(b => b.type !== "text") };
-}
-
-async function draftSources(tx: Tx, owner: ConversationId, fixture: boolean): Promise<PlanSources> {
-  const { run } = await tx.doc(LiveDoc, owner);
-  const ids = new Set<EntryId>();
-  if (run?.first !== undefined) ids.add(run.first);
-  for (const id of run?.inputs ?? []) {
-    const row = await tx.submission(id);
-    if (row?.type === "input" && row.status === "placed" && row.conversationId === owner) ids.add(row.entry);
-  }
-  const inputs: PlanSources["inputs"] = [];
-  let partial = false;
-  // Never read tool output or unrelated chat as source requirements, even if
-  // the drafting model used that context.
-  for (const id of ids) {
-    const source = draftInput(await tx.entry(id), owner, fixture);
-    if (!source) continue;
-    inputs.push({ entryId: source.entryId, text: source.text });
-    partial ||= source.partial;
-  }
-  return { inputs, partial: partial || inputs.length === 0 };
-}
-
-// Use only placed inputs. Queued work cannot change the currently running
-// turn. Remember a recognized run by its first entry so later Continue
-// keeps the restriction even when the draft prompt arrived via steer.
-async function drafting(h: Harness, owner: ConversationId, fixture: boolean, ctx: Context) {
-  const prior = await h.snapshot(DraftTurn, owner, ctx);
-  return h.commit(async tx => {
-    const { run } = await tx.doc(LiveDoc, owner);
-    if (!run?.first) return;
-    if (run.first === prior?.first) return prior.mode ?? "save";
-    let mode = draftInput(await tx.entry(run.first), owner, fixture)?.mode;
-    for (const id of run.inputs) {
-      if (mode) break;
-      const row = await tx.submission(id);
-      if (row?.type === "input" && row.status === "placed" && row.conversationId === owner && row.entry !== run.first) {
-        mode = draftInput(await tx.entry(row.entry), owner, fixture)?.mode;
-      }
-    }
-    if (mode) Object.assign(await tx.doc(DraftTurn, owner), { first: run.first, mode });
-    return mode;
-  }, ctx);
-}
+const protectedPrompt = (mode: DraftMode) => `This request is for a draft only. Use workspace-relative paths to inspect small UTF-8 files. Do not implement, run commands, or edit files. Use ${readPlanTool} to read the current plan before replacing a revision. Use baseRevision 0 for a new plan. A closed or completed plan cannot be revised. Create a separate plan only if the user asked for a new one. ${mode === "preview" ? "Show" : "Save"} structured tasks and acceptance checks with ${draftProposalTool(mode)}, not in Markdown or as chat text alone. Describe outcomes and relevant checks in prose. Use dependencies and blockers only as helpful context. Tasks can run in chat with normal tools without declaring file scopes. If the user asks for isolated, verified edits, optionally specify edit.path and edit.contains for one exact replacement in an existing small text file, or scope.write (1–4 existing files), optional scope.read (maximum 8 files total), and scope.acceptance (label and JavaScript body). That body receives frozen files keyed by path, without tools, shell, imports, or network, and must return false before and true after. Isolated scopes cannot create files, write undeclared paths, or run project tests. ${mode === "preview" ? "After showing a preview, say it is not saved and point to Save to /plan. If that action is unavailable, ask the user to start a new message with ‘Create a plan from the preview above’." : "Once saved, tell the user to open /plan. If the save conflicts, report that the plan changed rather than overwriting it."}`;
 
 const stepID = { type: "string", pattern: "^[A-Za-z0-9_-]+$", maxLength: 64 } as const;
 const text = (maxLength: number) => ({ type: "string", minLength: 1, maxLength, pattern: "\\S" } as const);
@@ -123,9 +50,9 @@ function ordered(steps: readonly PlanStep[]) {
   return true;
 }
 
-export function planAuthor(harness: () => Harness, directory: (cwd?: string) => string, fixture: boolean, files?: PlanFiles) {
+export function planAuthor(harness: () => Harness, directory: (cwd?: string) => string, fixture: boolean, policy: ToolPolicy, files?: PlanFiles) {
   const current = defineTool({
-    name: readTool, description: "Read the saved plan, base revision and whether the revision is pinned. Does not edit or run anything.",
+    name: readPlanTool, description: "Read the saved plan, base revision and whether the revision is pinned. Does not edit or run anything.",
     parameters: { type: "object", properties: {}, additionalProperties: false } as const,
     callers: ["model"], replay: "safe", outputLimits: { maxBytes: 512 * 1024 },
     async execute(_args, api, ctx) {
@@ -137,7 +64,7 @@ export function planAuthor(harness: () => Harness, directory: (cwd?: string) => 
     },
   });
   const author = (mode: DraftMode) => defineTool({
-    name: authorTool(mode), description: mode === "preview"
+    name: draftProposalTool(mode), description: mode === "preview"
       ? "Show an unsaved structured plan preview in chat. Use baseRevision 0 for a new plan. The user can save it after inspecting it."
       : "Save a structured draft for an explicit /plan drafting request. Use baseRevision 0 for a new plan. Cannot start implementation.",
     parameters: draft, callers: ["model"], replay: mode === "preview" ? "safe" : "unsafe",
@@ -183,37 +110,19 @@ export function planAuthor(harness: () => Harness, directory: (cwd?: string) => 
     ...(!fixture ? [planReportTool] : []), ...(files ? planTurnTools(files) : [])], hooks: [
     hook(GenerationTask, { async beforeRequest({ messages }, api, ctx) {
       const tools = getCurrentTools(messages);
-      const scope = fixture ? undefined : await inspectPlanTurn(harness(), api.conversationId, { generation: api.taskId }, ctx);
-      if (!scope && !tools.some(t => planTool(t.name) || isPlanFileTool(t.name) || t.name === planReportName)) return;
-      const draft = !scope && await drafting(harness(), api.conversationId, fixture, ctx);
-      const chat = !scope && !draft && tools.some(t => t.name === planReportName) && await hasChatAssignment(harness(), api.conversationId, ctx);
+      const effective = await policy.prepare(api.conversationId, api.taskId, ctx);
+      const chat = effective.kind === "default" && tools.some(t => t.name === planReportName) && await hasChatAssignment(harness(), api.conversationId, ctx);
       const lastSystem = messages.findLastIndex(m => m.role === "system");
       const msg = messages[lastSystem];
       if (msg?.role !== "system") return; // Offering a tool requires a system entry.
-      const visible = (t: { name: string }) => scope ? scope.authorized && allowsPlanFileTool(t.name, scope.fileSet)
-        : draft ? allowsDraftTool(draft, t.name) : t.name === planReportName ? chat : !planTool(t.name) && !isPlanFileTool(t.name);
-      const instruction = scope ? scope.authorized ? planTaskInstructions(scope.fileSet) : "This plan task no longer has authority. Do not take further actions."
-        : draft ? `${advertised}\n\n${protectedPrompt(draft)}` : advertised;
-      // Durable dispatch uses the stored loadout. Filter the request and also
-      // check the scope when the tool is dispatched, including nested calls.
+      const visible = (t: { name: string }) => allowsTool(effective, t.name, false, chat);
+      const instruction = effective.kind === "planner" ? `${advertised}\n\n${protectedPrompt(effective.mode)}`
+        : effective.kind === "worker" && "plan" in effective ? planTaskInstructions(effective.plan.fileSet)
+        : effective.kind === "disabled" ? "This turn has no tool authority. Do not take further actions." : advertised;
       return { messages: messages.with(lastSystem, { ...msg, sections: { ...msg.sections, hushPlan: instruction },
         toolsAdded: msg.toolsAdded?.filter(visible),
         toolsRemoved: [...msg.toolsRemoved ?? [], ...tools.filter(t => !visible(t)).map(t => ({ name: t.name }))],
       }) };
-    } }),
-    hook(ToolTask, { async beforeTool(call, api, ctx) {
-      const scope = fixture ? undefined : await inspectPlanTurn(harness(), api.conversationId, { tool: api.taskId }, ctx);
-      if (scope) {
-        if (!scope.authorized || !allowsPlanFileTool(call.name, scope.fileSet) || call.parent) return { block: "This plan turn only permits the assigned file and replacement." };
-        return;
-      }
-      if (isPlanFileTool(call.name)) return { block: "No authorized plan task is running." };
-      if (call.name === "read") return;
-      const draft = await drafting(harness(), api.conversationId, fixture, ctx);
-      if (draft && !allowsDraftTool(draft, call.name)) return { block: draft === "preview"
-        ? "Plan previewing only permits reading and showing the draft." : "Plan drafting only permits reading and saving the draft." };
-      if (call.name === planReportName && call.parent) return { block: "Only the foreground plan turn can report its outcome." };
-      if (!draft && planTool(call.name)) return { block: draftPrompt };
     } }),
   ] });
 }

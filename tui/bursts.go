@@ -68,9 +68,6 @@ func (t *threadState) projectionAdd(ids []sdk.ID, appendOnly bool) {
 			if t.projectRecord(&t.projected, r) {
 				t.shown = append(t.shown, id)
 			}
-			if r.visible || r.readableThought {
-				t.detailShown = append(t.detailShown, id)
-			}
 		}
 		return
 	}
@@ -84,28 +81,22 @@ func (t *threadState) projectionAdd(ids []sdk.ID, appendOnly bool) {
 		hi++
 	}
 	from, to := indexEntry(t.shown, t.ids[lo]), len(t.shown)
-	detailFrom, detailTo := indexEntry(t.detailShown, t.ids[lo]), len(t.detailShown)
 	if hi < len(t.ids) {
 		to = indexEntry(t.shown, t.ids[hi])
-		detailTo = indexEntry(t.detailShown, t.ids[hi])
 	}
 	p := activityProjection{}
-	var visible, details []sdk.ID
+	var visible []sdk.ID
 	for _, id := range t.ids[lo:hi] {
 		r := t.entries[id]
 		if t.projectRecord(&p, r) {
 			visible = append(visible, id)
-		}
-		if r.visible || r.readableThought {
-			details = append(details, id)
 		}
 	}
 	if hi == len(t.ids) {
 		t.projected = p
 	}
 	t.shown = slices.Replace(t.shown, from, to, visible...)
-	t.detailShown = slices.Replace(t.detailShown, detailFrom, detailTo, details...)
-	if r := t.entries[t.anchor.id]; !t.following && r != nil && r.burstAnchor != "" && !r.visible && (!t.reasoningVisible() || !r.readableThought) {
+	if r := t.entries[t.anchor.id]; !t.following && r != nil && r.burstAnchor != "" && !r.visible {
 		t.anchor = rowAnchor{id: r.burstAnchor}
 	}
 }
@@ -117,9 +108,9 @@ func (r *record) startsTurn() bool {
 func (t *threadState) projectRecord(p *activityProjection, r *record) bool {
 	r.bursts, r.burstAnchor, r.afterBurst, r.cache = nil, "", 0, blockCache{}
 	r.voice = voiceAgent
-	r.readableThought = false
+	r.thoughts = 0
 	e := r.entry.Record
-	if e.Kind == planReviewEntry {
+	if e.Kind == planReviewEntry || e.Kind == sdk.ReviewNoticeKind {
 		// A background review does not break the current turn's tool burst.
 		r.visible = true
 		return true
@@ -167,7 +158,10 @@ func (t *threadState) projectRecord(p *activityProjection, r *record) bool {
 					}
 				}
 			case "thinking":
-				r.readableThought = r.readableThought || strings.TrimSpace(b.Text) != ""
+				if strings.TrimSpace(b.Text) != "" {
+					r.thoughts++
+					visible = true // one disclosure row even when reasoning is folded
+				}
 			case "omitted":
 				if b.Kind == "image" {
 					visible = true
@@ -366,7 +360,7 @@ func (m *Model) burstContent(ctx x.RenderContext, t *threadState, b *toolBurst) 
 		if result.Failed {
 			mark, tone = "✗ ", x.Danger
 		} else if rank < len(b.order[failedChild])+len(b.order[editedChild]) {
-			mark, tone = "✎ ", x.Warning
+			mark, tone = "✎ ", x.Muted
 		}
 		label := toolActionLabel(result)
 		meta := ""
@@ -433,9 +427,9 @@ func (b *toolBurst) summary(arrow string, width int) x.Line {
 		stats[commands] = x.Span{Text: fmt.Sprintf("ran %d", b.commands), Tone: x.Muted}
 	}
 	if n := len(b.files); n > 0 {
-		stats[edits] = x.Span{Text: "edited " + nounCount(n, "file"), Tone: x.Warning}
+		stats[edits] = x.Span{Text: "edited " + nounCount(n, "file"), Tone: x.Muted}
 	} else if n := len(b.order[editedChild]); n > 0 {
-		stats[edits] = x.Span{Text: nounCount(n, "edit"), Tone: x.Warning}
+		stats[edits] = x.Span{Text: nounCount(n, "edit"), Tone: x.Muted}
 	}
 	if b.proposals > 0 {
 		stats[proposals] = x.Span{Text: nounCount(b.proposals, "proposal"), Tone: x.Muted}
@@ -568,7 +562,7 @@ func activityOpenRow(label string, tone x.Tone, target, hover string, width int)
 	line := activityTarget(x.Line{{Text: label, Tone: tone}}, target, hover)
 	const hint = " · enter open"
 	if stringWidth(label)+stringWidth(hint) <= width {
-		line = append(line, x.Span{Text: hint})
+		line = append(line, x.Span{Text: hint, Tone: x.Muted})
 	}
 	return activityRow(line, "", width)
 }

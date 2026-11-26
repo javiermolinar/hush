@@ -117,7 +117,7 @@ func TestFrameBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing is not measured in short/race runs")
 	}
-	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "plan-picker", "plan-workspace", "plan-review", "image-preview", "queued-inputs", "expanded-reasoning",
+	for _, which := range []string{"idle", "streaming", "typing", "motion", "sheet", "thread-picker", "model-catalog", "palette", "long-idle", "long-scroll", "long-resize", "folded-tool-results", "expanded-tool-results", "footer-overflow", "directory-tabs", "live-tool", "full-tool-output", "rewind-preview", "git-diff", "workspace-trust", "file-picker", "file-search", "skill-slash", "skill-sheet", "loaded-context", "plan-picker", "plan-strip", "plan-workspace", "plan-review", "image-preview", "queued-inputs", "expanded-reasoning",
 		// Contract cases; they run after the others so their garbage can't skew them.
 		"replica-streaming", "typing-1k", "typing-4k", "typing-16k", "typing-folded-paste", "image-typing"} {
 		t.Run(which, func(t *testing.T) {
@@ -289,6 +289,9 @@ func TestFrameBudget(t *testing.T) {
 						view: sdk.PlanReviewView{Revision: 3, HeadRevision: 3, Review: &sdk.PlanReviewRecord{State: "complete", ReviewerThreadID: "24",
 							Report: &sdk.PlanReviewReport{Summary: "Acceptance is not fully specified.", Findings: findings}}}}})
 			}
+			if which == "plan-strip" {
+				installPlanStripFixture(m, s, 24)
+			}
 			if which == "plan-picker" {
 				planPickerFixture(m, s)
 				for len(s.plan.snapshot.Plan.Steps) < 24 {
@@ -415,6 +418,8 @@ func TestFrameBudget(t *testing.T) {
 				case "file-picker", "path-picker", "skill-slash", "skill-sheet":
 					keys := [...]tea.KeyPressMsg{{Code: '0', Text: "0"}, {Code: tea.KeyBackspace}}
 					msg = keys[i%len(keys)]
+				case "plan-strip":
+					msg = tea.KeyPressMsg{Code: []rune{tea.KeyUp, tea.KeyEscape}[i%2]}
 				case "plan-workspace":
 					msg = tea.KeyPressMsg{Code: tea.KeyDown}
 				case "plan-review":

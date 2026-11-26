@@ -13,6 +13,7 @@ import { createRegistry, defineDocFamily, Harness } from "@earendil-works/pi-dur
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { dial } from "../../server/test/client.mjs";
 import { startBackend } from "../../dist/hush-backend.mjs";
+import { planInventoryPage } from "../../dist/backend/src/plan-catalog.js";
 import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
 import { call, createRequest, draftArgs, editDraft, edits, executionRequest, fileSetBehavior, fileSetDraft, fileSetReference, fileSetRequest, planProvider, preparedFiles, reviewReport, scopedReply } from "./plan-provider.mjs";
 
@@ -56,7 +57,8 @@ async function layout(t) {
     return async (versions = [1], negotiated = true, draftVersions = [1], chatVersions = []) => {
       const peer = await dial(options.socket);
       peers.push(peer);
-      const hello = okay(await peer.send("hello", { versions: [1], capabilities: { plan: versions, planWorkspace: [1], planReview: [1], planDraft: draftVersions, ...(chatVersions.length && { planChat: chatVersions }), nativeStop: [1] } }));
+      const hello = okay(await peer.send("hello", { versions: [1], capabilities: { plan: versions, planWorkspace: [1], planReview: [1], planDraft: draftVersions, ...(chatVersions.length && { planChat: chatVersions }), planChatActivity: [1], nativeStop: [1] } }));
+      assert.equal(hello.capabilities.planChatActivity, hello.capabilities.planChat);
       assert.equal(hello.capabilities.plan, negotiated ? 1 : undefined);
       assert.equal(hello.capabilities.planDraft, negotiated && draftVersions.includes(1) ? 1 : undefined);
       assert.equal(hello.capabilities.planWorkspace, negotiated ? 1 : undefined);
@@ -144,18 +146,37 @@ test("Run here queues one native turn in the initiating thread without scoped ed
   const foreign = join(dirname(config.cwd), "other");
   await mkdir(foreign);
   assert.equal((await a.send("ext.planChat.workspace", { cwd: foreign, page: 0 })).ok, false, "untrusted cwd must not expose plans");
+  const newerThread = okay(await a.send("thread.new", {})).id;
+  await ask(a, newerThread, request, "make-newer-plan");
+  const { plan: newer } = await snapshot(a, newerThread);
   const threadId = okay(await a.send("thread.new", {})).id;
+  const list = (owner, after) => a.send("ext.planWorkspace.wait", { threadId: owner, page: 0, after }).then(okay);
   const selection = { threadId, planId: plan.id, revision: 1, stepIds: ["restore"], requestId: "run-here" };
   const run = (overrides = {}) => a.send("ext.planChat.run", { ...selection, ...overrides });
   const inspect = async after => okay(await a.send("ext.planWorkspace.inspect", { threadId, planId: plan.id, after }));
+  const activity = async (after, owner = threadId) => okay(await a.send("ext.planChatActivity.wait", { threadId: owner, after }));
+  const idle = await activity();
+  assert.equal(idle.plan, null);
+  assert.equal(idle.run, null);
+  assert.equal((await activity(undefined, source)).run, null);
   const threads = await listThreads();
   denied(await old.send("ext.planChat.run", selection), "unsupported_capability");
   denied(await run({ revision: 2 }), "invalid_request", /Plan changed/);
   await submit(a, threadId, "Stay in this thread", "busy-before-plan");
   await gated(busy.promise, "ordinary turn did not start");
+  const before = await list(threadId);
+  assert.deepEqual(before.plans.map(p => p.id), [newer.id, plan.id]);
+  const watch = list(threadId, before.revision);
   const canceled = okay(await run({ requestId: "close-queued" }));
+  const running = await watch;
+  assert.deepEqual(running.plans.map(p => p.id), [plan.id, newer.id], "an unbound Run here plan takes priority");
+  assert.deepEqual((await list(source, running.revision)).plans.map(p => p.id), [newer.id, plan.id], "another thread keeps its own order");
   const queued = await inspect();
   assert.equal(queued.run.id, canceled.runId);
+  const queuedActivity = await activity(idle.revision);
+  assert.deepEqual(queuedActivity.run, queued.run);
+  assert.equal(queuedActivity.plan.id, plan.id);
+  assert.equal(queuedActivity.runAvailability, "disabled");
   const submission = id => a.send("submission.get", { threadId, submissionId: id }).then(okay);
   assert.equal((await submission(queued.run.submissionId)).status, "queued");
   okay(await a.send("ext.planWorkspace.setClosed", { threadId, planId: plan.id, closed: true }));
@@ -163,6 +184,7 @@ test("Run here queues one native turn in the initiating thread without scoped ed
   let closed = await inspect();
   if (closed.run.state === "running") closed = await inspect(closed.revision);
   assert.equal(closed.run.state, "closed");
+  assert.deepEqual((await activity(queuedActivity.revision)).run, closed.run);
   okay(await a.send("ext.planWorkspace.setClosed", { threadId, planId: plan.id, closed: false }));
   const [receipt, retry] = (await Promise.all([run(), run()])).map(okay);
   assert.deepEqual(receipt, retry);
@@ -170,6 +192,9 @@ test("Run here queues one native turn in the initiating thread without scoped ed
   const admitted = await inspect();
   assert.equal((await submission(admitted.run.submissionId)).status, "queued");
   assert.deepEqual(await readdir(config.cwd), []);
+  const admittedActivity = await activity();
+  assert.deepEqual(admittedActivity.run, admitted.run);
+  const watchSettlement = activity(admittedActivity.revision);
   gate.resolve();
   let settled = await inspect();
   if (settled.run.state === "running") settled = await inspect(settled.revision);
@@ -177,13 +202,18 @@ test("Run here queues one native turn in the initiating thread without scoped ed
   assert.deepEqual(settled.run.stepIds, ["restore"]);
   assert.deepEqual(settled.reports, reports);
   assert.deepEqual(settled.progress, [], "an agent report isn't verification");
+  const finishedActivity = await watchSettlement;
+  assert.deepEqual(finishedActivity.run, settled.run);
+  assert.deepEqual(finishedActivity.reports, reports);
+  assert.deepEqual(finishedActivity.progress, []);
+  assert.deepEqual((await list(threadId)).plans.map(p => p.id), [newer.id, plan.id], "settlement restores normal order");
   assert.equal((await snapshot(a, threadId)).plan, null, "Run here doesn't change the binding");
   assert.deepEqual(await listThreads(), threads, "no new thread or task-owned worker");
   const transcript = await history(a, threadId);
   const input = transcript.filter(e => e.kind === "hush.plan.chat");
   assert.equal(input.length, 1);
   assert.equal(input[0].threadId, threadId);
-  assert.match(input[0].messages[0].blocks[0].text, /Selected: Restore preferences/);
+  assert.equal(input[0].messages[0].blocks[0].text, `Plan run · r1 · ${plan.title} · 1 step`);
   assert.ok(transcript.some(e => e.kind === "hush.plan.result" && e.messages[0].blocks[0].text.includes("reported done")));
   assert.equal((await history(a, source)).filter(e => e.kind === "hush.plan.chat").length, 0);
   assert.equal(await readFile(join(config.cwd, "restored.txt"), "utf8"), "theme=mocha\n");
@@ -200,11 +230,13 @@ test("Run here queues one native turn in the initiating thread without scoped ed
   const browse = { plan: [1], planWorkspace: [1], planCatalog: [1] };
   assert.deepEqual(okay(await catalog.send("hello", { versions: [1], capabilities: { ...browse, planChat: [1] } })).capabilities,
     { plan: 1, planWorkspace: 1, planCatalog: 1, planChat: 1 });
+  denied(await catalog.send("ext.planChatActivity.wait", { threadId }), "unsupported_capability");
   const query = { cwd: foreign, page: 0 };
   assert.equal((await catalog.send("ext.planChat.workspace", query)).ok, false, "a catalog does not grant launch-directory trust");
   await new WorkspaceTrust(config.agentDir).change(foreign, "grant", t.signal);
   const at = okay(await catalog.send("ext.planChat.workspace", query));
-  assert.deepEqual(at.plans.map(p => [p.id, p.workspace, p.verified, p.reportedDone]), [[plan.id, config.cwd, 0, 1]]);
+  assert.deepEqual(at.plans.map(p => [p.id, p.workspace, p.verified, p.reportedDone]),
+    [[newer.id, config.cwd, 0, undefined], [plan.id, config.cwd, 0, 1]]);
   const readonly = okay(await catalog.send("ext.planChat.inspect", { cwd: foreign, planId: plan.id }));
   assert.equal(readonly.workspace, config.cwd);
   assert.equal(readonly.runAvailability, "disabled");
@@ -221,15 +253,18 @@ test("Run here queues one native turn in the initiating thread without scoped ed
   denied(await catalog.send("ext.planChat.run", { ...selection, threadId: outsider }), "not_found");
   await catalogOnly.send("hello", { versions: [1], capabilities: browse });
   const limited = okay(await catalogOnly.send("ext.planCatalog.wait", { threadId: outsider, page: 0 }));
-  assert.equal(limited.plans[0].reportedDone, undefined);
+  assert.equal(limited.plans.find(p => p.id === plan.id).reportedDone, undefined);
   assert.equal(okay(await catalogOnly.send("ext.planWorkspace.inspect", foreignTarget)).run, null);
   assert.deepEqual(okay(await catalogOnly.send("ext.planWorkspace.history", foreignTarget)).runs, []);
   catalog.close();
   catalogOnly.close();
+  const fork = okay(await a.send("thread.fork", { threadId, atEntryId: input[0].id })).id;
+  assert.equal((await activity(undefined, fork)).run, null, "a fork inherits transcript, not live plan inputs");
   await stop();
   connect = await boot({ faux: false, model: provider.model });
   a = await connect([1], true, [1], [1]);
   assert.deepEqual(await log(), firstLog);
+  assert.deepEqual(await activity(), finishedActivity);
   assert.deepEqual(okay(await run()), receipt);
 });
 
@@ -596,6 +631,8 @@ test("scoped Run rejects unsafe targets and stops on an unverified task", { time
   denied(await run({ stepIds: ["notes"] }), "invalid_request", /different selection/);
   assert.equal(noProof.progress[0].workerThreadId, threadId);
   const transcript = await history(a, threadId);
+  const heading = transcript.find(entry => entry.kind === "hush.plan.run");
+  assert.equal(heading.messages[0].blocks[0].text, `Plan run · r1 · ${noProof.plan.title} · 2 steps`);
   const anchor = transcript.find(entry => entry.kind === "hush.plan.task");
   assert.equal(anchor.id, noProof.progress[0].entryId);
   assert.ok(transcript.some(entry => entry.kind === "hush.plan.result" && entry.messages[0].blocks[0].text.includes("not verified")));
@@ -706,6 +743,27 @@ for (const action of ["change file", "revoke trust", "stop", "restart"]) {
     }
   });
 }
+
+test("plan inventory promotes the thread's oldest active run before paging", () => {
+  const local = Array.from({ length: 48 }, (_, i) => ({
+    id: `local-${i}`, title: `Local plan ${i}`, revision: 1, verified: 0, total: 1, status: "pending", closed: false,
+  }));
+  const queued = { ...local[0], status: "running", activeRun: { id: "101", ownerThreadId: "12", chat: true } };
+  local[0] = queued;
+  const active = { ...local[1], id: "foreign", status: "running", closed: true, activeRun: { id: "99", ownerThreadId: "12", chat: true } };
+  const workspaces = [[undefined, local], ["/other", [active]]];
+  const first = planInventoryPage(workspaces, 0, true, "12");
+  const second = planInventoryPage(workspaces, 1, true, "12");
+  const { activeRun, ...summary } = active;
+  assert.deepEqual(first.plans[0], { ...summary, workspace: "/other" }, "run ownership is private even for the promoted row");
+  assert.equal(first.more, true);
+  assert.equal(second.more, false);
+  assert.deepEqual([...first.plans, ...second.plans].map(p => p.id), [active.id, ...local.map(p => p.id).reverse()]);
+  for (const [chat, owner] of [[true, "13"], [true, undefined], [false, "12"]]) {
+    assert.deepEqual(planInventoryPage(workspaces, 0, chat, owner).plans.map(p => p.id), local.map(p => p.id).reverse());
+    assert.equal(planInventoryPage(workspaces, 1, chat, owner).plans[0].id, active.id);
+  }
+});
 
 test("plan catalog browses other workspaces without carrying action authority", { timeout: 15_000 }, async t => {
   const { boot, stop, config } = await layout(t);
@@ -851,13 +909,21 @@ test("workspace plans stay visible with a durable run log through close, reopen 
   const idle = await list(peer);
   const started = list(peer, idle.revision);
   const first = okay(await sendRun(a, { ...selection, threadId: peer }));
-  assert.equal((await started).plans.find(p => p.id === planId).status, "running");
+  assert.deepEqual((await started).plans.map(p => [p.id, p.status]), [[planId, "running"], [second.planId, "pending"]]);
   await gated(staged.promise, "first edit was not staged");
   assert.equal((await log(peer)).runs[0].threadId, peer);
   okay(await closure(threadId, true));
   const closing = await detail(threadId);
   assert.equal(closing.closed && closing.settling, true);
-  assert.equal((await list(peer)).plans.at(-1).closed, true);
+  assert.equal((await list(threadId)).plans.at(-1).closed, true, "the bound plan runs in another thread");
+  const inventory = (await list(peer)).plans;
+  assert.equal(inventory[0].id, planId);
+  assert.equal(inventory[0].closed, true, "the closing run stays at the top for its owner");
+  const catalog = await dial(config.socket);
+  try {
+    okay(await catalog.send("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planCatalog: [1] } }));
+    assert.deepEqual(okay(await catalog.send("ext.planCatalog.wait", { threadId: peer, page: 0 })).plans, inventory);
+  } finally { catalog.close(); }
   denied(await sendRun(a, { ...selection, threadId: peer, requestId: "new-key" }), "invalid_request", /plan is closed/);
   // Reopening before the current task settles cannot revive the rest of its old selection.
   okay(await closure(threadId, false));

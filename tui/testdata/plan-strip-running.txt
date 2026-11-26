@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  Plan run · r3 · Tooling and delegation · 3 steps
+  ▸ plan r3  ✓●●○○○○○○○○○○○  1/14  Prove the Durable spawn and join contract +1                             ↑ peek
+  ◌ Waiting for model · 8s ───────────────────────────────────────────────────────── esc stop  ± 4 files  +82 −18*
+  steer ›
+  Workspace src
+  › ◐ src

@@ -74,19 +74,19 @@ func makeIntroInks(p *palette, mono, blend, trueColor bool) introInks {
 	if mono {
 		return v
 	}
-	accent, secondary := introPaint{ink: p.roles[roleAccent].ink}, introPaint{ink: p.roles[roleText].ink}
-	v.faint = introPaint{ink: p.roles[roleMuted].ink}
+	accent, secondary := introPaint{ink: p.roles[roleAccent].ink}, introPaint{ink: p.roles[roleNormal].ink}
+	v.faint = introPaint{ink: p.roles[roleQuiet].ink}
 	muted, border := v.faint, v.faint
 	if trueColor {
 		if c := p.swatch(roleAccent); c != nil {
 			accent = rgbPaint(c)
 		}
-		secondary = rgbPaint(p.swatch(roleText))
+		secondary = rgbPaint(p.swatch(roleNormal))
 		bg := rgbPaint(p.background)
-		reported := rgbPaint(p.swatch(roleMuted))
+		reported := rgbPaint(p.swatch(roleQuiet))
 		if blend && bg.hasRGB && secondary.hasRGB {
 			target := secondary
-			if p.roles[roleMuted].custom {
+			if p.roles[roleQuiet].custom {
 				target = reported
 			}
 			muted = mixIntro(bg, target, .63)
@@ -119,7 +119,7 @@ func (p *palette) fadeIntro(bg introPaint, role colorRole, text string, progress
 	}
 	// Fade secondary terminal labels from the normal ink, not ANSI bright black.
 	if role != roleAccent && role != roleError && role != roleWarning && !p.roles[role].custom {
-		role = roleText
+		role = roleNormal
 	}
 	ink := rgbPaint(p.swatch(role))
 	if !ink.hasRGB {

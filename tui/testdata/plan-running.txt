@@ -7,13 +7,13 @@
 
 
 
-
   Workspace profiles · Plan · r7 ──────────────────────────────────────────────────────────────────── 1/3 verified
     ✓ Save a profile                         Verified      │ Restore saved profiles
   › ◐ Restore saved profiles                 Running       │ Read the saved profile and restore its settings.
     ⏸ Document discovery                     Blocked       │ Needs     Save a profile
                                                            │ Check     Saved settings round-trip
                                                            │ Thinking  inherit → off
+                                                           │
 
   Plan · 1/2 verified · Restore saved profiles
   tab details  ↑↓ move  f full  esc back

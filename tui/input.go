@@ -432,6 +432,11 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 	}
+	if m.planPeek != "" || m.frame.planStrip != "" && (chord == "up" || chord == "enter") {
+		if handled, cmd := m.planStripKey(t, chord); handled {
+			return cmd
+		}
+	}
 	switch {
 	case key.Matches(k, shellKeys.send):
 		if len(m.editor.pastes) != 0 {
@@ -530,6 +535,12 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		m.quitting = true
 		return tea.Quit
 	case key.Matches(k, shellKeys.complete):
+		// File and slash completion retain Tab. An empty prompt has nothing
+		// to complete, so it can disclose the thought shown in the frame.
+		if m.editor.value() == "" && len(t.attachments) == 0 && !t.attaching && m.currentFrame() && m.frame.toggleThought != "" {
+			b := maxEffects
+			return m.invoke(m.route(m.active, coreID), extension.ActionRef{ID: expandRowID, Target: m.frame.toggleThought}, &b)
+		}
 		m.completeSlash()
 	case len(m.editor.pastes) != 0 && key.Matches(k, m.editor.area.KeyMap.CopySelection):
 		if start, end, ok := m.editor.selectionBytes(); ok {

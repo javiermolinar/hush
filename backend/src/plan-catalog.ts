@@ -5,14 +5,48 @@ import type { Cursor, Harness, Storage } from "@earendil-works/pi-durable";
 import { planWorkspacePageSize, type PlanSummary, type PlanWorkspace } from "../../server/src/plan.js";
 import { ChangePulse, observe } from "./workspace-changes.js";
 
-export type WorkspacePlans = { cursor: string; rows: PlanSummary[] };
+export type ActivePlanRun = { id: string; ownerThreadId: string; chat?: true };
+type WorkspacePlan = PlanSummary & { activeRun?: ActivePlanRun };
+export type WorkspacePlans = { cursor: string; rows: WorkspacePlan[] };
 
 // Persisted rows may come from another host build. Never spread storage
-// fields into the wire format; only the catalog supplies a foreign workspace.
-export function projectPlanSummary({ id, title, revision, total, verified, status, closed, reportedDone }: PlanSummary,
+// fields (including activeRun) into the wire format.
+function projectPlanSummary({ id, title, revision, total, verified, status, closed, reportedDone }: PlanSummary,
     chat: boolean, workspace?: string): PlanSummary {
   return { id, title, revision, total, verified, status, closed,
     ...(chat && reportedDone && { reportedDone }), ...(workspace !== undefined && { workspace }) };
+}
+
+export function planInventoryPage(workspaces: readonly (readonly [string | undefined, readonly WorkspacePlan[]])[],
+    page: number, chat: boolean, threadId?: string): Pick<PlanWorkspace, "plans" | "more"> {
+  // A thread can queue multiple Run here plans. Promote the oldest active
+  // run, like the chat activity feed, even if its plan is closing or foreign.
+  let first: { row: WorkspacePlan; workspace?: string } | undefined, oldest = Infinity;
+  if (threadId !== undefined) for (const [workspace, rows] of workspaces) for (const row of rows) {
+    const run = row.activeRun;
+    if (row.status !== "running" || run?.ownerThreadId !== threadId || run.chat && !chat) continue;
+    const id = Number(run.id);
+    if (id < oldest) {
+      first = { row, workspace };
+      oldest = id;
+    }
+  }
+  const plans: PlanSummary[] = [];
+  let skip = page * planWorkspacePageSize;
+  if (first) {
+    if (skip > 0) skip--;
+    else plans.push(projectPlanSummary(first.row, chat, first.workspace));
+  }
+  for (const closed of [false, true]) for (const [workspace, rows] of workspaces) {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = rows[i]!;
+      if (row === first?.row || row.closed !== closed) continue;
+      if (skip > 0) { skip--; continue; }
+      if (plans.length === planWorkspacePageSize) return { plans, more: true };
+      plans.push(projectPlanSummary(row, chat, workspace));
+    }
+  }
+  return { plans, more: false };
 }
 
 // Mirror the existing workspace summaries, not the full plans or their
@@ -64,29 +98,17 @@ export class PlanCatalog {
     })().catch(error => { observer.detach(); throw error; });
   }
 
-  async page(cwd: string, page: number, after: string | undefined, peer: AbortSignal, chat: boolean): Promise<PlanWorkspace> {
+  async page(cwd: string, page: number, after: string | undefined, peer: AbortSignal, chat: boolean, threadId?: string): Promise<PlanWorkspace> {
     const signal = AbortSignal.any([peer, this.#life.signal]);
     await observe(this.#ready, signal);
     for (;;) {
       signal.throwIfAborted();
       const generation = this.#changes.generation;
-      const revision = createHash("sha256").update(JSON.stringify([this.#epoch, cwd, page, generation, chat])).digest("hex");
+      const revision = createHash("sha256").update(JSON.stringify([this.#epoch, cwd, page, generation, chat, threadId])).digest("hex");
       if (revision !== after) {
         const other = [...this.#workspaces.keys()].filter(path => path !== cwd).sort();
-        const ordered = [cwd, ...other];
-        const plans: PlanSummary[] = [];
-        let skip = page * planWorkspacePageSize;
-        for (const closed of [false, true]) for (const workspace of ordered) {
-          const rows = this.#workspaces.get(workspace)?.rows ?? [];
-          for (let i = rows.length - 1; i >= 0; i--) {
-            const row = rows[i]!;
-            if (row.closed !== closed) continue;
-            if (skip > 0) { skip--; continue; }
-            if (plans.length === planWorkspacePageSize) return { revision, plans, more: true };
-            plans.push(projectPlanSummary(row, chat, workspace === cwd ? undefined : workspace));
-          }
-        }
-        return { revision, plans, more: false };
+        const workspaces = [cwd, ...other].map(path => [path === cwd ? undefined : path, this.#workspaces.get(path)?.rows ?? []] as const);
+        return { revision, ...planInventoryPage(workspaces, page, chat, threadId) };
       }
       await this.#changes.wait(generation, signal);
     }

@@ -32,6 +32,8 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	}
 	var frame menuFrame
 	switch {
+	case d.worker != nil:
+		frame = m.workerRows(d, w, n)
 	case d.planWorkspace != nil:
 		frame = m.planWorkspaceRows(d, w, n)
 	case d.planHistory != nil:
@@ -145,9 +147,9 @@ func (m *Model) menuShell(w, n int, c menuChrome, body func(int) menuFrame) menu
 
 func (m *Model) menuHeader(w int, title, scope, count string) string {
 	count = ansi.Truncate(oneLine(count), max(0, w/2), "…")
-	title = oneLine(title)
+	title = strongText(oneLine(title))
 	if scope != "" {
-		title += " · " + oneLine(scope)
+		title += m.quiet(" · " + oneLine(scope))
 	}
 	reserve := 0
 	if count != "" {
@@ -155,7 +157,7 @@ func (m *Model) menuHeader(w int, title, scope, count string) string {
 	}
 	title = ansi.Truncate(title, max(1, w-reserve-2), "…")
 	strokes := max(0, w-stringWidth(title)-reserve-1)
-	line := strongText(title) + m.quiet(" "+strings.Repeat("─", strokes))
+	line := title + m.quiet(" "+strings.Repeat("─", strokes))
 	if count != "" {
 		line += " " + m.quiet(count)
 	}
@@ -166,7 +168,7 @@ func (m *Model) menuAction(label, effect string) string {
 	if effect == "" {
 		return strongText("↵ " + label)
 	}
-	return strongText("↵ "+label) + "  " + effect
+	return strongText("↵ "+label) + "  " + m.quiet(effect)
 }
 
 // Keys are in descending importance. Keep Escape visible in compact frames.
@@ -257,10 +259,7 @@ type menuItem struct {
 }
 
 func (m *Model) menuRow(w, stateWidth int, item menuItem) string {
-	prefix := "  "
-	if item.focus {
-		prefix = m.paint(x.Accent, "› ")
-	}
+	prefix := m.cursorMark(item.focus)
 	if item.selection != "" {
 		prefix += item.selection + " "
 	}
@@ -283,7 +282,11 @@ func (m *Model) menuRow(w, stateWidth int, item menuItem) string {
 	}
 	row := prefix + label
 	if stateWidth > 0 {
-		row = fit(row, w-stateWidth) + m.paint(item.tone, ansi.Truncate(oneLine(item.state), stateWidth, "…"))
+		tone := x.Muted
+		if item.tone == x.Warning || item.tone == x.Danger {
+			tone = item.tone
+		}
+		row = fit(row, w-stateWidth) + m.paint(tone, ansi.Truncate(oneLine(item.state), stateWidth, "…"))
 	}
 	return m.cursorRow(row, w, item.focus)
 }
@@ -302,7 +305,7 @@ func menuCount(n int, singular, plural string) string {
 
 // Do not intercept f in a text field or a type-to-filter list.
 func (d *dialog) canZoom() bool {
-	return d.plan != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil ||
+	return d.worker != nil || d.plan != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil ||
 		d.git != nil || d.output != nil || d.workTrust != nil || d.themePicker != nil ||
 		d.config != nil && !d.config.pickingModel
 }

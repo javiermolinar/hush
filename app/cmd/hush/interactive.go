@@ -44,15 +44,18 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceSearchVersion, sdk.ThreadWorkspaceVersion},
 		"images": {sdk.ImagesVersion}, "nativeStop": {sdk.NativeStopVersion}, "schedules": {sdk.SchedulesVersion}, "plan": {sdk.PlanVersion},
 		"planWorkspace": {sdk.PlanWorkspaceVersion}, "planReview": {sdk.PlanReviewVersion}, "planDraft": {sdk.PlanDraftVersion}, "planChat": {sdk.PlanChatVersion}, "planWorktree": {sdk.PlanWorktreeVersion}, "planCatalog": {sdk.PlanCatalogVersion},
-		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "settings": {sdk.SettingsVersion},
+		"planChatActivity": {sdk.PlanChatActivityVersion},
+		"checkpoints":      {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "settings": {sdk.SettingsVersion},
 		"workspaceFiles":      {sdk.WorkspaceFileProjectPathsVersion, sdk.WorkspaceFileSearchVersion, sdk.WorkspaceFilesVersion},
 		"workspaceScopeWatch": {sdk.WorkspaceScopeWatchVersion}, "gitDiffWatch": {sdk.GitDiffWatchVersion},
 		"workspaceSkills": {sdk.WorkspaceSkillDraftVersion, sdk.WorkspaceSkillsVersion}, "loadedContext": {sdk.LoadedContextAgentsVersion, sdk.LoadedContextVersion},
 	}
 	caps["clientEnvironment"] = []uint64{sdk.ClientEnvironmentVersion}
+	caps["delegation"] = []uint64{sdk.DelegationVersion}
+	caps["workerActivity"] = []uint64{sdk.WorkerActivityVersion}
 	environment := detectClientEnvironment(ctx)
-	client, err := backendstart.NewClient(ctx,
-		backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, RequireWorkTrust: true}, sdk.ClientOptions{Capabilities: caps})
+	target := backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, RequireWorkTrust: true}
+	client, err := backendstart.NewClient(ctx, target, sdk.ClientOptions{Capabilities: caps})
 	if err != nil {
 		return err
 	}
@@ -66,6 +69,7 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		WorkspaceTrust:    workspaceTrustOptions(o),
 		Intro:             &tui.IntroOptions{StatePath: introStatePath()},
 		ClientEnvironment: environment,
+		OpenReviewPane:    reviewPaneOpener(ctx, target, environment.Multiplexer),
 	})
 	if err != nil {
 		return err

@@ -12,7 +12,7 @@ import "image/color"
 var presetThemes = [...]namedTheme{
 	{name: "panther", colors: themeColors{
 		roleControl:       themeRGB(0xe0d9f7),
-		roleMuted:         themeRGB(0xa59ab8),
+		roleQuiet:         themeRGB(0xa59ab8),
 		roleAccent:        themeRGB(0xb3a0ff),
 		roleLink:          themeRGB(0x8ee2ee),
 		roleSuccess:       themeRGB(0x8ee8b1),
@@ -23,7 +23,7 @@ var presetThemes = [...]namedTheme{
 		roleSyntaxComment: themeRGB(0xa59ab8),
 	}, light: themeColors{
 		roleControl:       themeRGB(0x443d56),
-		roleMuted:         themeRGB(0x6d627e),
+		roleQuiet:         themeRGB(0x6d627e),
 		roleAccent:        themeRGB(0x705bb3),
 		roleLink:          themeRGB(0x14747f),
 		roleSuccess:       themeRGB(0x147949),
@@ -36,7 +36,7 @@ var presetThemes = [...]namedTheme{
 	// Gruvbox's bright colors on dark0, and its faded colors on light0.
 	{name: "gruvbox", colors: themeColors{
 		roleControl:       themeRGB(0xebdbb2),
-		roleMuted:         themeRGB(0xa89984),
+		roleQuiet:         themeRGB(0xa89984),
 		roleAccent:        themeRGB(0xfabd2f),
 		roleLink:          themeRGB(0x83a598),
 		roleSuccess:       themeRGB(0xb8bb26),
@@ -47,7 +47,7 @@ var presetThemes = [...]namedTheme{
 		roleSyntaxComment: themeRGB(0xa89984),
 	}, light: themeColors{
 		roleControl:       themeRGB(0x3c3836),
-		roleMuted:         themeRGB(0x75685d),
+		roleQuiet:         themeRGB(0x75685d),
 		roleAccent:        themeRGB(0x995c00),
 		roleLink:          themeRGB(0x076678),
 		roleSuccess:       themeRGB(0x726d00),
@@ -61,7 +61,7 @@ var presetThemes = [...]namedTheme{
 	// automatic variant.
 	{name: "rose-pine", colors: themeColors{
 		roleControl:       themeRGB(0xe0def4),
-		roleMuted:         themeRGB(0x908caa),
+		roleQuiet:         themeRGB(0x908caa),
 		roleAccent:        themeRGB(0xebbcba),
 		roleLink:          themeRGB(0x65a7c3),
 		roleSuccess:       themeRGB(0x9ccfd8),
@@ -73,7 +73,7 @@ var presetThemes = [...]namedTheme{
 	}, light: rosePineDawn},
 	{name: "rose-pine-moon", colors: themeColors{
 		roleControl:       themeRGB(0xe0def4),
-		roleMuted:         themeRGB(0x908caa),
+		roleQuiet:         themeRGB(0x908caa),
 		roleAccent:        themeRGB(0xc4a7e7),
 		roleLink:          themeRGB(0x58a8ca),
 		roleSuccess:       themeRGB(0x9ccfd8),
@@ -85,7 +85,7 @@ var presetThemes = [...]namedTheme{
 	}, light: rosePineDawn},
 	{name: "keanu", colors: themeColors{
 		roleControl:       themeRGB(0xc2f4cc),
-		roleMuted:         themeRGB(0x88b699),
+		roleQuiet:         themeRGB(0x88b699),
 		roleAccent:        themeRGB(0x63f57a),
 		roleLink:          themeRGB(0x63ebe0),
 		roleSuccess:       themeRGB(0xb4f477),
@@ -96,7 +96,7 @@ var presetThemes = [...]namedTheme{
 		roleSyntaxComment: themeRGB(0x77b497),
 	}, light: themeColors{
 		roleControl:       themeRGB(0x1c4929),
-		roleMuted:         themeRGB(0x447056),
+		roleQuiet:         themeRGB(0x447056),
 		roleAccent:        themeRGB(0x007b00),
 		roleLink:          themeRGB(0x00776f),
 		roleSuccess:       themeRGB(0x4c6600),
@@ -108,7 +108,7 @@ var presetThemes = [...]namedTheme{
 	}},
 	{name: "kitt", colors: themeColors{
 		roleControl:       themeRGB(0xf5e1dc),
-		roleMuted:         themeRGB(0xb2a099),
+		roleQuiet:         themeRGB(0xb2a099),
 		roleAccent:        themeRGB(0xff5b5a),
 		roleLink:          themeRGB(0xffa33c),
 		roleSuccess:       themeRGB(0xbed88a),
@@ -119,7 +119,7 @@ var presetThemes = [...]namedTheme{
 		roleSyntaxComment: themeRGB(0xb2a099),
 	}, light: themeColors{
 		roleControl:       themeRGB(0x4d3d39),
-		roleMuted:         themeRGB(0x73635d),
+		roleQuiet:         themeRGB(0x73635d),
 		roleAccent:        themeRGB(0xcb242f),
 		roleLink:          themeRGB(0x874000),
 		roleSuccess:       themeRGB(0x5b7124),
@@ -133,7 +133,7 @@ var presetThemes = [...]namedTheme{
 
 var rosePineDawn = themeColors{
 	roleControl:       themeRGB(0x464261),
-	roleMuted:         themeRGB(0x68637c),
+	roleQuiet:         themeRGB(0x68637c),
 	roleAccent:        themeRGB(0x76528c),
 	roleLink:          themeRGB(0x286983),
 	roleSuccess:       themeRGB(0x276853),

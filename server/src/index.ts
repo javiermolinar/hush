@@ -2,15 +2,17 @@ import { randomUUID } from "node:crypto";
 import { createServer, type Socket } from "node:net";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { Harness } from "@earendil-works/pi-durable";
-import { DurableAdapter, nativeStopVersion, parseStop, projectView, requestError, type NativeHost, type StructuralView } from "./durable.js";
+import { DurableAdapter, nativeStopVersion, parseStop, projectView, requestError, visibleEntry, type NativeHost, type StructuralView } from "./durable.js";
 export type { NativeHost } from "./durable.js";
 import { clientEnvironment, clientEnvironmentVersion, type ClientEnvironment } from "./client-environment.js";
 import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, modelCatalogVersion,
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
 import { parsePlanAt, parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace, parsePlanWorktreeSource, parsePlanWorktreeStart,
-  planWorktreeVersion, type PlanWorktreeHost, planVersion, planCatalogVersion, planChatVersion, planDraftVersion, planWorkspaceVersion, type PlanChatHost, type PlanDraftHost, type PlanHost } from "./plan.js";
+  planWorktreeVersion, type PlanWorktreeHost, planVersion, planCatalogVersion, planChatVersion, planChatActivityVersion, planDraftVersion, planWorkspaceVersion, type PlanChatHost, type PlanDraftHost, type PlanHost } from "./plan.js";
 import { parsePlanReview, planReviewVersion, type PlanReviewHost } from "./plan-review.js";
+import { delegationVersion, parseReviewKey, parseReviewLaunch, parseWorkerActivity, parseWorkerInspection, parseWorkerKey,
+  reviewEvidenceVersion, workerActivityVersion, type DelegationHost } from "./delegation.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
@@ -48,6 +50,7 @@ export type HostCapabilities = Readonly<{
   planWorktree?: PlanWorktreeHost;
   planDraft?: PlanDraftHost;
   planReview?: PlanReviewHost;
+  delegation?: DelegationHost;
   settings?: SettingsHost;
   workspaceWorkTrust?: 1;
   schedules?: SchedulesHost;
@@ -81,6 +84,8 @@ class Feed {
   #state?: Projected;
   #rev = 0;
   #scheduled?: NodeJS.Immediate;
+  #flushing = false;
+  #project = projectView as (view: StructuralView) => Projected | Promise<Projected>;
   #armed = false;
   #closed = false;
   #reason?: EndReason;
@@ -90,7 +95,27 @@ class Feed {
     this.identity = { epoch, subscriptionId: randomUUID() };
   }
 
-  async attach(adapter: DurableAdapter, params: Params["subscribe"], ctx: Context) {
+  async attach(adapter: DurableAdapter, params: Params["subscribe"], ctx: Context, delegation: boolean) {
+    const min = params.window?.min ?? 50;
+    let older: { before: NonNullable<StructuralView["before"]>; limit: number; entries: StructuralView["entries"] } | undefined;
+    let rawEntries: StructuralView["entries"] | undefined, visible: StructuralView["entries"];
+    this.#project = view => {
+      if (rawEntries !== view.entries) {
+        rawEntries = view.entries;
+        visible = view.entries.filter(entry => visibleEntry(entry, view.conversation.id, delegation));
+      }
+      const entries = visible;
+      if (!adapter.filtersWorkerNotices && entries.length === view.entries.length) return projectView(view);
+      if (view.before === undefined) return projectView({ ...view, entries });
+      const before = view.before, limit = Math.max(0, min - entries.length) + 1;
+      const assemble = (previous: StructuralView["entries"]) => projectView({ ...view,
+        before: previous[limit - 1]?.id, entries: [...previous.slice(0, limit - 1).reverse(), ...entries] });
+      if (older?.before === before && older.limit >= limit) return assemble(older.entries);
+      return adapter.windowPredecessors(view.conversation.id, before, limit, delegation, ctx).then(previous => {
+        older = { before, limit, entries: previous };
+        return assemble(previous);
+      });
+    };
     const observation = await adapter.observe(params, {
       // Called on the Session line. Retain only the newest immutable view. No projection or socket I/O.
       advance: (call) => {
@@ -102,7 +127,7 @@ class Feed {
       end: () => this.#fail("source_failed"),
     }, ctx);
     this.#detach = () => observation.detach();
-    const state = this.#state = projectView(observation.value);
+    const state = this.#state = await this.#project(observation.value);
     return { ...this.identity, rev: 0, state };
   }
 
@@ -124,14 +149,14 @@ class Feed {
     this.#schedule();
   }
   #schedule() {
-    if (!this.#armed || this.#closed || this.#scheduled ||
+    if (!this.#armed || this.#closed || this.#scheduled || this.#flushing ||
         (!this.#reason && (!this.#pending || this.backpressured()))) return;
     this.#scheduled = setImmediate(() => {
       this.#scheduled = undefined;
-      this.#flush();
+      void this.#flush();
     });
   }
-  #flush() {
+  async #flush() {
     if (this.#reason) {
       this.write(encode({ type: "state_end", ...this.identity, reason: this.#reason }));
       this.close();
@@ -141,8 +166,15 @@ class Feed {
     if (!view || this.backpressured()) return;
     this.#pending = undefined;
     this.#pendingCount = 0;
+    this.#flushing = true;
     try {
-      const next = projectView(view);
+      const candidate = this.#project(view);
+      const next = candidate instanceof Promise ? await candidate : candidate;
+      if (this.#closed || this.#reason) return;
+      if (this.backpressured()) {
+        this.#pending ??= view;
+        return;
+      }
       const ops = diffRevisions(this.#state!, next);
       if (ops.length === 0) return;
       const base = { type: "patch", ...this.identity, baseRev: this.#rev, nextRev: this.#rev + 1 };
@@ -155,6 +187,9 @@ class Feed {
       }
     } catch (err) {
       this.#fail(err instanceof WireError && err.code === "limit" ? "overflow" : "source_failed");
+    } finally {
+      this.#flushing = false;
+      this.#schedule();
     }
   }
 }
@@ -175,11 +210,15 @@ class Peer {
   #gitDiffWatch = false;
   #plan?: PlanHost;
   #planChat?: PlanChatHost;
+  #planChatActivity = false;
   #planWorktree?: PlanWorktreeHost;
   #planDraft?: PlanDraftHost;
   #planWorkspace = false;
   #planCatalog = false;
   #planReview?: PlanReviewHost;
+  #delegation?: DelegationHost;
+  #reviewEvidence = false;
+  #workerActivity = false;
   #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
   #workspaceScopeWatch = false;
@@ -339,6 +378,12 @@ class Peer {
           if (parts[2] !== "start") throw new WireError("unknown_method");
           const result = await host.start(parsePlanWorktreeStart(req.params), signal);
           this.#write(encode({ ...identity(req), ok: true, result }));
+          return;
+        }
+        if (parts[1] === "planChatActivity" && this.#planChatActivity && this.#planChat?.activity) {
+          if (parts[2] !== "wait") throw new WireError("unknown_method");
+          const { threadId, after } = parsePlanWait(req.params);
+          this.#metadata(req, parts[1], () => this.#planChat!.activity!(threadId, after, this.#abort.signal));
           return;
         }
         if (parts[1] === "planChat" && this.#planChat) {
@@ -579,6 +624,32 @@ class Peer {
           this.#write(encode(imageReply({ ...identity(req), ok: true, result })));
           return;
         }
+        if (parts[1] === "workerActivity" && this.#workerActivity) {
+          const host = this.#delegation!, signal = this.#abort.signal;
+          if (parts[2] === "wait") {
+            const query = parseWorkerActivity(req.params);
+            this.#metadata(req, "workerActivity.wait", () => host.waitActivity!(query, signal));
+          } else if (parts[2] === "inspect") {
+            const query = parseWorkerInspection(req.params);
+            this.#metadata(req, "workerActivity.inspect", () => host.inspect!(query, signal));
+          } else throw new WireError("unknown_method");
+          return;
+        }
+        if (parts[1] === "delegation" && this.#delegation) {
+          const host = this.#delegation, signal = this.#abort.signal;
+          if (parts[2] === "get") {
+            const key = parseReviewKey(req.params);
+            this.#metadata(req, "delegation.get", () => host.get(key, signal));
+          } else {
+            if (parts[2] === "start" && Object.hasOwn(req.params, "assessment") && !this.#reviewEvidence)
+              throw new WireError("unsupported_capability", "reviewEvidence");
+            const result = parts[2] === "start" ? await host.start(parseReviewLaunch(req.params), signal)
+              : parts[2] === "stop" ? await host.stop(parseWorkerKey(req.params), signal) : undefined;
+            if (!result) throw new WireError("unknown_method");
+            this.#write(encode({ ...identity(req), ok: true, result }));
+          }
+          return;
+        }
         throw new WireError("unsupported_capability", parts[1]);
       }
       if (!validRequest(req)) throw new WireError("invalid_request");
@@ -586,6 +657,18 @@ class Peer {
         if (this.#version) throw new WireError("already_negotiated");
         if (!req.params.versions.includes(1)) throw new WireError("unsupported_version");
         const capabilities: Record<string, number> = {};
+        if (this.capabilities?.delegation && req.params.capabilities?.delegation?.includes(delegationVersion)) {
+          capabilities.delegation = delegationVersion;
+          this.#delegation = this.capabilities.delegation;
+          if (this.#delegation.evidence && req.params.capabilities?.reviewEvidence?.includes(reviewEvidenceVersion)) {
+            capabilities.reviewEvidence = reviewEvidenceVersion;
+            this.#reviewEvidence = true;
+          }
+          if (this.#delegation.waitActivity && this.#delegation.inspect && req.params.capabilities?.workerActivity?.includes(workerActivityVersion)) {
+            capabilities.workerActivity = workerActivityVersion;
+            this.#workerActivity = true;
+          }
+        }
         if (this.capabilities?.hushProfile === 1 && req.params.capabilities?.hushProfile?.includes(1)) {
           capabilities.hushProfile = 1;
         }
@@ -630,6 +713,10 @@ class Peer {
             if (this.capabilities.planChat && req.params.capabilities?.planChat?.includes(planChatVersion)) {
               capabilities.planChat = planChatVersion;
               this.#planChat = this.capabilities.planChat;
+              if (this.#planChat.activity && req.params.capabilities?.planChatActivity?.includes(planChatActivityVersion)) {
+                capabilities.planChatActivity = planChatActivityVersion;
+                this.#planChatActivity = true;
+              }
               if (this.capabilities.planWorktree && req.params.capabilities?.planWorktree?.includes(planWorktreeVersion)) {
                 this.#planWorktree = this.capabilities.planWorktree;
                 capabilities.planWorktree = planWorktreeVersion;
@@ -732,7 +819,7 @@ class Peer {
         const feed = new Feed(this.epoch, this.pendingObservations, this.#write, () => this.socket.writableNeedDrain);
         let adopted = false;
         try {
-          const ready = await feed.attach(this.adapter, req.params, this.#context);
+          const ready = await feed.attach(this.adapter, req.params, this.#context, !!this.#delegation);
           const encoded = this.#success(req, ready);
           if (this.#write(encoded)) {
             this.#feed?.close();
@@ -749,7 +836,7 @@ class Peer {
       if ((req.method === "thread.wait" || req.method === "submission.wait") && this.#waiting >= MAX_PENDING_WAITS) {
         throw new WireError("limit");
       }
-      const action = await this.adapter.admit(req, this.#context, !!this.#modelCatalog);
+      const action = await this.adapter.admit(req, this.#context, !!this.#modelCatalog, undefined, undefined, !!this.#delegation);
       if ("wait" in action) {
         this.#waiting++;
         void action.wait.then(

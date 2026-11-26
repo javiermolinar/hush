@@ -82,7 +82,7 @@ func TestPresetThemesOnFreshHome(t *testing.T) {
 	}
 	seen := map[string]bool{terminalTheme: true}
 	for _, theme := range book.choices[1:] {
-		if !validThemeName(theme.name) || seen[theme.name] || theme.colors[roleText] != nil || theme.light[roleText] != nil {
+		if !validThemeName(theme.name) || seen[theme.name] || theme.colors[roleNormal] != nil || theme.light[roleNormal] != nil {
 			t.Fatalf("invalid or duplicate preset: %+v", theme)
 		}
 		seen[theme.name] = true

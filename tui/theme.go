@@ -66,8 +66,7 @@ type palette struct {
 	noColor                            bool
 	roles                              [roleCount]resolvedRole
 	soft, key, selected                color.Color
-	added, removed                     color.Color
-	softInk, activeTab, parkedTab      string
+	softInk, activeTab                 string
 }
 
 func fill(s string, c color.Color) string {
@@ -91,24 +90,11 @@ func surface(s, ink string) string {
 	return ink + s + resetBackground
 }
 
-// Controls need readable text even when the terminal has no measurable solid
-// palette. Faint (SGR 2) is for decorative metadata, not labels or key hints.
-func (m *Model) control(s string) string {
-	return m.palette.roles[roleControl].ink.paint(s)
-}
+func (m *Model) control(s string) string { return m.ink(roleControl, s) }
 
-func (m *Model) keyHint(key, label string) string { return m.keyCap(key) + m.control(" "+label) }
+func (m *Model) keyHint(key, label string) string { return m.keyCap(key) + m.quiet(" "+label) }
 
-func (m *Model) keyCap(key string) string {
-	if m.palette.key == nil {
-		return m.control(key)
-	}
-	// Padding is independent of theme so it never changes row geometry.
-	if m.palette.roles[roleControl].custom {
-		key = m.control(key)
-	}
-	return fill(key, m.palette.key)
-}
+func (m *Model) keyCap(key string) string { return fill(m.quiet(key), m.palette.key) }
 
 type queryBackground struct{ retries int }
 
@@ -204,36 +190,40 @@ func (m *Model) refreshTheme() {
 		p.panelInk = ansi.NewStyle().BackgroundColor(bg).String()
 	}
 	p.soft, p.key, p.selected = nil, nil, nil
-	p.added, p.removed = nil, nil
-	p.softInk, p.activeTab, p.parkedTab = "", "", ""
-	if bg == nil || !m.theme.Fills {
+	p.softInk, p.activeTab = "", ""
+	if !m.theme.Fills {
 		return
 	}
-	p.selected = p.roleFill(roleAccent, .15)
-	p.added = p.roleFill(roleSuccess, .20)
-	p.removed = p.roleFill(roleError, .20)
+	foreground, quiet := p.swatch(roleNormal), p.swatch(roleQuiet)
+	readable := func(surface color.Color) bool {
+		return surface != nil && (foreground == nil || contrastRatio(surface, foreground) >= minTextContrast) &&
+			(quiet == nil || contrastRatio(surface, quiet) >= minTextContrast)
+	}
+	if c := p.roleFill(roleCursor, .15); readable(c) {
+		p.selected = c
+	}
 	step := 0.045
 	if l >= 0.6 {
 		step = -0.03
 	}
 	soft := fromLab(l+step, a, b)
 	next, _, _ := oklab(soft)
-	if math.Abs(next-l) >= 0.015 {
-		p.soft, p.key = soft, fromLab(l+1.8*step, a, b)
+	if math.Abs(next-l) >= 0.015 && readable(soft) {
+		p.soft = soft
 		p.softInk = ansi.NewStyle().BackgroundColor(soft).String()
 		if m.themes.active.surface == surfaceTinted && p.surfaceMode == surfaceTinted {
 			p.panelInk = p.softInk // explicit v2 tinted panels use the derived surface
 		}
-	}
-	foreground := p.swatch(roleText)
-	stateFill := func(role colorRole, amount float64) string {
-		blend := p.roleFill(role, amount)
-		if blend == nil || foreground != nil && contrastRatio(blend, foreground) < 4.5 {
-			return ""
+		if key := fromLab(l+1.8*step, a, b); readable(key) {
+			p.key = key
 		}
-		return ansi.NewStyle().BackgroundColor(blend).String()
 	}
-	p.activeTab, p.parkedTab = stateFill(roleAccent, .26), stateFill(roleWarning, .20)
+	for _, amount := range []float64{.26, .15, .08} {
+		if c := p.roleFill(roleCursor, amount); readable(c) {
+			p.activeTab = ansi.NewStyle().BackgroundColor(c).String()
+			break
+		}
+	}
 
 	controls := p.roles[roleControl]
 	if controls.custom && (p.selected == nil || contrastRatio(controls.rgb, p.selected) >= 4.5) &&

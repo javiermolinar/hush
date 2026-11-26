@@ -52,6 +52,8 @@ type Options struct {
 	OpenFile       func(context.Context, string, int) error
 	EditPrompt     func(context.Context, string) (string, error)
 	CopyText       func(context.Context, string) error
+	// OpenReviewPane optionally opens an explicit read-only transcript in the host terminal.
+	OpenReviewPane func(context.Context, sdk.ID, string) error
 }
 
 // Model is the one loop-owned shell. Use Run for automatic cleanup, or call
@@ -71,7 +73,9 @@ type Model struct {
 	reportFeed                feedLease
 	directoryFeed             feedLease
 	gitDiffFeed               gitDiffPoll
-	planFeed                  feedLease
+	planFeed, chatPlanFeed    feedLease
+	planPeek                  sdk.ID
+	nativeChatPlanActivity    bool
 	workspaceTrust            workspaceTrustProbe
 	directoryIDs              []sdk.ID
 	directoryEnabled          bool
@@ -112,6 +116,7 @@ type Model struct {
 	nativeSkills              bool
 	nativeSkillDraft          bool
 	nativeContext             bool
+	workers                   workerFeed
 	skills                    skillsLease
 	images                    imageState
 	intro                     *introState
@@ -282,6 +287,8 @@ func (m *Model) Close() {
 	m.stopBackendReport()
 	m.stopGitDiff()
 	m.stopPlanWatch()
+	m.stopChatPlanWatch()
+	m.stopWorkerActivity()
 	m.stopFileScope()
 	m.stopSkills()
 	for id, work := range m.pending {
@@ -373,7 +380,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nativeFiles, m.nativeFileSearch = v.files, v.fileSearch
 		m.fileScopePush, m.gitDiffPush = v.scopeWatch, v.gitWatch
 		m.nativeSkills, m.nativeSkillDraft = v.skills, v.skillDraft
-		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch())
+		m.nativeChatPlanActivity = v.chatPlanActivity
+		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity())
+	case workerFeedMsg:
+		cmd = m.receiveWorkers(v)
+	case workerInspectionMsg:
+		m.receiveWorkerInspection(v)
 	case menuProbeFailed:
 		cmd = m.receiveMenuProbeFailure(uint64(v))
 	case menuProbeRetry:
@@ -415,6 +427,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.receiveNamedPlan(v)
 	case planWatchMsg:
 		cmd = m.receivePlanWatch(v)
+		scanImages = true
+	case planVerifiedExpired:
+		if t := m.threads[v.owner]; t != nil && t.plan.strip.flash == v.flash {
+			t.plan.strip.verified, t.plan.strip.flash = "", 0
+		}
 	case gitDiffWatchMsg:
 		cmd = m.receiveGitDiffWatch(v)
 	case gitDiffPatchMsg:
@@ -497,6 +514,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_, motion := msg.(tea.MouseMotionMsg)
 		scanImages = !motion
 	case tea.PasteMsg:
+		m.planPeek = ""
 		m.snapIntroKey()
 		if len(m.overlays) != 0 || m.sheet != nil {
 			cmd = m.dialogInput(v)
@@ -569,6 +587,7 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 	m.editor.setDraft(t.draft)
 	m.leader, m.escapeAt, m.stopAt, m.slashHidden, m.slashIndex = "", time.Time{}, time.Time{}, false, 0
 	m.notice, m.selection, m.hover = noticeState{}, selection{}, ""
+	m.planPeek = ""
 	// Old dialogs cannot stay focused on a different transcript. Dismissals
 	// retain their old owner (and cannot navigate via a stale continuation).
 	old := m.overlays
@@ -578,7 +597,7 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 	m.overlays, m.sheet = nil, nil
 	m.reprojectBackgroundTab(previous)
 	m.emit(id, extension.Event{Kind: extension.ThreadSwitched, PreviousThreadID: previous})
-	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch()}
+	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity()}
 	budget := maxEffects
 	for _, d := range old {
 		cmds = append(cmds, m.replyDialog(d, nil, false, &budget))
@@ -768,6 +787,9 @@ func (m *Model) eligibleFor(a registeredAction, owner sdk.ID, target string) boo
 	}
 	if a.action.ID == pasteImageID {
 		return m.images.capable
+	}
+	if a.action.ID == openPlanRunID {
+		return owner == m.active && m.currentPlanRun(m.threads[owner]) != nil
 	}
 	if a.action.ID == inspectPlanPreviewID || a.action.ID == savePlanPreviewID {
 		t := m.threads[owner]
@@ -962,6 +984,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	switch e.Op {
 	case openPlanOp:
 		return m.openPlan(r)
+	case openPlanRunOp:
+		return m.openCurrentPlanRun(r, sdk.ID(e.Text))
 	case inspectPlanPreviewOp:
 		id := sdk.ID(e.Text)
 		if id == "" {
@@ -978,6 +1002,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 		return m.openLoadedContext(r, budget)
 	case openGitDiffOp:
 		return m.openGitDiff(r)
+	case openWorkersOp:
+		return m.openWorkers(r)
 	case openWorkspaceTrustOp:
 		return m.openWorkspaceTrust(r)
 	case openUsageOp:

@@ -46,6 +46,7 @@ type dialog struct {
 	planWorkspace               *planWorkspacePicker
 	planHistory                 *planHistoryPicker
 	planReview                  *planReviewPicker
+	worker                      *workerPanel
 	result                      func(tea.Model) (any, bool)
 	done                        func(x.Context, any, bool) x.Outcome
 }
@@ -160,7 +161,7 @@ func (m *Model) setReviewText(d *dialog, text string) {
 }
 
 func (m *Model) pushDialog(d *dialog) tea.Cmd {
-	m.leader = ""
+	m.leader, m.planPeek = "", ""
 	m.escapeAt, m.stopAt = time.Time{}, time.Time{}
 	if d.placement == x.Sheet {
 		previous := m.sheet
@@ -234,6 +235,9 @@ func (m *Model) customUpdate(d *dialog, msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) tea.Cmd {
+	if d.worker != nil && d.worker.cancel != nil {
+		d.worker.cancel()
+	}
 	if d.planWorkspace != nil && d.planWorkspace.cancel != nil {
 		d.planWorkspace.cancel()
 	}
@@ -491,6 +495,9 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	}
 	if d.custom != nil {
 		return m.customUpdate(d, msg)
+	}
+	if d.worker != nil {
+		return m.workerKey(d, chord)
 	}
 	if d.planWorkspace != nil {
 		return m.planWorkspaceKey(d, chord)

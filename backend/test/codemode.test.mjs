@@ -199,7 +199,7 @@ test("Codemode caps output and wall time, cancels spinning code, and admits the 
   assert.match(next.text, /inspection-done/);
 });
 
-async function codemodeRecovery(t, revokeTrust) {
+async function codemodeRecovery(t, trustChange) {
   const { root, cwd, storage, boot, save, settings, trust } = await setup(t);
   await settings(true);
   const original = join(cwd, "record.txt"), second = join(cwd, "second.txt"), preload = join(root, "stall.mjs");
@@ -237,7 +237,8 @@ async function codemodeRecovery(t, revokeTrust) {
     await first.stop("SIGKILL");
   } finally { db.close(); }
   await save(original, "must-not-read-again");
-  if (revokeTrust) await trust.change(cwd, "revoke", AbortSignal.timeout(5000));
+  if (trustChange) await trust.change(cwd, "revoke", AbortSignal.timeout(5000));
+  if (trustChange === "regrant") await trust.change(cwd, "grant", AbortSignal.timeout(5000));
   const after = await boot();
   assert.notEqual(after.hello.epoch, first.hello.epoch);
   assert.equal((await settle(after.wire, id, submissionId)).status, "done");
@@ -246,9 +247,9 @@ async function codemodeRecovery(t, revokeTrust) {
   const results = entries.filter(e => e.kind === "pi.tool-result");
   assert.equal(results.length, 1);
   const result = results[0].messages[0];
-  assert.equal(result.isError, revokeTrust, JSON.stringify(result));
-  if (revokeTrust) {
-    assert.match(JSON.stringify(result), /not trusted for tool execution/);
+  assert.equal(result.isError, !!trustChange, JSON.stringify(result));
+  if (trustChange) {
+    assert.match(JSON.stringify(result), trustChange === "regrant" ? /Workspace trust or directory changed/ : /not trusted for tool execution/);
     assert.doesNotMatch(JSON.stringify(result), /before-restart-marker|after-replay-marker/);
   } else {
     assert.match(JSON.stringify(result), /before-restart-marker.*after-replay-marker/);
@@ -257,7 +258,10 @@ async function codemodeRecovery(t, revokeTrust) {
 }
 
 test("SIGKILL replay reuses a committed nested inspection instead of reopening its file", { timeout: 20_000 },
-  t => codemodeRecovery(t, false));
+  t => codemodeRecovery(t));
 
 test("revoked workspace trust blocks Codemode replay even after execution intent", { timeout: 20_000 },
-  t => codemodeRecovery(t, true));
+  t => codemodeRecovery(t, "revoke"));
+
+test("a replacement grant cannot authorize replay of a previously admitted Codemode attempt", { timeout: 20_000 },
+  t => codemodeRecovery(t, "regrant"));
