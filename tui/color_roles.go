@@ -11,6 +11,7 @@ type colorRole uint8
 
 const (
 	roleText colorRole = iota
+	roleLive
 	roleControl
 	roleMuted
 	roleAccent
@@ -50,6 +51,7 @@ type roleDefinition struct {
 // derived surfaces and gradients; ordinary text keeps the terminal's SGR roles.
 var colorRoles = [roleCount]roleDefinition{
 	roleText:          {},
+	roleLive:          {}, // derived from Accent
 	roleControl:       {name: "control"},
 	roleMuted:         {name: "muted", terminal: roleInk{"\x1b[2m", resetFaint}, ansiSlot: 8},
 	roleAccent:        {name: "accent", terminal: roleInk{"\x1b[34m", resetForeground}, ansiSlot: 4},
@@ -97,6 +99,9 @@ func (p *palette) resolveRoles(allowRGB, light bool) {
 		}
 		p.roles[role] = value
 	}
+	accent := p.roles[roleAccent]
+	p.roles[roleLive] = resolvedRole{rgb: accent.rgb, ink: roleInk{accent.ink.start + "\x1b[3m", "\x1b[23m" + accent.ink.end}}
+
 }
 
 func roleForTone(tone x.Tone) colorRole {
@@ -144,4 +149,24 @@ func (m *Model) cursorRow(row string, width int, focused bool) string {
 		return fill(fit(row, width), m.palette.selected)
 	}
 	return row
+}
+
+var (
+	linkUnderline  = roleInk{"\x1b[4m", "\x1b[24m"}
+	pathUnderline  = roleInk{"\x1b[4:4m", "\x1b[24m"}
+	markdownStrike = roleInk{"\x1b[9m", "\x1b[29m"}
+	copySelection  = roleInk{"\x1b[7m", "\x1b[27m"}
+)
+
+func (m *Model) liveText(s string) string { return m.palette.roles[roleLive].ink.paint(s) }
+
+func (m *Model) linkText(text string, path, quiet bool) string {
+	if quiet {
+		return text
+	}
+	text = m.palette.roles[roleLink].ink.paint(text)
+	if path {
+		return pathUnderline.paint(text)
+	}
+	return linkUnderline.paint(text)
 }

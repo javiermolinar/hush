@@ -459,7 +459,7 @@ func TestLiveRuleKeepsCommittedToolIntentAndArguments(t *testing.T) {
 			want = "Running go test ./..."
 		}
 		rule := m.frame.rows[m.frame.ruleY]
-		if !strings.Contains(rule, "\x1b[3m"+want+"\x1b[23m · 1m 01s") || strings.Contains(rule, "tool out") ||
+		if !strings.Contains(rule, want+" · 1m 01s\x1b[23m") || strings.Contains(rule, "tool out") ||
 			!strings.Contains(ansi.Strip(rule), "esc stop  enter steer  alt+enter follow-up") {
 			t.Fatalf("quiet tool intent not shown with hints: %q", rule)
 		}

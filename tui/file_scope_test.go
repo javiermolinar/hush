@@ -92,7 +92,7 @@ func TestGoldenWorkspaceFilesHint(t *testing.T) {
 
 func TestQuotedWorkspaceFileLinks(t *testing.T) {
 	m, _ := demo(t, Options{})
-	text := m.linkify(`Open @"sub folder/my file.md", not @"~/private file.md".`, "/workspace")
+	text := m.linkify(`Open @"sub folder/my file.md", not @"~/private file.md".`, "/workspace", false)
 	if !strings.Contains(text, "file:///workspace/sub%20folder/my%20file.md") || strings.Contains(text, "file:///workspace/~/") {
 		t.Fatal(text)
 	}

@@ -24,18 +24,18 @@ var markdown = goldmark.New(goldmark.WithExtensions(gfm.Table, gfm.Strikethrough
 // The immutable-entry cache owns layouts. The live cache additionally keeps a
 // stable prefix and completed code lines, so each new token only lays out the tail.
 type markdownStream struct {
-	width           int
-	theme           uint64
-	workspace       string
-	text            string
-	stable, scanned int
-	blank, unsafe   bool
-	refsSeen        bool
-	fence           string
-	fenceAt         int
-	completed       []string
-	codeCount       int
-	open            *openFence
+	width              int
+	theme              uint64
+	workspace          string
+	text               string
+	stable, scanned    int
+	blank, unsafe      bool
+	plainDoc, refsSeen bool
+	fence              string
+	fenceAt            int
+	completed          []string
+	codeCount          int
+	open               *openFence
 }
 
 type openFence struct {
@@ -59,7 +59,7 @@ func (m *Model) renderDocument(key renderKey, format x.Format, source, lang stri
 	}
 	switch format {
 	case x.UserText:
-		return m.renderText(source, width, workspace)
+		return m.renderText(source, width, workspace, key.plainDoc)
 	case x.Markdown:
 		if live && key.owner == m.active {
 			return m.streamMarkdown(key, source, width, workspace)
@@ -72,11 +72,11 @@ func (m *Model) renderDocument(key renderKey, format x.Format, source, lang stri
 	case x.Diff:
 		var out []string
 		for s := range strings.SplitSeq(safeText(source), "\n") {
-			out = append(out, m.diffRows(s, width)...)
+			out = append(out, m.diffRows(s, width, key.plainDoc)...)
 		}
 		return out
 	default:
-		return m.renderText(source, width, workspace)
+		return m.renderText(source, width, workspace, key.plainDoc)
 	}
 }
 
@@ -116,13 +116,28 @@ func (d *document) children(parent ast.Node, w int) []string {
 	return out
 }
 
+// Quiet documents keep Markdown's layout and links but add no nested ink.
+func (d *document) meta(s string) string {
+	if d.key.plainDoc {
+		return s
+	}
+	return d.m.quiet(s)
+}
+
+func (d *document) emphasis(s string) string {
+	if d.key.plainDoc {
+		return s
+	}
+	return strongText(s)
+}
+
 func (d *document) block(n ast.Node, w int) []string {
 	w = max(1, w)
 	switch v := n.(type) {
 	case *ast.Heading:
-		return wrapped("\x1b[1m"+d.inline(n, true)+"\x1b[22m", w)
+		return wrapped(d.emphasis(d.inline(n, true)), w)
 	case *ast.ThematicBreak:
-		return []string{d.m.paint(x.Muted, "· · ·")}
+		return []string{d.meta("· · ·")}
 	case *ast.Paragraph, *ast.TextBlock:
 		return wrapped(d.inline(n, true), w)
 	case *ast.FencedCodeBlock:
@@ -135,7 +150,7 @@ func (d *document) block(n ast.Node, w int) []string {
 		}
 		rows := d.children(n, w-2)
 		for i, s := range rows {
-			rows[i] = d.m.paint(x.Muted, "│ ") + "\x1b[3m" + s + "\x1b[23m"
+			rows[i] = d.meta("│ ") + s
 		}
 		return rows
 	case *ast.List:
@@ -164,7 +179,7 @@ func (d *document) block(n ast.Node, w int) []string {
 			rows := d.children(item, w-indent)
 			for i, s := range rows {
 				if i == 0 {
-					out = append(out, d.m.paint(x.Muted, bullet)+s)
+					out = append(out, d.meta(bullet)+s)
 				} else {
 					out = append(out, strings.Repeat(" ", indent)+s)
 				}
@@ -183,7 +198,7 @@ func (d *document) block(n ast.Node, w int) []string {
 		if strings.HasPrefix(s, "<!--") {
 			return nil
 		}
-		return wrapped(d.m.paint(x.Muted, s), w)
+		return wrapped(d.meta(s), w)
 	default:
 		return wrapped(d.inline(n, true), w)
 	}
@@ -197,7 +212,7 @@ func (d *document) inline(n ast.Node, links bool) string {
 		case *ast.Text:
 			s = safeText(string(v.Segment.Value(d.src)))
 			if links {
-				s = d.m.linkify(s, d.workspace)
+				s = d.m.linkify(s, d.workspace, d.key.plainDoc)
 			}
 			if v.HardLineBreak() {
 				s += "\n"
@@ -207,35 +222,31 @@ func (d *document) inline(n ast.Node, links bool) string {
 		case *ast.String:
 			s = safeText(string(v.Value))
 			if links {
-				s = d.m.linkify(s, d.workspace)
+				s = d.m.linkify(s, d.workspace, d.key.plainDoc)
 			}
 		case *ast.CodeSpan:
 			s = strings.TrimSpace(strings.ReplaceAll(d.inline(v, false), "\n", " "))
 			if links && !strings.ContainsAny(s, " \t") && (strings.ContainsRune(s, '/') || filepath.Ext(s) != "") {
 				params, uri := fileTarget(workspacePath(d.workspace, s))
 				if uri != "" {
-					s = d.m.hyperlink(s, params, uri)
+					s = d.m.hyperlink(s, params, uri, d.key.plainDoc)
 					break
 				}
 			}
-			if links && s != "" {
-				if ink := d.m.palette.softInk; ink != "" {
-					s = ink + s + resetBackground
-				} else {
-					s = "\x1b[1m" + s + "\x1b[22m"
-				}
+			if links && !d.key.plainDoc {
+				s = surface(s, d.m.palette.softInk)
 			}
 		case *ast.Link:
 			s = d.inline(v, false)
 			if links {
 				params, uri := markdownLink(d.workspace, string(v.Destination))
-				s = d.m.hyperlink(s, params, uri)
+				s = d.m.hyperlink(s, params, uri, d.key.plainDoc)
 			}
 		case *ast.Image:
 			s = "▣ " + d.inline(v, false)
 			if links {
 				params, uri := markdownLink(d.workspace, string(v.Destination))
-				s = d.m.hyperlink(s, params, uri)
+				s = d.m.hyperlink(s, params, uri, d.key.plainDoc)
 			}
 		case *ast.AutoLink:
 			s = safeText(string(v.Label(d.src)))
@@ -244,16 +255,15 @@ func (d *document) inline(n ast.Node, links bool) string {
 				if v.AutoLinkType == ast.AutoLinkEmail && !strings.HasPrefix(dest, "mailto:") {
 					dest = "mailto:" + dest
 				}
-				s = d.m.hyperlink(s, "", safeURL(dest))
+				s = d.m.hyperlink(s, "", safeURL(dest), d.key.plainDoc)
 			}
 		case *ast.Emphasis:
-			if v.Level == 2 {
-				s = "\x1b[1m" + d.inline(v, links) + "\x1b[22m"
-			} else {
-				s = "\x1b[3m" + d.inline(v, links) + "\x1b[23m"
-			}
+			s = d.emphasis(d.inline(v, links))
 		case *table.Strikethrough:
-			s = "\x1b[9m" + d.inline(v, links) + "\x1b[29m"
+			s = d.inline(v, links)
+			if !d.key.plainDoc {
+				s = markdownStrike.paint(s)
+			}
 		case *table.TaskCheckBox:
 			continue // the list marker is the checkbox
 		case *ast.RawHTML:
@@ -264,7 +274,7 @@ func (d *document) inline(n ast.Node, links bool) string {
 			if strings.HasPrefix(s, "<!--") {
 				s = ""
 			} else {
-				s = d.m.paint(x.Muted, s)
+				s = d.meta(s)
 			}
 		default:
 			s = d.inline(c, links)
@@ -333,9 +343,9 @@ func (d *document) layoutTable(n *table.Table, w int) []string {
 			if len(out) > 0 {
 				out = append(out, "")
 			}
-			out = append(out, wrapped("\x1b[1m"+r[0]+"\x1b[22m", w)...)
+			out = append(out, wrapped(d.emphasis(r[0]), w)...)
 			for j := 1; j < min(len(r), len(widths)); j++ {
-				out = append(out, wrapped(d.m.paint(x.Muted, data[0][j]+": ")+r[j], w)...)
+				out = append(out, wrapped(d.meta(data[0][j]+": ")+r[j], w)...)
 			}
 		}
 		if len(out) == 0 {
@@ -354,7 +364,7 @@ func (d *document) layoutTable(n *table.Table, w int) []string {
 		}
 		line := strings.TrimRight(strings.Join(cells, "  "), " ")
 		if i == 0 {
-			out = append(out, "\x1b[1m"+line+"\x1b[22m", d.m.paint(x.Muted, strings.Repeat("─", need)))
+			out = append(out, line, d.meta(strings.Repeat("─", need)))
 		} else {
 			out = append(out, line)
 		}
@@ -384,15 +394,18 @@ func (d *document) frameCode(lang string, width, index int, copyable bool) (stri
 	}
 	action := ""
 	if copyable && width >= 12 {
-		action = d.m.codeCopyAction()
+		action = " copy     "
+		if !d.key.plainDoc {
+			action = d.m.codeCopyAction()
+		}
 	}
 	actionWidth := stringWidth(action)
 	title = ansiCut(title, max(0, width-actionWidth-1))
-	top := d.m.paint(x.Muted, title) + action + d.m.paint(x.Muted, strings.Repeat("─", max(0, width-stringWidth(title)-actionWidth)))
+	top := d.meta(title) + action + d.meta(strings.Repeat("─", max(0, width-stringWidth(title)-actionWidth)))
 	if action != "" {
 		top = codeCopyLink(codeID(d.key, index)) + top + oscLinkEnd
 	}
-	return top, d.m.paint(x.Muted, strings.Repeat("─", width))
+	return top, d.meta(strings.Repeat("─", width))
 }
 
 func (d *document) code(source []string, lang string, w int, copyable bool) []string {
@@ -427,13 +440,13 @@ func (d *document) codeLine(s, lang string, w int, state hlState) ([]string, hlS
 	w = max(1, w-len(indent))
 	switch lang {
 	case "diff", "patch":
-		rs := d.m.diffRows(s, w)
+		rs := d.m.diffRows(s, w, d.key.plainDoc)
 		for i := range rs {
 			rs[i] = indent + rs[i]
 		}
 		return rs, state
 	}
-	if sx := syntaxes[lang]; sx != nil {
+	if sx := syntaxes[lang]; sx != nil && !d.key.plainDoc {
 		var a []codeSpan
 		a, state = sx.tokens(s, state)
 		var styles strings.Builder
@@ -450,13 +463,16 @@ func (d *document) codeLine(s, lang string, w int, state hlState) ([]string, hlS
 		if i == 0 || indent == "" {
 			out = append(out, indent+r)
 		} else {
-			out = append(out, d.m.paint(x.Muted, "↪ ")+r)
+			out = append(out, d.meta("↪ ")+r)
 		}
 	}
 	return out, state
 }
 
-func (m *Model) diffRows(s string, w int) []string {
+func (m *Model) diffRows(s string, w int, quiet bool) []string {
+	if quiet {
+		return strings.Split(ansi.Hardwrap(s, max(1, w), true), "\n")
+	}
 	tone := x.Muted
 	switch {
 	case strings.HasPrefix(s, "+") && !strings.HasPrefix(s, "+++"):
@@ -502,8 +518,8 @@ func (m *Model) streamMarkdown(k renderKey, s string, w int, workspace string) [
 	}
 	st := t.liveDocs[k.block]
 	appendOnly := st != nil && strings.HasPrefix(s, st.text)
-	if !appendOnly || st.width != w || st.theme != k.theme || st.workspace != workspace {
-		st = &markdownStream{width: w, theme: k.theme, workspace: workspace, refsSeen: appendOnly && st.refsSeen}
+	if !appendOnly || st.width != w || st.theme != k.theme || st.workspace != workspace || st.plainDoc != k.plainDoc {
+		st = &markdownStream{width: w, theme: k.theme, workspace: workspace, plainDoc: k.plainDoc, refsSeen: appendOnly && st.refsSeen}
 		t.liveDocs[k.block] = st
 	}
 	oldStable := st.stable
@@ -649,7 +665,7 @@ const (
 
 // Reserve the same cells for the action and its confirmation.
 func (m *Model) codeCopyAction() string {
-	return " " + m.paint(x.Accent, "\x1b[4mcopy\x1b[24m") + "     "
+	return " " + m.paint(x.Accent, "copy") + "     "
 }
 
 func codeCopyLink(id string) string { return oscLink + ";" + codeCopyScheme + id + oscEnd }
@@ -699,6 +715,9 @@ func (m *Model) paintCopiedCode(line, link string, sweep int) (string, bool) {
 	}
 	header, after, closed := strings.Cut(rest, oscLinkEnd)
 	title, rule, button := strings.Cut(header, m.codeCopyAction())
+	if !button {
+		title, rule, button = strings.Cut(header, " copy     ")
+	}
 	if !closed || !button {
 		return line, false
 	}

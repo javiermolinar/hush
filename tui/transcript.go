@@ -95,7 +95,7 @@ type renderKey struct {
 	width               int
 	theme               uint64
 	expanded            bool
-	reasoning           bool
+	reasoning, plainDoc bool
 	workspace           string
 	revision, viewEpoch uint64
 	context, navigation uint64
@@ -461,6 +461,7 @@ func (m *Model) layoutBlocks(ctx extension.RenderContext, key renderKey, content
 			text := limitText(b.Text, bytes)
 			bytes -= len(text)
 			key.block = i
+			key.plainDoc = b.Tone == extension.Muted
 			lines := m.renderDocument(key, b.Format, text, limitText(b.Language, 128), ctx.Width, ctx.Thread.Workspace, ctx.Live)
 			if ctx.Live && len(lines) > ctx.MaxLines-len(rows) {
 				lines = lines[len(lines)-(ctx.MaxLines-len(rows)):]

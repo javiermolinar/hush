@@ -112,18 +112,14 @@ func fileTarget(path string, line int) (string, string) {
 	return params, (&url.URL{Scheme: "file", Path: path}).String()
 }
 
-func (m *Model) hyperlink(text, params, uri string) string {
+func (m *Model) hyperlink(text, params, uri string, quiet bool) string {
 	if uri == "" || text == "" {
 		return text
 	}
-	ink := "\x1b[4m"
-	if strings.HasPrefix(uri, "file:") {
-		ink = "\x1b[4:4m" // dotted underline distinguishes paths from web links
-	}
-	return ink + oscLink + params + ";" + uri + oscEnd + m.palette.roles[roleLink].ink.paint(text) + oscLinkEnd + "\x1b[24m"
+	return oscLink + params + ";" + uri + oscEnd + m.linkText(text, strings.HasPrefix(uri, "file:"), quiet) + oscLinkEnd
 }
 
-func (m *Model) linkify(text, workspace string) string {
+func (m *Model) linkify(text, workspace string, quiet bool) string {
 	var b strings.Builder
 	last := 0
 	for _, loc := range references.FindAllStringIndex(text, -1) {
@@ -161,7 +157,7 @@ func (m *Model) linkify(text, workspace string) string {
 			continue
 		}
 		b.WriteString(text[last:i])
-		b.WriteString(m.hyperlink(match, par, uri))
+		b.WriteString(m.hyperlink(match, par, uri, quiet))
 		last = i + len(match)
 	}
 	if last == 0 {
@@ -235,11 +231,11 @@ func (m *Model) openLink(r ownerRoute, link string, budget *int) tea.Cmd {
 	return m.openTarget(r, target, budget)
 }
 
-func (m *Model) renderText(text string, width int, workspace string) []string {
+func (m *Model) renderText(text string, width int, workspace string, quiet bool) []string {
 	if width <= 0 {
 		return nil
 	}
-	lines := wrapped(m.linkify(safeText(text), workspace), width)
+	lines := wrapped(m.linkify(safeText(text), workspace, quiet), width)
 	if len(lines) == 0 {
 		return []string{""}
 	}

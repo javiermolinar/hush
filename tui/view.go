@@ -336,7 +336,7 @@ func (m *Model) View() tea.View {
 		for i := 0; i < f.transcriptHeight; i++ {
 			if a, b, ok := m.selection.span(i, m.width-pane.edge); ok {
 				line := fit(f.rows[i], m.width)
-				f.rows[i] = ansi.Cut(line, 0, a) + ansiCut("\x1b[7m"+ansi.Strip(ansi.Cut(line, a, b))+"\x1b[27m", b-a) + ansi.Cut(line, b, m.width)
+				f.rows[i] = ansi.Cut(line, 0, a) + ansiCut(copySelection.paint(ansi.Strip(ansi.Cut(line, a, b))), b-a) + ansi.Cut(line, b, m.width)
 			}
 		}
 	}

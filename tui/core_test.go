@@ -434,7 +434,11 @@ func TestInlineMaterialsKeepTheirOwnCells(t *testing.T) {
 				}
 			}
 		}
-		if chip != len("hushstopandresume") || path != len("app/main.go:12") || web != len("the guide") || plain != len("Usethenor") {
+		wantChip, wantPlain := len("hushstopandresume"), len("Usethenor")
+		if mode == FillOff {
+			wantPlain, wantChip = wantPlain+wantChip, 0
+		}
+		if chip != wantChip || path != len("app/main.go:12") || web != len("the guide") || plain != wantPlain {
 			t.Fatalf("styles escaped the intended cells in %s: chip=%d path=%d web=%d plain=%d\n%q", mode, chip, path, web, plain, rows)
 		}
 	}

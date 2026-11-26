@@ -99,11 +99,7 @@ func (m *Model) themeSampleRow() string {
 		if i > 0 {
 			b.WriteString("  ")
 		}
-		label := s.label
-		if s.role == roleLink {
-			label = "\x1b[4m" + label + "\x1b[24m" // links stay underlined in any palette
-		}
-		b.WriteString(m.palette.roles[s.role].ink.paint(label))
+		b.WriteString(m.palette.roles[s.role].ink.paint(s.label))
 	}
 	return b.String()
 }

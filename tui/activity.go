@@ -459,7 +459,10 @@ func (m *Model) liveActivity(t *threadState, width int, phase livePhase, tool *x
 	room := width - stringWidth(icon+" ") - stringWidth(suffix)
 	label = strings.TrimSpace(oneLine(limitText(label, 512)))
 	label = ansi.Truncate(label, room, "…")
-	return displayRow{text: m.paint(tone, icon+" \x1b[3m"+label+"\x1b[23m"+suffix)}
+	if tone == x.Warning {
+		return displayRow{text: m.paint(tone, icon) + " " + m.liveText(label+suffix)}
+	}
+	return displayRow{text: m.liveText(icon + " " + label + suffix)}
 }
 
 func (m *Model) canHintFork() bool {

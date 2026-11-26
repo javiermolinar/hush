@@ -1,0 +1,24 @@
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  Thought
+  Reasoning heading
+
+  Quiet words and the guide.
+  Use the documented setup.
+  ───────────────────────────────────────────────────── / commands  ? all keys
+  you ›
+  Workspace workspace
+  › ○ workspace
