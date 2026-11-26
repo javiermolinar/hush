@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
 import { startBackend } from "../../dist/hush-backend.mjs";
@@ -17,6 +18,7 @@ const okay = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); ret
 
 async function terminalPlan(t, mode) {
   const faux = mode === "faux", scoped = mode === "scoped", batch = mode === "fileset", preview = mode === "preview";
+  const startup = mode === "startup", chat = mode === "chat";
   const promptText = preview ? "Lets work on creating a new plan to support subagents, independent reviews etc."
     : batch ? fileSetRequest : scoped ? executionRequest : createRequest;
   const previewDraft = { baseRevision: 0, title: "Subagents and independent reviews", steps: [
@@ -38,6 +40,15 @@ async function terminalPlan(t, mode) {
       await Promise.all(Object.entries(startingFiles).map(([path, content]) => writeFile(join(cwd, path), content)));
     } else delete process.env.HUSH_FILE_LIST_HELPER;
     const provider = faux ? undefined : await planProvider(t, agentDir, async turn => {
+      if (chat && turn.text.startsWith("Plan implementation\n")) {
+        const assignment = JSON.parse(turn.text.split("\n")[1]);
+        assert.deepEqual(assignment.selected, ["restore"]);
+        assert.ok(turn.tools.includes("write") && turn.tools.includes("hush_plan_report"));
+        assert.ok(!turn.messages.some(m => m.content === "keep this draft" || m.content === createRequest));
+        return turn.results.length ? "Restored the preferences." : [call("hush_plan_report", {
+          tasks: [{ stepId: "restore", state: "done", detail: "Checked the settings round-trip." }],
+        })];
+      }
       if (mode === "draft" && turn.text.startsWith("Plan review brief\n")) {
         assert.deepEqual(turn.tools, []);
         assert.equal(turn.messages.filter(m => m.role === "user").length, 1);
@@ -80,7 +91,7 @@ async function terminalPlan(t, mode) {
     });
     host = await startBackend({ faux, model: provider?.model, ephemeral: false, idleMs: 120_000, cwd, agentDir, dataDir, socket });
     peer = await dial(socket);
-    okay(await peer.send("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planReview: [1] } }));
+    okay(await peer.send("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planReview: [1], planChat: [1] } }));
     threadId = okay(await peer.send("thread.new", {})).id;
     if (scoped) {
       observer = await dial(socket);
@@ -90,8 +101,33 @@ async function terminalPlan(t, mode) {
       const { submissionId } = okay(await peer.send("submit", { threadId, text: "!plan-fixture", requestId: "prepare-pty", whenBusy: "reject" }));
       assert.equal(okay(await peer.send("submission.wait", { threadId, submissionId })).status, "done");
     }
+    let source, threads;
+    const list = async () => okay(await peer.send("thread.list", { limit: 32 })).threads;
+    if (startup || chat) {
+      const { submissionId } = okay(await peer.send("submit", { threadId, text: promptText, requestId: "prepare-live-plan", whenBusy: "reject" }));
+      assert.equal(okay(await peer.send("submission.wait", { threadId, submissionId })).status, "done");
+      source = okay(await peer.send("ext.plan.wait", { threadId })).plan.id;
+      if (chat) threadId = okay(await peer.send("thread.new", {})).id;
+      threads = await list();
+    }
     await exec("python3", [script, binary, socket, threadId, mode, promptText], { cwd, timeout: 16_000,
       env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } });
+    if (startup || chat) {
+      assert.deepEqual(await list(), threads, "browsing and running in an active thread don't create another thread");
+      const view = okay(await peer.send("ext.planWorkspace.inspect", { threadId, planId: source }));
+      if (startup) assert.equal(view.run, null, "startup browsing didn't admit work");
+      else {
+        assert.equal(view.run.state, "done");
+        assert.equal(view.run.ownerThreadId, threadId);
+        assert.deepEqual(view.run.stepIds, ["restore"]);
+        assert.deepEqual(view.progress, []);
+        assert.deepEqual(view.reports.map(r => [r.stepId, r.state]), [["restore", "done"]]);
+        const { entries } = okay(await peer.send("history", { threadId, limit: 32, range: { kind: "before", beforeEntryId: null } }));
+        assert.deepEqual(entries.filter(e => e.kind === "hush.plan.chat").map(e => e.threadId), [threadId]);
+        assert.ok(!entries.some(e => e.kind === "pi.user"));
+      }
+      return;
+    }
     const current = okay(await peer.send("ext.plan.wait", { threadId }));
     if (faux || scoped) {
       assert.equal(current.run.state, "verified");
@@ -114,9 +150,7 @@ async function terminalPlan(t, mode) {
       const { runs } = okay(await peer.send("ext.planWorkspace.history", { threadId, planId: current.plan.id }));
       assert.equal(runs.length, 1);
       assert.equal(runs[0].id, current.run.id);
-      assert.notEqual(runs[0].threadId, threadId, "the startup picker runs in a new thread, not the draft's thread");
-      const runHistory = await history(runs[0].threadId);
-      assert.ok(runHistory.entries.every(e => e.kind !== "pi.user"), "no chat message was needed to open the picker");
+      assert.equal(runs[0].threadId, threadId, "the fixture was launched from the active plan thread");
     }
     if (preview) {
       const { plans } = okay(await peer.send("ext.planWorkspace.wait", { threadId, page: 0 }));
@@ -162,9 +196,110 @@ async function terminalPlan(t, mode) {
   }
 }
 
-test("terminal UI opens /plan at startup and runs the selected steps without a first message", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI browses plans at startup without creating a thread or submitting the draft", { timeout: 45_000 }, t => terminalPlan(t, "startup"));
+test("terminal UI runs an unbound dependent task here without touching the composer", { timeout: 45_000 }, t => terminalPlan(t, "chat"));
+test("terminal UI runs the scoped fixture selection", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI opens plans from a different Git worktree at startup", { timeout: 45_000 }, async t => {
+  const home = await realpath(await mkdtemp("/tmp/hush-plan-catalog-"));
+  const cwd = join(home, "source-checkout"), worktree = join(home, "other-worktree");
+  const agentDir = join(home, ".hush"), dataDir = join(home, "data"), socket = join(dataDir, "hush.sock");
+  let host, peer;
+  t.after(async () => { peer?.close(); await host?.close(); await rm(home, { recursive: true, force: true }); });
+  await exec("git", ["init", "-q", cwd]);
+  await exec("git", ["-c", "user.name=Hush Fixture", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+    "commit", "--allow-empty", "-qm", "fixture"], { cwd });
+  await exec("git", ["worktree", "add", "--detach", worktree], { cwd });
+  await mkdir(agentDir, { mode: 0o700 });
+  const trust = new WorkspaceTrust(agentDir);
+  await trust.change(cwd, "grant", t.signal);
+  await trust.change(worktree, "grant", t.signal);
+  const provider = await planProvider(t, agentDir, async turn => {
+    assert.equal(turn.text, createRequest);
+    return turn.results.length ? "Plan saved." : [call("hush_plan_propose", draftArgs())];
+  });
+  const binary = process.env.HUSH_TEST_CLI || join(home, "hush");
+  if (!process.env.HUSH_TEST_CLI) await exec("go", ["build", "-o", binary, "./app/cmd/hush"], { cwd: repo, timeout: 25_000 });
+  host = await startBackend({ model: provider.model, ephemeral: false, idleMs: 30_000, cwd, agentDir, dataDir, socket });
+  peer = await dial(socket);
+  const rpc = async (method, params) => okay(await peer.send(method, params));
+  await rpc("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planChat: [1], planCatalog: [1] } });
+  const { id: threadId } = await rpc("thread.new", {});
+  const { submissionId } = await rpc("submit", { threadId, text: createRequest, requestId: "prepare-pty", whenBusy: "reject" });
+  assert.equal((await rpc("submission.wait", { threadId, submissionId })).status, "done");
+  const before = await rpc("thread.list", { limit: 32 });
+  const requests = provider.requests.length;
+  await exec("python3", [script, binary, socket, threadId, "catalog", ""], { cwd: worktree, timeout: 16_000,
+    env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } });
+  const current = await rpc("ext.plan.wait", { threadId });
+  assert.equal(current.run, null);
+  assert.equal(current.closed, undefined);
+  assert.deepEqual(await rpc("thread.list", { limit: 32 }), before, "browsing and opening a foreign plan do not create a thread");
+  assert.equal(provider.requests.length, requests, "read-only keys neither run the plan nor send the draft");
+});
 test("terminal UI saves an unsaved plan preview with 'ok save it'", { timeout: 45_000 }, t => terminalPlan(t, "preview"));
-test("terminal UI saves and independently reviews a plan on a draft-only host", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
-test("one Enter visibly verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));
+test("terminal UI saves and independently reviews a plan without the scoped file helper", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
+test("explicit scoped Run verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));
 
 test("terminal UI authorizes one checked file set and leaves other files untouched", { timeout: 45_000 }, t => terminalPlan(t, "fileset"));
+
+
+test("terminal UI distinguishes Run here, leaving a checkout idle, and starting after backend trust", { timeout: 35_000 }, async t => {
+  const home = await realpath(await mkdtemp("/tmp/hush-plan-pty-wt-"));
+  const cwd = join(home, "project"), agentDir = join(home, ".hush");
+  const dataDir = join(home, "worktree state path with spaces"), socket = join(dataDir, "hush.sock");
+  const grant = join(home, "granted");
+  let peer, host, naming = 0;
+  t.after(async () => { peer?.close(); await host?.close(); await rm(home, { recursive: true, force: true }); });
+  await Promise.all([agentDir, cwd].map(path => mkdir(path, { mode: 0o700 })));
+  const git = (...args) => exec("git", args, { cwd });
+  await git("init", "-q");
+  await git("-c", "user.name=Hush Fixture", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture");
+  const trust = new WorkspaceTrust(agentDir);
+  await trust.change(cwd, "grant", t.signal);
+  const provider = await planProvider(t, agentDir, async turn => {
+    if (turn.text === createRequest) return turn.results.length ? "Saved." : [call("hush_plan_propose", draftArgs())];
+    if (turn.text.startsWith("Plan worktree name\n")) return ++naming === 1 ? "Idle checkout" : "Preference round trip";
+    assert.match(turn.text, /^Plan implementation\n/);
+    assert.deepEqual(JSON.parse(turn.text.split("\n")[1]).selected, ["restore"]);
+    assert.equal(turn.messages.some(m => m.content === createRequest), naming === 0, "only Run here sees the source transcript");
+    return turn.results.length ? "Done." : [call("hush_plan_report", {
+      tasks: [{ stepId: "restore", state: "done", detail: "Checked the round-trip." }],
+    })];
+  });
+  const binary = process.env.HUSH_TEST_CLI || join(home, "hush");
+  if (!process.env.HUSH_TEST_CLI) await exec("go", ["build", "-o", binary, "./app/cmd/hush"], { cwd: repo, timeout: 25_000 });
+  host = await startBackend({ faux: false, model: provider.model, ephemeral: false, idleMs: 30_000, cwd, agentDir, dataDir, socket });
+  peer = await dial(socket);
+  const rpc = async (method, args) => okay(await peer.send(method, args));
+  await rpc("hello", { versions: [1], capabilities: { plan: [1], planChat: [1], planWorkspace: [1], planWorktree: [1], threadDirectory: [2] } });
+  const { id: threadId } = await rpc("thread.new", {});
+  const { submissionId } = await rpc("submit", { threadId, text: createRequest, requestId: "draft", whenBusy: "reject" });
+  assert.equal((await rpc("submission.wait", { threadId, submissionId })).status, "done");
+  const { plan } = await rpc("ext.plan.wait", { threadId });
+  const history = () => rpc("ext.planWorkspace.history", { threadId, planId: plan.id });
+  const operator = async () => {
+    for (let i = 0; i < 500; i++) {
+      if (await readFile(grant + ".reviewed").then(() => true, () => false)) {
+        const { threads } = await rpc("ext.threadDirectory.list", { limit: 10 });
+        const idle = threads.find(row => row.title === "Idle checkout");
+        const work = threads.find(row => row.title === "Preference round trip");
+        if (idle?.checkout?.kind === "managed" && work?.checkout?.kind === "managed") {
+          assert.equal(idle.status, "idle");
+          assert.equal((await trust.review(idle.checkout.cwd)).trusted, false);
+          assert.equal((await trust.review(work.checkout.cwd)).trusted, false);
+          assert.deepEqual((await history()).runs.map(r => r.threadId), [threadId], "neither preparation nor a denied start admits work");
+          await trust.change(work.checkout.cwd, "grant", t.signal);
+          await writeFile(grant, "granted");
+          return work.id;
+        }
+      }
+      await delay(20, undefined, { signal: t.signal });
+    }
+    assert.fail("no prepared worktree in the thread directory");
+  };
+  const [worktree] = await Promise.all([operator(), exec("python3", [script, binary, socket, threadId, "worktree", grant], { cwd, timeout: 22_000,
+    env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } })]);
+  const { runs } = await history();
+  assert.deepEqual(runs.map(run => [run.threadId, run.state, run.stepIds, run.worktree]),
+    [[worktree, "done", ["restore"], true], [threadId, "done", ["restore"], undefined]]);
+});

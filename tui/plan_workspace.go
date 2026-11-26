@@ -21,6 +21,10 @@ type planWorkspaceBackend interface {
 	PlanHistory(context.Context, sdk.ID, string, sdk.ID) (sdk.PlanHistoryPage, error)
 }
 
+type planCatalogBackend interface {
+	WatchPlanCatalog(context.Context, sdk.ID, int) <-chan sdk.PlanWorkspaceUpdate
+}
+
 type planWorkspacePicker struct {
 	cancel                        context.CancelFunc
 	lease                         uint64
@@ -53,49 +57,8 @@ type planHistoryPicker struct {
 	loading, failed bool
 }
 
-func (m *Model) openDraftPlan(r ownerRoute) tea.Cmd {
-	if len(m.overlays) >= maxDialogs {
-		return nil
-	}
-	t := m.threads[r.owner]
-	if t.sending || t.attaching {
-		return m.notifyRoute(r, "Wait for the pending request", x.Warning)
-	}
-	d := &dialog{route: r, token: m.token(), promptDock: true, planWorkspace: &planWorkspacePicker{}}
-	show := m.pushDialog(d)
-	t.sending = true // serialize with first-prompt creation, even if the picker is dismissed
-	backend, options := m.backend, m.options.NewThread
-	model, thinking := t.info.Model, t.info.Thinking
-	create := m.startWork(r, func(ctx context.Context) (any, error) {
-		call, cancel := context.WithTimeout(ctx, menuTimeout)
-		defer cancel()
-		return createDraftThread(call, backend, options, model, thinking)
-	}, func(value any, err error, _ *int) tea.Cmd {
-		t.sending = false
-		if !m.foreground(r) || m.focusedDialog() != d {
-			return nil
-		}
-		if err != nil {
-			message := "Could not open plans: " + err.Error()
-			if isIndeterminate(err) {
-				message = "Thread creation unconfirmed; check /threads before retrying."
-			}
-			return tea.Batch(m.closeDialog(d, nil, false), m.notifyRoute(r, message, x.Warning))
-		}
-		id := value.(sdk.ID)
-		m.freezeIntro(t)
-		dst := m.prepareDraftThread(id, model, thinking)
-		dst.draft, dst.attachments, dst.stagedSkill = m.editor.promptDraft, t.attachments, t.stagedSkill
-		m.editor.set("")
-		t.attachments, t.stagedSkill = nil, stagedSkill{}
-		return tea.Batch(m.switchThread(id), m.openPlanWorkspace(m.route(id, r.extension)))
-	}, nil)
-	return tea.Batch(show, create)
-}
-
 func (m *Model) openPlanWorkspace(r ownerRoute) tea.Cmd {
-	// A just-created thread may not have received its transcript feed yet.
-	if !m.foreground(r) || !r.owner.Valid() || len(m.overlays) >= maxDialogs {
+	if !m.foreground(r) || (!r.owner.Valid() && !m.draftPlanAvailable()) || len(m.overlays) >= maxDialogs {
 		return nil
 	}
 	d := &dialog{route: r, token: m.token(), promptDock: true, planWorkspace: &planWorkspacePicker{}}
@@ -114,8 +77,24 @@ func awaitPlanWorkspace(ctx context.Context, lease uint64, source <-chan sdk.Pla
 }
 
 func (m *Model) watchPlanWorkspace(d *dialog, page int) tea.Cmd {
-	b, ok := m.backend.(planWorkspaceBackend)
-	if !ok || !d.route.owner.Valid() {
+	var watch func(context.Context) <-chan sdk.PlanWorkspaceUpdate
+	if owner := d.route.owner; owner.Valid() {
+		if b, ok := m.backend.(planCatalogBackend); ok && m.menuFeaturesFromBackend.Has(x.PlanCatalog) {
+			watch = func(ctx context.Context) <-chan sdk.PlanWorkspaceUpdate {
+				return b.WatchPlanCatalog(ctx, owner, page)
+			}
+		} else if b, ok := m.backend.(planWorkspaceBackend); ok {
+			watch = func(ctx context.Context) <-chan sdk.PlanWorkspaceUpdate {
+				return b.WatchWorkspacePlans(ctx, owner, page)
+			}
+		}
+	} else if b, ok := m.backend.(planChatBackend); ok && m.draftPlanAvailable() {
+		cwd := m.introScope("").CWD
+		watch = func(ctx context.Context) <-chan sdk.PlanWorkspaceUpdate {
+			return b.WatchWorkspacePlansAt(ctx, cwd, page)
+		}
+	}
+	if watch == nil {
 		return nil
 	}
 	p := d.planWorkspace
@@ -126,8 +105,8 @@ func (m *Model) watchPlanWorkspace(d *dialog, page int) tea.Cmd {
 	p.cancel, p.lease, p.page = cancel, m.token(), page
 	p.rows, p.ready, p.more, p.failed = nil, false, false, false
 	d.selected, d.token = 0, m.token()
-	lease, owner := p.lease, d.route.owner
-	return func() tea.Msg { return awaitPlanWorkspace(ctx, lease, b.WatchWorkspacePlans(ctx, owner, page))() }
+	lease := p.lease
+	return func() tea.Msg { return awaitPlanWorkspace(ctx, lease, watch(ctx))() }
 }
 
 func (m *Model) receivePlanWorkspace(msg planWorkspaceMsg) tea.Cmd {
@@ -191,17 +170,22 @@ func (m *Model) planWorkspaceKey(d *dialog, chord string) tea.Cmd {
 			return nil
 		}
 		row := p.rows[d.selected]
+		if chord != "enter" && !d.route.owner.Valid() {
+			return nil // startup inspection is read-only until Run creates a thread
+		}
 		switch chord {
 		case "c":
-			if !row.Closed || row.Status != "complete" {
+			if row.Workspace == "" && (!row.Closed || row.Status != "complete") {
 				return m.changePlanClosed(d, row.ID, !row.Closed)
 			}
 		case "h":
 			return m.openPlanHistory(d.route, row.ID, row.Title)
 		case "v":
-			return m.openPlanReview(d.route, row.ID, row.Title, row.Revision)
+			if row.Workspace == "" {
+				return m.openPlanReview(d.route, row.ID, row.Title, row.Revision)
+			}
 		default:
-			return m.inspectPlan(d.route, row.ID)
+			return m.inspectPlan(d.route, row.ID, row.Workspace)
 		}
 	}
 	return nil
@@ -216,7 +200,9 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	}
 	t := m.threads[d.route.owner]
 	title := "Workspace plans"
-	if path := t.info.Workspace; path != "" {
+	if m.menuFeaturesFromBackend.Has(x.PlanCatalog) {
+		title += " · all workspaces"
+	} else if path := t.info.Workspace; path != "" {
 		title += " · " + oneLine(filepath.Base(path))
 	} else if d.route.owner == "" {
 		title += " · " + oneLine(filepath.Base(m.options.NewThread.CWD))
@@ -290,9 +276,18 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 			} else {
 				prefix += "  "
 			}
-			badge := m.paint(tone, status) + m.control(fmt.Sprintf("  %d/%d · r%d", r.Verified, r.Total, r.Revision))
+			count := fmt.Sprintf("  %d/%d · r%d", r.Verified, r.Total, r.Revision)
+			if r.ReportedDone > 0 {
+				count = fmt.Sprintf("  %d/%d done · r%d", r.Verified+r.ReportedDone, r.Total, r.Revision)
+			}
+			badge := m.paint(tone, status) + m.control(count)
 			left := max(4, w-stringWidth(badge)-2)
-			line := fit(ansi.Truncate(prefix+oneLine(r.Title), left, "…"), left) + "  " + badge
+			name := prefix + oneLine(r.Title)
+			if r.Workspace != "" {
+				source := ansi.Truncate(" · "+oneLine(filepath.Base(r.Workspace)), max(4, left/3), "…")
+				name = ansi.Truncate(name, left-stringWidth(source), "…") + m.control(source)
+			}
+			line := fit(ansi.Truncate(name, left, "…"), left) + "  " + badge
 			if d.selected == i && m.theme.Fills {
 				line = fill(fit(line, w), m.palette.selected)
 			}
@@ -302,20 +297,29 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	if showPage && n >= 7 {
 		add(m.control(fmt.Sprintf("Page %d · ←→ pages", p.page+1)), -1)
 	}
-	keys := "↵ open  h history"
-	compact := "↵ open"
+	keys, compact := "↵ open", "↵ open"
+	if d.route.owner.Valid() {
+		keys += "  h history"
+	}
 	if p.ready && !p.failed && d.selected < len(p.rows) {
 		pick := p.rows[d.selected]
-		if m.menuFeaturesFromBackend.Has(x.PlanReview) {
-			keys += "  v review"
-			compact += "  v review"
-		}
-		if !pick.Closed {
-			keys += "  c close plan"
-			compact += "  c close plan"
-		} else if pick.Status != "complete" {
-			keys += "  c reopen"
-			compact += "  c reopen"
+		if pick.Workspace != "" {
+			keys, compact = "↵ preview", "↵ preview"
+			if d.route.owner.Valid() {
+				keys += "  h history"
+			}
+		} else if d.route.owner.Valid() {
+			if m.menuFeaturesFromBackend.Has(x.PlanReview) {
+				keys += "  v review"
+				compact += "  v review"
+			}
+			if !pick.Closed {
+				keys += "  c close plan"
+				compact += "  c close plan"
+			} else if pick.Status != "complete" {
+				keys += "  c reopen"
+				compact += "  c reopen"
+			}
 		}
 	}
 	if t.plan.snapshot.RunAvailability == sdk.PlanRunPinned {
@@ -341,27 +345,37 @@ func workspacePlanStatus(p sdk.PlanSummary) (string, x.Tone) {
 		return "Running", x.Accent
 	case p.Status == "attention":
 		return "Needs check", x.Warning
+	case p.Verified+p.ReportedDone == p.Total:
+		return "Reported done", x.Good
 	default:
 		return "Pending", x.Plain
 	}
 }
 
-func (m *Model) inspectPlan(r ownerRoute, id string) tea.Cmd {
+func (m *Model) inspectPlan(r ownerRoute, id, workspace string) tea.Cmd {
 	if !m.foreground(r) || len(m.overlays) >= maxDialogs {
 		return nil
 	}
 	v := &m.threads[r.owner].plan
-	if v.snapshot.Plan != nil && v.snapshot.Plan.ID == id && v.snapshot.RunAvailability != sdk.PlanRunPinned {
+	if workspace == "" && v.snapshot.Plan != nil && v.snapshot.Plan.ID == id && v.snapshot.RunAvailability != sdk.PlanRunPinned {
 		return m.openPlanSteps(r, id)
 	}
-	b, ok := m.backend.(planWorkspaceBackend)
-	if !ok {
+	var watch func(context.Context) <-chan sdk.PlanUpdate
+	if r.owner.Valid() {
+		if b, ok := m.backend.(planWorkspaceBackend); ok {
+			watch = func(ctx context.Context) <-chan sdk.PlanUpdate { return b.WatchNamedPlan(ctx, r.owner, id) }
+		}
+	} else if b, ok := m.backend.(planChatBackend); ok && m.draftPlanAvailable() {
+		cwd := m.introScope("").CWD
+		watch = func(ctx context.Context) <-chan sdk.PlanUpdate { return b.WatchNamedPlanAt(ctx, cwd, id) }
+	}
+	if watch == nil {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	d := &dialog{route: r, token: m.token(), promptDock: true, plan: &planPicker{named: id, cancel: cancel}}
+	d := &dialog{route: r, token: m.token(), promptDock: true, plan: &planPicker{named: id, workspace: workspace, cancel: cancel}}
 	token := d.token
-	return tea.Batch(m.pushDialog(d), func() tea.Msg { return awaitNamedPlan(ctx, token, b.WatchNamedPlan(ctx, r.owner, id))() })
+	return tea.Batch(m.pushDialog(d), func() tea.Msg { return awaitNamedPlan(ctx, token, watch(ctx))() })
 }
 
 func awaitNamedPlan(ctx context.Context, token uint64, source <-chan sdk.PlanUpdate) tea.Cmd {
@@ -385,12 +399,36 @@ func (m *Model) receiveNamedPlan(msg namedPlanMsg) tea.Cmd {
 			v := &p.view
 			v.err, v.ready = msg.update.Err, msg.update.Err == nil
 			if v.ready {
-				if old, next := v.snapshot.Plan, msg.update.Snapshot.Plan; old == nil || next == nil || old.Revision != next.Revision {
+				next := msg.update.Snapshot
+				old := v.snapshot.Plan
+				changed := old == nil || next.Plan == nil || old.Revision != next.Plan.Revision
+				if changed || v.snapshot.Closed != next.Closed {
 					p.focus, p.scroll = 0, 0
+					p.selected = nil
+					p.selectionRev++
+					v.awaiting, v.note = "", ""
 				}
-				v.snapshot = msg.update.Snapshot
-				// Only the bound picker holds Run requests and retries across closes.
-				v.snapshot.RunAvailability = sdk.PlanRunUnbound
+				v.snapshot = next
+				// Scoped execution still requires the bound picker. Run here can
+				// target this named live plan without changing that binding.
+				p.workspace = next.Workspace
+				if p.workspace == "" {
+					v.snapshot.RunAvailability = sdk.PlanRunUnbound
+				} else {
+					p.selected = nil
+				}
+				if v.awaiting != "" && next.Run != nil && !lessID(next.Run.ID, v.awaiting) {
+					v.awaiting = ""
+				}
+				for id := range p.selected {
+					if v.progress(id).State == "verified" {
+						delete(p.selected, id)
+						p.selectionRev++
+					}
+				}
+				if changed && p.workspace == "" {
+					m.showChatSelection(d, v)
+				}
 			}
 			return awaitNamedPlan(msg.ctx, msg.token, msg.source)
 		}
@@ -521,8 +559,20 @@ func planHistoryLines(page sdk.PlanHistoryPage) []string {
 		if i > 0 {
 			out = append(out, "")
 		}
-		out = append(out, fmt.Sprintf("Run #%s · r%d · %s", run.ID, run.Revision, run.State),
+		label := "Run"
+		if run.Worktree {
+			label = "Run in new worktree"
+		} else if run.Chat {
+			label = "Run here"
+		}
+		out = append(out, fmt.Sprintf("%s #%s · r%d · %s", label, run.ID, run.Revision, run.State),
 			"  Thread #"+string(run.ThreadID)+" · "+strings.Join(run.StepIDs, ", "))
+		if run.EntryID.Valid() {
+			out = append(out, "  Turn #"+string(run.EntryID))
+		}
+		for _, report := range run.Reports {
+			out = append(out, fmt.Sprintf("  %s · reported %s · %s", report.StepID, report.State, oneLine(report.Detail)))
+		}
 		if run.PublicationUncertain {
 			out = append(out, "  Publication uncertain · inspect workspace")
 		}

@@ -2,14 +2,21 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, configure, defineDoc, defineDocFamily, defineEntry, defineExtension, defineTask, defineTool, InboxDoc, LiveDoc, SubmissionSettled,
-  type AgentState, type ConversationId, type Cursor, type Harness, type LiveState, type Observation, type Observer, type Storage, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
-import { planHistoryPageSize, planWorkspacePageSize, planRunKind, planTaskKind, planResultKind, type PlanAttachment, type PlanClosure, type PlanDefinition, type PlanHistoryQuery,
-  type PlanHost, type PlanProgress, type PlanRun, type PlanRunRecord, type PlanRunState, type PlanSelection, type PlanSnapshot,
-  type PlanStep, type PlanSummary, type PlanWorkspaceQuery } from "../../server/src/plan.js";
+  type AgentChange, type AgentState, type Conversation, type ConversationId, type Cursor, type Harness, type DocumentReader, type LiveState, type Observation, type Observer, type Storage, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { planChatKind, planHistoryPageSize, planStepLimit, planWorkspacePageSize, planRunKind, planTaskKind, planResultKind,
+  type PlanAttachment, type PlanChatHost, type PlanClosure, type PlanDefinition, type PlanHistoryQuery,
+  type PlanHost, type PlanInspectAt, type PlanProgress, type PlanRun, type PlanRunRecord, type PlanRunState, type PlanSelection, type PlanSnapshot,
+  type PlanStep, type PlanSummary, type PlanTaskReport, type PlanWorkspaceAt, type PlanWorkspaceQuery, type PlanWorktreeCheckout,
+  type PlanWorktreeHost, type PlanWorktreeSource } from "../../server/src/plan.js";
+import { checkPreparedModel, type NativeHost } from "../../server/src/durable.js";
 import type { PlanReviewTarget } from "../../server/src/plan-review.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { PlanFileError, type PlanFiles, type FileProposal, type PlanFileTarget } from "./plan-files.js";
 import type { PlanAcceptance } from "./plan-acceptance.js";
+import { PlanCatalog, type WorkspacePlans } from "./plan-catalog.js";
+import { observe } from "./workspace-changes.js";
+import { ThreadPresentationDoc, threadLabel } from "./thread-presentation.js";
+import { checkoutIdentity, planWorktreeIdentity, type PlannedCheckout, type PlanWorktreeIdentity, type ThreadWorktrees } from "./worktrees.js";
 import { copyTurnWork, foregroundPlan, PlanForeground, scopedPlanTask, type PlanRunModel, type ScopedRun, type TaskTurn } from "./plan-turn.js";
 
 const cursor = () => randomBytes(32).toString("hex");
@@ -24,9 +31,26 @@ type Pin = { planId: string; revision: number };
 type Binding = { cursor: string; pin?: Pin & { liveThread: ConversationId } };
 type PlanState = { cursor: string; revision: number; workspace: string; members: ConversationId[];
   fixture: boolean; progress: PlanProgress[]; run?: PlanRun; previousTask?: string;
-  closed?: true; halt?: true; lifecycle?: string; publication?: { stage?: string } };
-type Receipt = Omit<PlanSelection, "threadId" | "requestId"> & { runId: string };
+  closed?: true; halt?: true; lifecycle?: string; publication?: { stage?: string }; reports?: PlanTaskReport[] };
+type Receipt = Omit<PlanSelection, "threadId" | "requestId"> & { runId: string; chat?: true };
 type Assignment = { checks?: string[]; evidence?: string[] };
+type WorktreeSelection = Pick<PlanSelection, "planId" | "revision" | "stepIds" | "requestId">;
+type WorktreeAllocation = WorktreeSelection & PlannedCheckout & { identity?: PlanWorktreeIdentity; lifecycle?: string };
+type WorktreeOptions = {
+  checkout: ThreadWorktrees;
+  defaults: NonNullable<NativeHost["defaults"]>;
+  validateSelection: NonNullable<NativeHost["validateSelection"]>;
+  name(ref: NonNullable<AgentState["model"]>, title: string, tasks: readonly string[], signal: AbortSignal): Promise<string | undefined>;
+};
+const WorktreeLaunch = defineDoc<{ allocation?: WorktreeAllocation }>({
+  kind: "hush.plan-worktree-launch", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: () => ({}), checkpointWhen: () => true,
+});
+const WorktreePreparation = defineDocFamily<{ receipt?: { source: string; target: PlanWorktreeCheckout; ready?: true } }, null>({
+  kind: "hush.plan-worktree-preparation", version: 1, family: true, scope: "session",
+  initial: () => ({}), checkpointWhen: () => true,
+});
+const incompleteWorktree = (id: string) => invalid(`Worktree setup incomplete · inspect thread #${id} in /threads.`);
 
 // A fork copies the binding as of its anchor. Only the original liveThread
 // follows the head; the copy's revision is historical and grants no Run.
@@ -53,8 +77,7 @@ const Work = defineDoc<Assignment>({
   kind: "hush.faux-plan-assignment", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({}), checkpointWhen: () => true,
 });
-type Catalog = { cursor: string; rows: PlanSummary[] };
-const WorkspaceCatalog = defineDocFamily<Catalog, null>({
+const WorkspaceCatalog = defineDocFamily<WorkspacePlans, null>({
   kind: "hush.plan-workspace", version: 1, family: true, scope: "session",
   initial: () => ({ cursor: cursor(), rows: [] }), checkpointWhen: () => true,
 });
@@ -66,6 +89,16 @@ const RunLog = defineDocFamily<{ runs: PlanRunRecord[] }, null>({
 });
 const revisionKey = (id: string, revision: number) => `${id}:${revision}`;
 const verifiedCount = (state: PlanState) => state.progress.filter(p => p.state === "verified").length;
+const reportedCount = (state: PlanState) => state.reports?.filter(r => r.state === "done" &&
+  !state.progress.some(p => p.stepId === r.stepId && p.state === "verified")).length ?? 0;
+
+function runReceipt(records: { requestId: string; receipt: Receipt }[], q: PlanSelection, chat?: true) {
+  const existing = records.find(r => r.requestId === q.requestId)?.receipt;
+  if (!existing) return;
+  if (existing.chat === chat && existing.planId === q.planId && existing.revision === q.revision && existing.stepIds.length === q.stepIds.length &&
+      existing.stepIds.every((id, i) => id === q.stepIds[i])) return existing.runId;
+  throw invalid("Run request ID already belongs to a different selection or Run mode.");
+}
 
 async function refreshCatalog(tx: Tx, planId: string, state: PlanState, definition?: PlanDefinition) {
   const catalog = await tx.doc(WorkspaceCatalog, state.workspace, null);
@@ -74,8 +107,11 @@ async function refreshCatalog(tx: Tx, planId: string, state: PlanState, definiti
   const plan = definition ?? (previous?.revision === state.revision ? previous : await readDefinition(tx, { planId, revision: state.revision }));
   const total = "steps" in plan ? plan.steps.length : plan.total, verified = verifiedCount(state);
   const status = verified === total ? "complete" : state.run?.state === "running" ? "running" : state.run?.state === "failed" ? "attention" : "pending";
-  const row: PlanSummary = { id: planId, title: plan.title, revision: state.revision, total, verified, status, closed: !!state.closed };
-  if (previous && previous.revision === row.revision && previous.verified === verified && previous.status === status && previous.closed === row.closed) return;
+  const reportedDone = reportedCount(state);
+  const row: PlanSummary = { id: planId, title: plan.title, revision: state.revision, total, verified, status, closed: !!state.closed,
+    ...(reportedDone && { reportedDone }) };
+  if (previous && previous.revision === row.revision && previous.verified === verified && (previous.reportedDone ?? 0) === reportedDone &&
+      previous.status === status && previous.closed === row.closed) return;
   if (index < 0) catalog.rows.push(row);
   else catalog.rows[index] = row;
   catalog.cursor = cursor();
@@ -176,6 +212,7 @@ export async function proposePlan(tx: Tx, owner: ConversationId, directory: (cwd
   record.sources = combineSources(previousSources, sources, baseRevision > 0);
   state.revision = plan.revision;
   state.progress = [];
+  delete state.reports;
   if (state.run) state.previousTask = state.run.id;
   delete state.run;
   await update(tx, planId, state, plan);
@@ -268,7 +305,14 @@ async function finishRun(tx: Tx, planId: string, state: PlanState, outcome: Excl
     if (state.run.failure) row.failure = state.run.failure;
     if (state.run.publicationUncertain) row.publicationUncertain = true;
     for (const turn of [...row.workers, ...(row.turns ?? [])]) if (turn.state === "running") turn.state = "failed";
-    if (row.turns) {
+    if (row.chat) {
+      if (outcome !== "done") delete row.reports;
+      const label = outcome === "done" ? "Plan run finished" : outcome === "closed" ? "Plan run closed" : "Plan run interrupted";
+      const details = row.reports?.map(r => `${r.stepId}: ${r.state === "done" ? "reported done" : r.state} · ${r.detail}`).join("\n")
+        ?? (outcome === "done" ? "No task outcomes reported." : undefined);
+      await reportTurn(tx, planResultKind, row.threadId, row.id,
+        `${label}${state.run.failure ? "\n" + state.run.failure : ""}${details ? "\n" + details : ""}`, { outcome });
+    } else if (row.turns) {
       const foreground = await tx.doc(PlanForeground, thread(row.threadId));
       if (String(foreground.run?.id) === row.id) delete foreground.run;
       const verified = row.turns.filter(turn => turn.state === "verified").length;
@@ -526,6 +570,97 @@ export function scopedPlanExecution(files: PlanFiles, acceptance: PlanAcceptance
 }
 type ScopedExecution = ReturnType<typeof scopedPlanExecution>;
 
+const ChatInput = defineEntry<Pin & { text: string; timestampMs: number }>(planChatKind);
+
+async function chatAssignment(tx: Tx, owner: ConversationId) {
+  const live = (await tx.doc(LiveDoc, owner)).run;
+  if (live?.first === undefined) return;
+  const entry = await tx.entry(ChatInput, live.first);
+  if (!entry || entry.conversationId !== owner) return;
+  const { planId, revision } = entry.data;
+  const state = await tx.doc(State, planId, null), run = state.run;
+  if (state.revision === revision && run?.chat && run.state === "running" && run.ownerThreadId === String(owner) &&
+      live.inputs.includes(Number(run.submissionId) as SubmissionId)) return { planId, run };
+}
+
+export const planReportName = "hush_plan_report";
+export const planReportTool = defineTool({
+  name: planReportName,
+  description: "Report the outcome and checks or blocker for every selected task of this Run. This is an advisory report, not verification.",
+  callers: ["model"], replay: "safe",
+  parameters: { type: "object", required: ["tasks"], additionalProperties: false, properties: { tasks: {
+    type: "array", minItems: 1, maxItems: planStepLimit, items: {
+      type: "object", required: ["stepId", "state", "detail"], additionalProperties: false, properties: {
+        stepId: { type: "string", maxLength: 64 }, state: { type: "string", enum: ["done", "blocked", "incomplete"] },
+        detail: { type: "string", minLength: 1, maxLength: 180, pattern: "\\S" },
+      },
+    },
+  } } } as const,
+  async execute({ tasks }: { tasks: PlanTaskReport[] }, api, ctx) {
+    return api.commit(async tx => {
+      const assignment = await chatAssignment(tx, api.conversationId);
+      if (!assignment) return { ...result("No active plan assignment to report on."), isError: true };
+      const { planId, run } = assignment;
+      if (tasks.length !== run.stepIds.length || new Set(tasks.map(t => t.stepId)).size !== tasks.length ||
+          tasks.some(t => !run.stepIds.includes(t.stepId) || !t.detail.isWellFormed() || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(t.detail))) {
+        return { ...result("Report exactly one outcome per selected task, with a single-line detail."), isError: true };
+      }
+      const record = await logRun(tx, planId, run.id);
+      if (!record) throw new WireError("internal");
+      record.reports = run.stepIds.map(id => ({ ...tasks.find(t => t.stepId === id)! }));
+      return result("Report recorded. It is not an independent verification.");
+    }, ctx);
+  },
+});
+
+export async function hasChatAssignment(h: Harness, owner: ConversationId, ctx: Context) {
+  return h.commit(async tx => !!await chatAssignment(tx, owner), ctx);
+}
+
+export function planChatExecution(harness: () => Harness, authorize: (cwd: string | undefined, ctx: Context) => Promise<string>,
+    requireModel: NativeHost["requireModel"], agent: AgentChange) {
+  const task = defineTask<Pin & { submission: SubmissionId }, { phase: "settle" }, null>({
+    name: "hush.plan-chat-tracker", version: 1, initial: () => ({ phase: "settle" }),
+    phases: { settle: async (task, runtime, ctx) => {
+      // Observe the one native submission, including queued withdrawal. This
+      // observer never invokes a model, owns a conversation or resubmits input.
+      const { planId, revision, submission } = task.input;
+      const wait = withAbortSignal(runtime.signal, ctx);
+      const settled = await (await harness().submission(submission, wait))?.wait(wait);
+      return runtime.commit(async tx => {
+        const state = await tx.doc(State, planId, null);
+        if (state.revision !== revision || state.run?.id !== String(task.id)) return ended;
+        const row = await logRun(tx, planId, state.run.id);
+        if (row && settled?.entry !== undefined) row.entryId = String(settled.entry);
+        if (settled?.status !== "done" || settled.conversationId !== runtime.conversationId) {
+          if (state.halt && settled?.entry === undefined) return finishRun(tx, planId, state, "closed");
+          return failRun(tx, planId, state, settled?.entry === undefined
+            ? "Plan input did not start." : "Plan turn did not finish. Inspect any changes before retrying.");
+        }
+        const reports = row?.reports ?? [];
+        state.reports = [...state.reports?.filter(r => !state.run!.stepIds.includes(r.stepId)) ?? [], ...reports];
+        return finishRun(tx, planId, state, "done");
+      }, ctx);
+    } },
+    abort: (task, runtime, ctx) => runtime.commit(async tx => {
+      const state = await tx.doc(State, task.input.planId, null);
+      if (state.run?.id === String(task.id)) await failRun(tx, task.input.planId, state, "Run tracking stopped. Check the initiating thread before retrying.");
+      return aborted;
+    }, ctx),
+  });
+  return { task, authorize, requireModel, agent, extension: defineExtension({ name: "hush-plan-chat", tasks: [task] }) };
+}
+type ChatExecution = ReturnType<typeof planChatExecution>;
+
+export async function checkPlanWorktree(read: DocumentReader, owner: ConversationId, cwd: string, ctx: Context) {
+  const launch = (await read.snapshot(WorktreeLaunch, owner, ctx))?.allocation;
+  if (!launch) return;
+  if (!launch.identity) throw incompleteWorktree(String(owner));
+  if (cwd !== launch.cwd || await checkoutIdentity(cwd) !== launch.identity.directory) {
+    throw invalid("The prepared worktree changed. Review the checkout before retrying.");
+  }
+}
+
 export async function isPlanWorker(h: Harness, owner: ConversationId, ctx: Context) {
   // Ownership is immutable. Do not grant authority even if the worker's
   // extension, assignment or invocation-private profile changed on reopen.
@@ -572,10 +707,19 @@ function checkFileClaims<T extends { writable: boolean }>(claims: readonly T[], 
   }
 }
 
-export class Plans implements PlanHost {
+export class Plans implements PlanHost, PlanChatHost {
   #catalog?: Promise<void>;
+  #allWorkspaces?: PlanCatalog;
+  #preparing = new Set<string>();
+  readonly worktrees?: PlanWorktreeHost;
   constructor(private readonly harness: Harness, private readonly storage: Storage,
-    private readonly directory: (cwd?: string) => string, private readonly fixture: boolean, private readonly scoped?: ScopedExecution) {}
+    private readonly directory: (cwd?: string) => string, private readonly fixture: boolean, private readonly scoped?: ScopedExecution,
+    private readonly chat?: ChatExecution, worktree?: WorktreeOptions) {
+    if (chat && worktree) this.worktrees = {
+      prepare: (selection, signal) => this.#prepareWorktree(worktree, chat, selection, signal),
+      start: (selection, signal) => this.#runInChat(selection, signal, { path: selection.checkout, validate: worktree.validateSelection }),
+    };
+  }
 
   async #definition(pin: Pin, ctx: Context) {
     const plan = (await this.harness.snapshot(Definition, revisionKey(pin.planId, pin.revision), ctx))?.plan;
@@ -588,12 +732,18 @@ export class Plans implements PlanHost {
     return this.directory((await tx.doc(AgentDoc, owner)).cwd);
   }
 
-  async #inWorkspace(tx: Tx, q: PlanAttachment) {
-    const cwd = await this.#threadWorkspace(tx, thread(q.threadId));
-    const state = await tx.doc(State, q.planId, null);
-    if (!state.revision || state.workspace !== cwd) throw new WireError("not_found");
-    return state;
+  async #workspacePlan(tx: Tx, cwd: string, planId: string, browse = false) {
+    const state = await tx.doc(State, planId, null);
+    const foreign = state.workspace !== cwd;
+    if (!state.revision || foreign && !browse) throw new WireError("not_found");
+    return { state, workspace: foreign ? state.workspace : undefined };
   }
+
+  async #locate(tx: Tx, q: PlanAttachment, browse: boolean) {
+    return this.#workspacePlan(tx, await this.#threadWorkspace(tx, thread(q.threadId)), q.planId, browse);
+  }
+
+  async #inWorkspace(tx: Tx, q: PlanAttachment) { return (await this.#locate(tx, q, false)).state; }
 
   async reviewTarget(tx: Tx, q: PlanReviewTarget) {
     const state = await this.#inWorkspace(tx, q);
@@ -624,29 +774,77 @@ export class Plans implements PlanHost {
     await h.commit(async tx => { (await tx.doc(CatalogReady)).ready = true; }, ctx);
   }
 
-  async workspace(q: PlanWorkspaceQuery, signal: AbortSignal) {
+  async workspace(q: PlanWorkspaceQuery, signal: AbortSignal, chat = false) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const cwd = await this.harness.commit(tx => this.#threadWorkspace(tx, thread(q.threadId)), ctx);
+    return this.#workspacePage(cwd, q, signal, chat);
+  }
+
+  async workspaceAt(q: PlanWorkspaceAt, signal: AbortSignal, browse = false) {
+    const cwd = await this.#launchDirectory(q.cwd, signal);
+    const page = await (browse ? this.#catalogPage(cwd, q, signal, true) : this.#workspacePage(cwd, q, signal, true));
+    await this.#launchDirectory(cwd, signal); // A wait may outlive the grant.
+    return page;
+  }
+
+  async inspectAt(q: PlanInspectAt, signal: AbortSignal, browse = false) {
+    const cwd = await this.#launchDirectory(q.cwd, signal);
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const workspace = await this.harness.commit(async tx => (await this.#workspacePlan(tx, cwd, q.planId, browse)).workspace, ctx);
+    const snapshot = await this.#watchPlan(q.planId, undefined, q.after, signal, true, true, workspace);
+    await this.#launchDirectory(cwd, signal);
+    return snapshot;
+  }
+
+  async #launchDirectory(path: string, signal: AbortSignal) {
+    if (!this.chat) throw new WireError("unsupported_capability", "planChat");
+    const cwd = this.directory(path);
+    await this.chat.authorize(cwd, withAbortSignal(signal, BACKGROUND_CONTEXT));
+    return cwd;
+  }
+
+  async #workspacePage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    const owner = thread(q.threadId), cwd = await h.commit(tx => this.#threadWorkspace(tx, owner), ctx);
-    await (this.#catalog ??= this.#indexExistingPlans().catch(error => { this.#catalog = undefined; throw error; }));
+    await this.#ensureCatalog(signal);
     if (!(await h.snapshot(WorkspaceCatalog, cwd, ctx))) await h.commit(tx => tx.doc(WorkspaceCatalog, cwd, null), ctx);
-    const token = (catalog: Readonly<Catalog>) => createHash("sha256").update(`${catalog.cursor}:${q.page}`).digest("hex");
+    const token = (catalog: Readonly<WorkspacePlans>) => createHash("sha256").update(`${catalog.cursor}:${q.page}:${chat}`).digest("hex");
     const catalog = await observed(observer => h.observeDoc(WorkspaceCatalog, cwd, observer, ctx), token, q.after, signal);
     const ordered = catalog.rows.slice().reverse().sort((a, b) => Number(a.closed) - Number(b.closed));
     const first = q.page * planWorkspacePageSize;
-    return { revision: token(catalog), plans: ordered.slice(first, first + planWorkspacePageSize), more: ordered.length > first + planWorkspacePageSize };
+    const plans = ordered.slice(first, first + planWorkspacePageSize);
+    return { revision: token(catalog), plans: chat ? plans : plans.map(({ reportedDone: _, ...plan }) => plan), more: ordered.length > first + planWorkspacePageSize };
   }
 
-  async history(q: PlanHistoryQuery, signal: AbortSignal) {
+  #ensureCatalog(signal: AbortSignal) {
+    return observe(this.#catalog ??= this.#indexExistingPlans().catch(error => { this.#catalog = undefined; throw error; }), signal);
+  }
+
+  async catalog(q: PlanWorkspaceQuery, signal: AbortSignal, chat = false) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const cwd = await this.harness.commit(tx => this.#threadWorkspace(tx, thread(q.threadId)), ctx);
+    return this.#catalogPage(cwd, q, signal, chat);
+  }
+
+  async #catalogPage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean) {
+    await this.#ensureCatalog(signal);
+    const { kind, version } = WorkspaceCatalog.definition;
+    const index = this.#allWorkspaces ??= new PlanCatalog(this.harness, this.storage, kind, version);
+    return index.page(cwd, q.page, q.after, signal, chat);
+  }
+
+  async history(q: PlanHistoryQuery, signal: AbortSignal, chat = false, browse = false, worktrees = false) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     // Scope and the page are observed in the same transaction.
     return h.commit(async tx => {
-      await this.#inWorkspace(tx, q);
+      await this.#locate(tx, q, browse);
       const log = await tx.doc(RunLog, q.planId, null);
-      const end = q.before === undefined ? log.runs.length : log.runs.findIndex(r => r.id === q.before);
+      const visible = chat ? log.runs : log.runs.filter(r => !r.chat);
+      const end = q.before === undefined ? visible.length : visible.findIndex(r => r.id === q.before);
       if (end < 0) throw new WireError("invalid_request");
       const start = Math.max(0, end - planHistoryPageSize);
-      const runs = log.runs.slice(start, end).reverse().map(r => ({ ...r, stepIds: r.stepIds.slice(),
-        workers: r.workers.map(w => ({ ...w })), ...(r.turns && { turns: r.turns.map(t => ({ ...t })) }) }));
+      const runs = visible.slice(start, end).reverse().map(({ reports, worktree, ...r }) => ({ ...r, stepIds: r.stepIds.slice(),
+        workers: r.workers.map(w => ({ ...w })), ...(r.turns && { turns: r.turns.map(t => ({ ...t })) }),
+        ...(worktrees && worktree && { worktree }), ...(r.state === "done" && reports && { reports: reports.map(t => ({ ...t })) }) }));
       return { runs, next: start > 0 ? runs.at(-1)!.id : null };
     }, ctx);
   }
@@ -660,7 +858,22 @@ export class Plans implements PlanHost {
       if (!!state.closed === q.closed) return;
       if (q.closed) {
         state.closed = true;
-        if (state.run?.state === "running") state.halt = true;
+        if (state.run?.state === "running") {
+          state.halt = true;
+          if (state.run.chat) {
+            const owner = thread(state.run.ownerThreadId!);
+            const id = Number(state.run.submissionId) as SubmissionId;
+            const submission = await tx.submission(id);
+            if (submission?.status === "queued" && submission.conversationId === owner) {
+              const inbox = (await tx.doc(InboxDoc, owner)).items;
+              const i = inbox.findIndex(item => item.id === id && item.mode === "followUp");
+              if (i >= 0) {
+                inbox.splice(i, 1);
+                tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
+              }
+            }
+          }
+        }
       } else {
         // Reopening is not renewal of the previous Run's authorisation.
         delete state.closed;
@@ -671,11 +884,12 @@ export class Plans implements PlanHost {
     return {};
   }
 
-  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string): Promise<PlanSnapshot> {
+  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string, chat = false, browse = false): Promise<PlanSnapshot> {
     const owner = thread(id), h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     let binding = await h.snapshot(Binding, owner, ctx);
+    let workspace: string | undefined;
     if (named) {
-      await h.commit(tx => this.#inWorkspace(tx, { threadId: id, planId: named }), ctx);
+      workspace = await h.commit(async tx => (await this.#locate(tx, { threadId: id, planId: named }, browse)).workspace, ctx);
     } else {
       if (!binding || binding.pin?.liveThread !== owner) {
         if (!binding) await h.commit(async tx => { await checkThread(tx, owner); await tx.doc(Binding, owner); }, ctx);
@@ -686,15 +900,20 @@ export class Plans implements PlanHost {
         plan: pin ? await this.#definition(pin, ctx) : null, runAvailability: pin ? "pinned" : this.fixture ? "fixture" : "disabled",
         progress: [], run: null };
     }
-    const planId = named ?? binding!.pin!.planId;
+    return this.#watchPlan(named ?? binding!.pin!.planId, owner, after, signal, !!named, chat, workspace);
+  }
+
+  async #watchPlan(planId: string, owner: ConversationId | undefined, after: string | undefined, signal: AbortSignal, named: boolean, chat: boolean, workspace?: string): Promise<PlanSnapshot> {
+    const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const compatible = (state: Readonly<PlanState>) => state.fixture === this.fixture;
-    const availability = (state: Readonly<PlanState>) => !compatible(state) ? "disabled"
-      : !state.members.includes(owner) ? "unbound" : state.fixture ? "fixture" : this.scoped ? "scoped" : "disabled";
-    const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}`).digest("hex");
+    const showChatFields = (state: Readonly<PlanState>) => chat && !!this.chat && compatible(state) && !state.fixture;
+    const availability = (state: Readonly<PlanState>) => workspace !== undefined || !compatible(state) ? "disabled"
+      : owner === undefined || !state.members.includes(owner) ? "unbound" : state.fixture ? "fixture" : this.scoped ? "scoped" : "disabled";
+    const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}:${showChatFields(state)}:${workspace ?? ""}`).digest("hex");
     // An unexpected task fault may settle without running its abort callback.
     // Race its receipt against the head update; neither wait survives detach.
     const settle = (state: Readonly<PlanState>, abort: AbortSignal) => {
-      if (state.run?.state !== "running" || !compatible(state)) return;
+      if (workspace !== undefined || state.run?.state !== "running" || !compatible(state)) return;
       const task = Number(state.run.id) as TaskId, context = withAbortSignal(abort, BACKGROUND_CONTEXT);
       return h.waitForTask(task, context).then(async () => {
         await h.commit(async tx => {
@@ -707,12 +926,16 @@ export class Plans implements PlanHost {
       });
     };
     const state = await observed(observer => h.observeDoc(State, planId, observer, ctx), token, after, signal, settle);
-    if (!named && !state.members.includes(owner)) return this.wait(id, undefined, signal);
+    if (!named && owner !== undefined && !state.members.includes(owner)) return this.wait(String(owner), undefined, signal, undefined, chat);
     const runAvailability = availability(state);
     const plan = await this.#definition({ planId, revision: state.revision }, ctx);
-    const showRun = compatible(state) && (state.fixture || !!this.scoped);
-    return { revision: token(state), plan, runAvailability, progress: showRun ? state.progress : [], run: showRun ? state.run ?? null : null,
-      ...(state.closed && { closed: true as const }), ...(state.halt && { settling: true as const }),
+    const showChat = showChatFields(state);
+    const showProgress = showChat || compatible(state) && (state.fixture || !!this.scoped);
+    const run = showProgress && (!state.run?.chat || showChat) ? state.run ?? null : null;
+    return { revision: token(state), plan, runAvailability, progress: showProgress ? state.progress : [], run,
+      ...(state.closed && { closed: true as const }), ...(run && state.halt && { settling: true as const }),
+      ...(workspace !== undefined && { workspace }), ...(showChat && { reports: state.reports ?? [] }),
+      ...(showChat && workspace === undefined && { chat: true as const }),
       ...(verifiedCount(state) === plan.steps.length && { complete: true as const }) };
   }
 
@@ -732,15 +955,212 @@ export class Plans implements PlanHost {
     return {};
   }
 
+  // A durable reservation owns every Git write. Retrying the exact request
+  // returns the same checkout (or identifies its incomplete reservation).
+  async #prepareWorktree(options: WorktreeOptions, chat: ChatExecution, q: PlanWorktreeSource, signal: AbortSignal): Promise<PlanWorktreeCheckout> {
+    const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const owner = "threadId" in q ? thread(q.threadId) : undefined, launch = "cwd" in q ? q : undefined;
+    const sourceCwd = (tx: Tx) => owner === undefined ? this.directory(launch?.cwd) : this.#threadWorkspace(tx, owner);
+    const key = createHash("sha256").update(JSON.stringify([q.planId, q.requestId])).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify([owner, launch?.cwd, launch?.model?.provider,
+      launch?.model?.modelId, launch?.thinkingLevel, q.revision, q.stepIds])).digest("hex");
+    if (this.#preparing.has(key)) throw new WireError("busy");
+    this.#preparing.add(key);
+    let target: PlanWorktreeCheckout | undefined;
+    try {
+      const source = await h.commit(async tx => {
+        const receipt = (await tx.doc(WorktreePreparation, key, null)).receipt;
+        if (receipt) {
+          if (receipt.source !== fingerprint) throw invalid("Worktree request ID already belongs to a different selection or source.");
+          if (!receipt.ready) throw incompleteWorktree(receipt.target.threadId);
+          return { target: { ...receipt.target, checkout: { ...receipt.target.checkout } } } as const;
+        }
+        const cwd = await sourceCwd(tx), { state } = await this.#workspacePlan(tx, cwd, q.planId);
+        const { plan, steps } = await this.#chatSelection(tx, state, q);
+        const agent = owner === undefined ? undefined : await tx.doc(AgentDoc, owner);
+        return { cwd, lifecycle: state.lifecycle, title: plan.title, tasks: steps.map(s => s.title),
+          model: agent?.model && { ...agent.model }, thinkingLevel: agent?.thinkingLevel };
+      }, ctx);
+      if (source.target !== undefined) return source.target;
+      const defaults = await options.defaults(source.cwd, ctx);
+      const model = launch?.model ?? source.model ?? defaults.model;
+      const thinkingLevel = launch?.thinkingLevel ?? source.thinkingLevel ?? defaults.thinkingLevel;
+      let label: string | undefined;
+      const checkout = await options.checkout.create(source.cwd, signal, {
+        name: async signal => {
+          try {
+            await chat.requireModel?.(model ?? undefined);
+            signal.throwIfAborted();
+            if (model) label = await options.name(model, source.title, source.tasks, signal);
+          } catch { signal.throwIfAborted(); } // Unavailable provider or unusable name must not block preparation.
+          return { preferred: label, fallback: source.title };
+        },
+        reserve: async checkout => {
+          const title = threadLabel(label ?? source.title, 96) || "Plan worktree";
+          const { cwd, root, branch } = checkout;
+          const prepared = { cwd, root, branch };
+          const threadId = await h.commit(async tx => {
+            const { state } = await this.#workspacePlan(tx, await sourceCwd(tx), q.planId);
+            if (state.workspace !== source.cwd || state.lifecycle !== source.lifecycle) {
+              throw invalid("The plan workspace or lifecycle changed; select the tasks again.");
+            }
+            await this.#chatSelection(tx, state, q);
+            const record = await tx.doc(WorktreePreparation, key, null);
+            if (record.receipt) throw new WireError("busy");
+            const { id } = await tx.createConversation({ ownership: { kind: "ownerless" } });
+            await configure(tx, id, { ...defaults, cwd, model, thinkingLevel });
+            const doc = await tx.doc(ThreadPresentationDoc, id);
+            doc.title = title;
+            doc.checkout = { cwd, branch, repository: checkout.repository };
+            (await tx.doc(WorktreeLaunch, id)).allocation = { ...checkout, planId: q.planId, revision: q.revision,
+              stepIds: q.stepIds.slice(), requestId: q.requestId, ...(source.lifecycle !== undefined && { lifecycle: source.lifecycle }) };
+            record.receipt = { source: fingerprint, target: { threadId: String(id), title, checkout: prepared } };
+            return String(id);
+          }, ctx);
+          target = { threadId, title, checkout: prepared };
+        },
+      });
+      if (!target) throw new WireError("internal");
+      const id = thread(target.threadId);
+      // A lost peer must not strand a completed Git checkout as incomplete.
+      await h.commit(async tx => {
+        const launch = (await tx.doc(WorktreeLaunch, id)).allocation;
+        const { receipt } = await tx.doc(WorktreePreparation, key, null);
+        if (!launch || !receipt || receipt.target.threadId !== String(id)) throw new WireError("internal");
+        launch.identity = checkout.identity;
+        receipt.ready = true;
+      }, withAbortSignal(AbortSignal.timeout(5_000), BACKGROUND_CONTEXT));
+      return target;
+    } catch (error) {
+      if (target) throw incompleteWorktree(target.threadId);
+      throw error;
+    } finally { this.#preparing.delete(key); }
+  }
+
+  async #chatSelection(tx: Tx, state: PlanState, q: WorktreeSelection) {
+    if (state.fixture) throw new WireError("unsupported_capability", "planChat");
+    if (state.closed) throw invalid("This plan is closed. Reopen it before running tasks.");
+    if (state.revision !== q.revision) throw invalid("Plan changed; review and select the current revision.");
+    if (state.run?.state === "running") throw new WireError("busy");
+    const last = state.run?.id ?? state.previousTask;
+    if (last) {
+      const task = await tx.task(Number(last) as TaskId);
+      if (!task || task.state.status !== "terminal") throw new WireError("busy");
+    }
+    const plan = await readDefinition(tx, q);
+    const steps = plan.steps.filter(step => q.stepIds.includes(step.id));
+    if (steps.length !== q.stepIds.length) throw invalid("Selection includes an unknown task.");
+    const status = (id: string) => state.progress.some(p => p.stepId === id && p.state === "verified") ? "verified"
+      : state.reports?.find(r => r.stepId === id)?.state;
+    if (steps.some(s => status(s.id) === "verified")) throw invalid("Selection includes an already verified task.");
+    return { plan, steps, status };
+  }
+
+  runInChat(q: PlanSelection, signal: AbortSignal) { return this.#runInChat(q, signal); }
+
+  async #runInChat(q: PlanSelection, signal: AbortSignal, worktree?: { path: string; validate: WorktreeOptions["validateSelection"] }) {
+    const chat = this.chat;
+    if (!chat || this.fixture) throw new WireError("unsupported_capability", "planChat");
+    const h = this.harness, owner = thread(q.threadId), ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const target = await h.conversation(owner, ctx);
+    if (!target) throw new WireError("not_found");
+    const inspect = async (tx: Tx) => {
+      const cwd = await this.#threadWorkspace(tx, owner);
+      let state: PlanState, launch: WorktreeAllocation | undefined;
+      if (worktree) {
+        const allocation = (await tx.doc(WorktreeLaunch, owner)).allocation;
+        if (!allocation || allocation.cwd !== worktree.path || allocation.planId !== q.planId ||
+            allocation.revision !== q.revision || allocation.requestId !== q.requestId ||
+            allocation.stepIds.length !== q.stepIds.length || allocation.stepIds.some((id, i) => id !== q.stepIds[i])) {
+          throw new WireError("not_found");
+        }
+        if (!allocation.identity) throw incompleteWorktree(q.threadId);
+        launch = allocation;
+        state = (await this.#workspacePlan(tx, cwd, q.planId, true)).state;
+      } else state = (await this.#workspacePlan(tx, cwd, q.planId)).state;
+      if (state.fixture) throw new WireError("unsupported_capability", "planChat");
+      const receipts = (await tx.doc(Receipts, owner)).records;
+      const receipt = runReceipt(receipts, q, true);
+      if (receipt) return { receipt } as const;
+      if (launch && launch.cwd !== cwd) throw new WireError("not_found");
+      if (launch && state.lifecycle !== launch.lifecycle) throw invalid("The plan was closed or reopened; select the tasks again.");
+      if (await foregroundPlan(tx, owner)) throw new WireError("busy");
+      if (launch && ((await tx.doc(LiveDoc, owner)).run || (await tx.doc(InboxDoc, owner)).items.length)) throw new WireError("busy");
+      if (receipts.length >= receiptLimit) throw new WireError("limit");
+      return { state, ...await this.#chatSelection(tx, state, q), receipts, agent: await tx.doc(AgentDoc, owner), launch };
+    };
+    const before = await h.commit(async tx => {
+      const inspected = await inspect(tx);
+      if (inspected.receipt !== undefined) return inspected;
+      const { cwd, model, thinkingLevel } = inspected.agent, launch = inspected.launch;
+      const checkout = launch && { cwd: launch.cwd, root: launch.root, branch: launch.branch, head: launch.head,
+        repository: launch.repository, identity: { ...launch.identity! } };
+      return { cwd, model: model && { provider: model.provider, modelId: model.modelId }, thinkingLevel,
+        lifecycle: inspected.state.lifecycle, launch: checkout };
+    }, ctx);
+    if ("receipt" in before) return { runId: before.receipt };
+    const require = worktree ? (ref: AgentState["model"]) => worktree.validate(ref, before.thinkingLevel ?? "off") : chat.requireModel;
+    const verify = await checkPreparedModel(require, before.model, chat.agent);
+    let failure: WireError | undefined;
+    try {
+      const authorized = await chat.authorize(before.cwd, ctx);
+      if (before.launch) {
+        const identity = authorized === before.launch.cwd && await planWorktreeIdentity(before.launch, signal);
+        if (!identity || identity.git !== before.launch.identity?.git || identity.directory !== before.launch.identity.directory) {
+          throw invalid("The prepared worktree changed. Review the checkout before retrying.");
+        }
+      }
+    } catch (error) {
+      if (!worktree || !(error instanceof WireError)) throw error;
+      failure = error; // Prefer a concurrently committed receipt to a stale preflight error.
+    }
+    const runId = await h.commit(async tx => {
+      const inspected = await inspect(tx);
+      if (inspected.receipt !== undefined) return inspected.receipt;
+      const { state, plan, steps, status, receipts, agent } = inspected;
+      if (failure) throw failure;
+      if (agent.cwd !== before.cwd || worktree && agent.thinkingLevel !== before.thinkingLevel) throw new WireError("busy");
+      if (state.lifecycle !== before.lifecycle) throw invalid("The plan was closed or reopened; select the tasks again.");
+      verify?.(agent.model);
+      return this.#admitChat(tx, chat, target, q, state, plan, steps, status, receipts, !!worktree);
+    }, ctx);
+    h.resume();
+    return { runId };
+  }
+
+  async #admitChat(tx: Tx, chat: ChatExecution, target: Conversation, q: PlanSelection, state: PlanState, plan: PlanDefinition,
+      steps: PlanStep[], status: (id: string) => string | undefined, receipts: { requestId: string; receipt: Receipt }[], worktree: boolean) {
+    // The selected revision is input data, not a replay of the authoring prompt.
+    // Normal tools apply; none of the scoped file scripts or grants are passed.
+    const owner = target.id, stepIds = steps.map(s => s.id);
+    const content = "Plan implementation\n" + JSON.stringify({ title: plan.title, revision: plan.revision, selected: stepIds,
+      tasks: plan.steps.map(({ id, title, description, checks, requires, after, blocker }) =>
+        ({ id, title, description, checks, requires, after, blocker, status: status(id) })) }) +
+      "\nImplement only the selected outcomes in this turn. Use the other tasks and their dependencies as context, not assignments. " +
+      "Inspect what already exists, do setup necessary for the selected work, and run relevant checks. If a real blocker remains, " +
+      "continue with independent selected tasks. Do not launch background workers for this run. " +
+      `Call ${planReportName} with the outcome and checks or blocker for each selected task, then summarize. ` +
+      "Treat this assignment as a record in later turns, not a standing request." + (worktree ?
+        " Work in this checkout only. Do not change other checkouts or merge the work back." : "");
+    await configure(tx, owner, chat.agent);
+    const submission = await target.submit(tx, { type: "input", whenBusy: "followUp", content,
+      entry: { kind: planChatKind, data: { planId: q.planId, revision: q.revision, timestampMs: Date.now(),
+        text: `Plan run · ${plan.title} · r${q.revision}\nSelected: ${steps.map(s => s.title).join(", ")}` } } });
+    const tracker = await tx.createTask(chat.task, { planId: q.planId, revision: q.revision, submission },
+      { ownership: { kind: "conversation" }, conversationId: owner, background: true });
+    const id = String(tracker);
+    delete state.halt;
+    state.run = { id, stepIds, state: "running", chat: true, ownerThreadId: q.threadId, submissionId: String(submission) };
+    (await tx.doc(RunLog, q.planId, null)).runs.push({ id, revision: q.revision, threadId: q.threadId, stepIds, state: "running", chat: true,
+      ...(worktree && { worktree: true as const }), workers: [] });
+    receipts.push({ requestId: q.requestId, receipt: { runId: id, chat: true, planId: q.planId, revision: q.revision, stepIds: q.stepIds } });
+    await update(tx, q.planId, state, plan);
+    return id;
+  }
+
   async run(q: PlanSelection, signal: AbortSignal) {
     const h = this.harness, owner = thread(q.threadId), ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    const receipt = (records: { requestId: string; receipt: Receipt }[]) => {
-      const existing = records.find(r => r.requestId === q.requestId)?.receipt;
-      if (!existing) return;
-      if (existing.planId === q.planId && existing.revision === q.revision && existing.stepIds.length === q.stepIds.length &&
-          existing.stepIds.every((id, i) => id === q.stepIds[i])) return existing.runId;
-      throw invalid("Run request ID already belongs to a different selection.");
-    };
+    const receipt = (records: { requestId: string; receipt: Receipt }[]) => runReceipt(records, q);
     const inspect = async (tx: Tx) => {
       await checkThread(tx, owner);
       const { pin } = await tx.doc(Binding, owner);

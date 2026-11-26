@@ -129,6 +129,11 @@ async function resolveGitWorkspace(cwd: DirectoryIdentity, signal: AbortSignal):
   return { ...common, cwd, root, gitDir };
 }
 
+// Read-only probe for a checkout Hush just created or already authorized.
+export async function discoverGitWorkspace(path: string, signal: AbortSignal) {
+  return resolveGitWorkspace(await directory(path), signal);
+}
+
 function privateDir(path: string, create: boolean) {
   if (create) {
     try { mkdirSync(path, { mode: 0o700 }); }

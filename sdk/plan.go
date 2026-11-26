@@ -62,6 +62,13 @@ type PlanProgress struct {
 	Evidence          []string `json:"evidence,omitempty"`
 }
 
+// PlanTaskReport records the agent's account of one task, not verified evidence.
+type PlanTaskReport struct {
+	StepID string `json:"stepId"`
+	State  string `json:"state"`
+	Detail string `json:"detail"`
+}
+
 type PlanRun struct {
 	ID                   ID       `json:"id"`
 	StepIDs              []string `json:"stepIds"`
@@ -69,6 +76,8 @@ type PlanRun struct {
 	OwnerThreadID        ID       `json:"ownerThreadId,omitempty"`
 	Failure              string   `json:"failure,omitempty"`
 	PublicationUncertain bool     `json:"publicationUncertain,omitempty"`
+	Chat                 bool     `json:"chat,omitempty"`
+	SubmissionID         ID       `json:"submissionId,omitempty"`
 }
 
 type PlanRunAvailability string
@@ -92,6 +101,9 @@ type PlanSnapshot struct {
 	Closed          bool                `json:"closed,omitempty"`
 	Complete        bool                `json:"complete,omitempty"`
 	Settling        bool                `json:"settling,omitempty"`
+	Chat            bool                `json:"chat,omitempty"`
+	Reports         []PlanTaskReport    `json:"reports,omitempty"`
+	Workspace       string              `json:"workspace,omitempty"` // nonempty for a read-only foreign plan
 }
 
 type PlanSelection struct {
@@ -112,9 +124,14 @@ var planFilePath = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_
 func goodPlanText(s string, max int) bool {
 	return len(s) <= 4*max && utf8.RuneCountInString(s) <= max && strings.TrimSpace(s) != ""
 }
-func planStepID(s string) bool   { return len(s) <= 64 && token(s) }
-func planState(s string) bool    { return s == "running" || s == "verified" || s == "failed" }
-func planRunState(s string) bool { return planState(s) || s == "closed" }
+func planStepID(s string) bool { return len(s) <= 64 && token(s) }
+func planState(s string) bool  { return s == "running" || s == "verified" || s == "failed" }
+func planRunState(s string, chat bool) bool {
+	if chat {
+		return s == "running" || s == "done" || s == "failed" || s == "closed"
+	}
+	return planState(s) || s == "closed"
+}
 func planThinking(s string) bool {
 	switch s {
 	case "off", "minimal", "low", "medium", "high", "xhigh", "max":
@@ -142,17 +159,24 @@ func (s PlanSnapshot) valid() bool {
 		return false
 	}
 	p := s.Plan
+	foreign := s.Workspace != ""
+	if foreign && (!validPlanWorkspace(s.Workspace) || p == nil || s.Chat || s.RunAvailability != PlanRunDisabled) {
+		return false
+	}
 	switch s.RunAvailability {
 	case PlanRunDisabled, PlanRunPinned:
-		if s.Run != nil || len(s.Progress) != 0 || s.RunAvailability == PlanRunPinned && p == nil {
+		if !s.Chat && !foreign && (s.Run != nil || len(s.Progress) != 0) || s.RunAvailability == PlanRunPinned && (p == nil || s.Chat) {
 			return false
 		}
 	case PlanRunFixture, PlanRunScoped, PlanRunUnbound:
 	default:
 		return false
 	}
+	if !foreign && s.Chat != (s.Reports != nil) || s.Chat && s.RunAvailability == PlanRunFixture {
+		return false
+	}
 	if p == nil {
-		return len(s.Progress) == 0 && s.Run == nil && !s.Closed && !s.Complete && !s.Settling
+		return len(s.Progress) == 0 && s.Run == nil && !s.Closed && !s.Complete && !s.Settling && !s.Chat
 	}
 	if !token(p.ID) || p.Revision < 1 || p.Revision > 1<<53-1 || !goodPlanText(p.Title, 160) || len(p.Steps) < 1 || len(p.Steps) > planStepLimit {
 		return false
@@ -210,9 +234,13 @@ func (s PlanSnapshot) valid() bool {
 		}
 		progress[pr.StepID] = true
 	}
+	if !validPlanReports(s.Reports, steps) {
+		return false
+	}
 	if r := s.Run; r != nil {
-		if !r.ID.Valid() || !planRunState(r.State) || !validPlanIDs(r.StepIDs) ||
-			s.RunAvailability == PlanRunScoped && !r.OwnerThreadID.Valid() ||
+		if !r.ID.Valid() || !planRunState(r.State, r.Chat) || !validPlanIDs(r.StepIDs) ||
+			r.Chat && (!s.Chat && !(foreign && s.Reports != nil) || !r.SubmissionID.Valid() || r.PublicationUncertain) || !r.Chat && r.SubmissionID != "" ||
+			(r.Chat || s.RunAvailability == PlanRunScoped) && !r.OwnerThreadID.Valid() ||
 			r.PublicationUncertain && (r.State != "failed" || r.Failure == "") ||
 			r.Failure != "" && (r.State != "failed" || !goodPlanText(r.Failure, 240)) {
 			return false
@@ -273,13 +301,17 @@ func (c *Client) AttachPlan(ctx context.Context, thread ID, planID string) error
 // RunPlan requests exactly the selected scope. After an indeterminate reply,
 // retry with the same request ID and identical selection, never a new key.
 func (c *Client) RunPlan(ctx context.Context, selection PlanSelection) (ID, error) {
+	return c.runPlan(ctx, selection, planCapability, PlanVersion, planRun)
+}
+
+func (c *Client) runPlan(ctx context.Context, selection PlanSelection, capability string, version uint64, method string) (ID, error) {
 	if !selection.ThreadID.Valid() || !token(selection.PlanID) || !token(selection.RequestID) ||
 		selection.Revision < 1 || selection.Revision > 1<<53-1 || !validPlanIDs(selection.StepIDs) {
 		return "", ErrProtocol
 	}
 	out, err := optionalCall[struct {
 		RunID ID `json:"runId"`
-	}](ctx, c, planCapability, PlanVersion, planRun, selection)
+	}](ctx, c, capability, version, method, selection)
 	if err == nil && !out.RunID.Valid() {
 		return "", ErrProtocol
 	}

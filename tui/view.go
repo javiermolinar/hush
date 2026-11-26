@@ -884,6 +884,10 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 							return m.workspaceTrustKey(d, "t")
 						case workspaceTrustDismissTarget:
 							return m.workspaceTrustKey(d, "n")
+						case workspaceTrustCopyTarget:
+							return m.workspaceTrustKey(d, "y")
+						case workspaceTrustStartTarget:
+							return m.workspaceTrustKey(d, "w")
 						}
 					}
 					if target == outputSkillsTarget && d.loadedContext != nil {

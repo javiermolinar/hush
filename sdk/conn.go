@@ -252,11 +252,32 @@ func (s *session) receive(f map[string]any) error {
 		if err := optionalEnvelope(f, version, PlanVersion); err != nil {
 			return err
 		}
+	} else if ok && method == planCatalogWait {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planCatalog]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanCatalogVersion); err != nil {
+			return err
+		}
 	} else if ok && (method == planWorkspaceWait || method == planWorkspaceInspect || method == planWorkspaceHistory || method == planWorkspaceClose || method == planWorkspaceUse) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[planWorkspace]
 		s.mu.Unlock()
 		if err := optionalEnvelope(f, version, PlanWorkspaceVersion); err != nil {
+			return err
+		}
+	} else if ok && (method == planWorktreePrepare || method == planWorktreeStart) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planWorktreeCap]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanWorktreeVersion); err != nil {
+			return err
+		}
+	} else if ok && (method == planChatRun || method == planChatPlans || method == planChatInspect) {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planChat]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanChatVersion); err != nil {
 			return err
 		}
 	} else if ok && method == planDraftSave {

@@ -68,7 +68,7 @@ export function scopedReply({ text, tools, results }) {
 
 // Use the non-faux runtime, prompt builder and tool dispatcher. Only the
 // provider's responses are scripted; the ordinary user text goes through Hush.
-export async function planProvider(t, agentDir, answer) {
+export async function planProvider(t, agentDir, answer, { alternate = false } = {}) {
   const requests = [], errors = [];
   const provider = createServer(async (req, res) => {
     try {
@@ -79,7 +79,7 @@ export async function planProvider(t, agentDir, answer) {
       const body = JSON.parse(Buffer.concat(parts).toString());
       const user = body.messages.findLastIndex(msg => msg.role === "user");
       const results = body.messages.slice(user + 1).filter(msg => msg.role === "tool");
-      const turn = { text: body.messages[user]?.content, results, messages: body.messages,
+      const turn = { model: body.model, text: body.messages[user]?.content, results, messages: body.messages,
         tools: (body.tools ?? []).map(tool => tool.function.name),
         prompt: body.messages.filter(msg => msg.role === "system" || msg.role === "developer").map(msg => msg.content).join("\n") };
       requests.push(turn);
@@ -107,10 +107,15 @@ export async function planProvider(t, agentDir, answer) {
     assert.deepEqual(errors, []);
   });
   await once(provider, "listening");
-  for (const [file, data] of Object.entries({
-    "auth.json": { "plan-test": { type: "api_key", key: "fixture-not-a-secret" } },
-    "models.json": { providers: { "plan-test": { baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, api: "openai-completions",
-      models: [{ id: "chat", name: "Plan fixture", reasoning: false, contextWindow: 100_000, maxTokens: 1_000 }] } } },
-  })) await writeFile(join(agentDir, file), JSON.stringify(data), { mode: 0o600 });
-  return { requests, model: { provider: "plan-test", modelId: "chat" } };
+  const model = { provider: "plan-test", modelId: "chat" }, staged = { provider: "staged-plan-test", modelId: "staged-chat" };
+  const entries = alternate ? [model, staged] : [model];
+  const auth = Object.fromEntries(entries.map(ref => [ref.provider, { type: "api_key", key: "fixture-not-a-secret" }]));
+  const providers = Object.fromEntries(entries.map(ref => [ref.provider, {
+    baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, api: "openai-completions",
+    models: [{ id: ref.modelId, name: "Plan fixture " + ref.modelId, reasoning: ref === staged, contextWindow: 100_000, maxTokens: 1_000 }],
+  }]));
+  for (const [file, data] of Object.entries({ "auth.json": auth, "models.json": { providers } })) {
+    await writeFile(join(agentDir, file), JSON.stringify(data), { mode: 0o600 });
+  }
+  return { requests, model, ...(alternate && { staged }) };
 }

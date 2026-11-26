@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineTool, LiveDoc, type ConversationId, type EntryId, type Harness, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
-import { planTaskKind, type PlanFileEdit, type PlanFileScope, type PlanThinking } from "../../server/src/plan.js";
+import { planChatKind, planTaskKind, type PlanFileEdit, type PlanFileScope, type PlanThinking } from "../../server/src/plan.js";
 import { WireError } from "../../server/src/wire.js";
 import { PlanFileError, planFileBytes, validFileText, type FileProposal, type PlanFileTarget, type FileVersion, type PlanFiles, type PlanWorkspace, type Replacement } from "./plan-files.js";
 
@@ -35,13 +35,14 @@ export async function checkPlanAdmission(tx: Tx, owner: ConversationId, operatio
   if (await foregroundPlan(tx, owner)) throw new WireError("busy");
   if (operation !== "continue") return;
   const failed = (await tx.doc(LiveDoc, owner)).runFailure?.first;
-  let plan = failed !== undefined && (await tx.entry(failed))?.kind === planTaskKind;
-  // A historical fork can end at a scoped input or tool result. An implicit
-  // Continue must not turn that inherited record into normal tool authority.
+  const planInput = (kind?: string) => kind === planTaskKind || kind === planChatKind;
+  let plan = failed !== undefined && planInput((await tx.entry(failed))?.kind);
+  // An implicit Continue must not replay a plan assignment inherited by a
+  // fork or left behind by an interrupted turn.
   if (!plan && (await tx.conversation(owner))?.parent) {
     const { items } = await tx.scanEntries({ conversationId: owner, order: "descending" }, 64);
     const input = items.find(e => e.kind === "pi.reset" || e.model?.some(m => m.role === "user"));
-    plan = input ? input.kind === planTaskKind : items.length === 64;
+    plan = input ? planInput(input.kind) : items.length === 64;
   }
   if (plan) {
     const error = new WireError("invalid_request");

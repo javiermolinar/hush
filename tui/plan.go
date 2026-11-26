@@ -16,6 +16,9 @@ import (
 const planID x.ActionID = menusID + ".plan"
 const openPlanOp x.LocalOp = "plan.open"
 const planRunTarget = -2
+const planScopedTarget = -3
+const planWorktreeTarget = -4
+const planWorktreeDismissTarget = -5
 
 type planBackend interface {
 	WatchPlan(context.Context, sdk.ID) <-chan sdk.PlanUpdate
@@ -23,17 +26,20 @@ type planBackend interface {
 }
 
 type planView struct {
-	snapshot sdk.PlanSnapshot
-	ready    bool
-	err      error
-	request  *sdk.PlanSelection // retained after an indeterminate reply, never retried with a new key
-	sending  bool
-	awaiting sdk.ID
-	note     string
+	snapshot    sdk.PlanSnapshot
+	ready       bool
+	err         error
+	request     *sdk.PlanSelection     // retained after an indeterminate reply, never retried with a new key
+	worktree    *planWorktreeAdmission // shared with other pickers of this thread
+	chatRequest *planChatAdmission     // shared by all pickers of the initiating thread
+	sending     bool
+	awaiting    sdk.ID
+	note        string
 }
 
 type planPicker struct {
 	named        string
+	workspace    string // nonempty for a read-only preview from another workspace
 	expected     string // a workspace row may not follow a different binding mid-inspection
 	view         planView
 	cancel       context.CancelFunc
@@ -122,7 +128,10 @@ func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
 			}
 		}
 		if !planRunnable(next.RunAvailability) {
-			v.request, v.awaiting = nil, ""
+			v.request = nil
+			if !next.Chat {
+				v.awaiting = ""
+			}
 		}
 		v.snapshot = next
 		if next.Run != nil && v.awaiting != "" && !lessID(next.Run.ID, v.awaiting) {
@@ -145,7 +154,7 @@ func (m *Model) receivePlanWatch(msg planWatchMsg) tea.Cmd {
 func (m *Model) draftPlanAvailable() bool {
 	// With no thread feed, use negotiated capabilities and the local launch
 	// directory. An attached client cannot assume its cwd is on the host.
-	return m.active == "" && m.menuFeaturesFromBackend.Has(x.Plans|x.PlanWorkspace) && m.introScope("").CWD != ""
+	return m.active == "" && m.menuFeaturesFromBackend.Has(x.Plans|x.PlanWorkspace|x.PlanChat) && m.introScope("").CWD != ""
 }
 
 func (m *Model) openPlan(r ownerRoute) tea.Cmd {
@@ -153,7 +162,7 @@ func (m *Model) openPlan(r ownerRoute) tea.Cmd {
 		return nil
 	}
 	if m.draftPlanAvailable() {
-		return m.openDraftPlan(r)
+		return m.openPlanWorkspace(r)
 	}
 	if !m.planAvailable() {
 		return nil
@@ -184,7 +193,9 @@ func (m *Model) openPlanSteps(r ownerRoute, expected string) tea.Cmd {
 			picker.selected[id] = true
 		}
 	}
-	return tea.Batch(m.pushDialog(&dialog{route: r, token: m.token(), promptDock: true, plan: picker}), m.syncPlanWatch())
+	d := &dialog{route: r, token: m.token(), promptDock: true, plan: picker}
+	m.showChatSelection(d, m.planViewFor(d))
+	return tea.Batch(m.pushDialog(d), m.syncPlanWatch())
 }
 
 func (v *planView) progress(id string) sdk.PlanProgress {
@@ -213,11 +224,11 @@ func canStopPlan(t *threadState) bool {
 	v := &t.plan
 	run := v.snapshot.Run
 	return v.ready && v.snapshot.RunAvailability == sdk.PlanRunScoped && run != nil &&
-		run.State == "running" && run.OwnerThreadID == t.info.ID
+		!run.Chat && run.State == "running" && run.OwnerThreadID == t.info.ID
 }
 
 func (v *planView) locked() bool {
-	return v.snapshot.Closed || v.snapshot.Complete || v.snapshot.Settling || !planRunnable(v.snapshot.RunAvailability) || v.sending || v.awaiting != "" || v.snapshot.Run != nil && v.snapshot.Run.State == "running"
+	return v.snapshot.Closed || v.snapshot.Complete || v.snapshot.Settling || (!v.snapshot.Chat && !planRunnable(v.snapshot.RunAvailability)) || v.sending || v.awaiting != "" || v.snapshot.Run != nil && v.snapshot.Run.State == "running"
 }
 
 func (v *planView) missing(s sdk.PlanStep, selected map[string]bool) string {
@@ -288,13 +299,16 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 	if !v.ready || v.snapshot.Plan == nil || !p.matches(v) {
 		return nil
 	}
-	if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
+	if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
 		switch chord {
 		case "v":
+			if p.workspace != "" {
+				return nil
+			}
 			plan := v.snapshot.Plan
 			return m.openPlanReview(d.route, plan.ID, plan.Title, plan.Revision)
 		case "c":
-			if v.snapshot.RunAvailability != sdk.PlanRunPinned && !(v.snapshot.Closed && v.snapshot.Complete) {
+			if p.workspace == "" && v.snapshot.RunAvailability != sdk.PlanRunPinned && !(v.snapshot.Closed && v.snapshot.Complete) {
 				return m.changePlanClosed(d, v.snapshot.Plan.ID, !v.snapshot.Closed)
 			}
 			return nil
@@ -304,7 +318,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 			}
 			return nil
 		case "a":
-			if p.named != "" {
+			if p.named != "" && p.workspace == "" {
 				return m.usePlan(d, p.named)
 			}
 			return nil
@@ -348,14 +362,24 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 		if !p.details {
 			m.togglePlanStep(v, p)
 		}
+	case "w":
+		return m.runPlanWorktree(d, v)
+	case "x":
+		return m.leavePlanWorktree(d)
 	case "enter":
-		return m.runPlan(d, v)
+		if v.request == nil && m.planChatAvailable(v) {
+			return m.runChatPlan(d, v)
+		}
+		return m.runPlan(d, v, planRunTarget)
+	case "s":
+		return m.runPlan(d, v, planScopedTarget)
 	}
 	return nil
 }
 
 func (m *Model) togglePlanStep(v *planView, p *planPicker) {
-	if !v.ready || v.snapshot.Plan == nil || !p.matches(v) || v.locked() || v.request != nil || !m.planAvailable() {
+	if p.workspace != "" || !v.ready || v.snapshot.Plan == nil || !p.matches(v) || v.locked() || v.request != nil ||
+		m.threads[m.active].plan.chatRequest != nil || m.threads[m.active].plan.worktree != nil || !(m.planAvailable() || m.planChatAvailable(v)) {
 		return
 	}
 	id := v.snapshot.Plan.Steps[p.focus].ID
@@ -373,9 +397,13 @@ func (m *Model) togglePlanStep(v *planView, p *planPicker) {
 	}
 }
 
-func (m *Model) runPlan(d *dialog, v *planView) tea.Cmd {
-	if !m.dialogVisible(d) || m.frame.dialogPlanRev != v.snapshot.Revision ||
-		m.frame.dialogPlanSelectionRev != d.plan.selectionRev || !slices.Contains(m.frame.dialogChoices, planRunTarget) {
+func (m *Model) planActionDrawn(d *dialog, v *planView, target int) bool {
+	return m.dialogVisible(d) && m.frame.dialogPlanRev == v.snapshot.Revision &&
+		m.frame.dialogPlanSelectionRev == d.plan.selectionRev && slices.Contains(m.frame.dialogChoices, target)
+}
+
+func (m *Model) runPlan(d *dialog, v *planView, target int) tea.Cmd {
+	if d.plan.workspace != "" || !m.planActionDrawn(d, v, target) || m.threads[d.route.owner].plan.chatRequest != nil || m.threads[d.route.owner].plan.worktree != nil {
 		return nil // Enter is only a Run when the current scope's action was drawn.
 	}
 	b, ok := m.backend.(planBackend)
@@ -419,14 +447,18 @@ func (m *Model) runPlan(d *dialog, v *planView) tea.Cmd {
 		if v.snapshot.RunAvailability == sdk.PlanRunScoped && m.foreground(d.route) && m.focusedDialog() == d {
 			// An admitted foreground Run belongs in the transcript, not in
 			// the picker. Do not dismiss anything if the user already left it.
-			closePicker := m.closeDialog(d, nil, false)
-			if parent := m.focusedDialog(); parent != nil && parent.planWorkspace != nil {
-				return tea.Batch(closePicker, m.closeDialog(parent, nil, false))
-			}
-			return closePicker
+			return m.closeRunPicker(d)
 		}
 		return nil
 	}, nil)
+}
+
+func (m *Model) closeRunPicker(d *dialog) tea.Cmd {
+	closePicker := m.closeDialog(d, nil, false)
+	if parent := m.focusedDialog(); parent != nil && parent.planWorkspace != nil {
+		return tea.Batch(closePicker, m.closeDialog(parent, nil, false))
+	}
+	return closePicker
 }
 
 func (v *planView) label(s sdk.PlanStep, selected map[string]bool) (string, x.Tone) {
@@ -435,7 +467,22 @@ func (v *planView) label(s sdk.PlanStep, selected map[string]bool) (string, x.To
 		return "Running", x.Accent
 	case "verified":
 		return "Verified", x.Good
-	case "failed":
+	}
+	if v.snapshot.Chat {
+		if run := v.snapshot.Run; run != nil && run.Chat && run.State == "running" && slices.Contains(run.StepIDs, s.ID) {
+			return "In run", x.Accent
+		}
+		switch v.taskReport(s.ID).State {
+		case "done":
+			return "Reported done", x.Good
+		case "blocked":
+			return "Blocked", x.Warning
+		case "incomplete":
+			return "Incomplete", x.Warning
+		}
+		return "Pending", x.Muted
+	}
+	if v.progress(s.ID).State == "failed" {
 		return "Not verified", x.Warning
 	}
 	if s.Blocker != "" {
@@ -529,7 +576,19 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 			verified++
 		}
 	}
-	progress := m.control(fmt.Sprintf("%d/%d verified", verified, len(plan.Steps)))
+	count := fmt.Sprintf("%d/%d verified", verified, len(plan.Steps))
+	if len(v.snapshot.Reports) > 0 {
+		done := 0
+		for _, step := range plan.Steps {
+			if v.done(step.ID) {
+				done++
+			}
+		}
+		if done != verified {
+			count = fmt.Sprintf("%d/%d done · %d verified", done, len(plan.Steps), verified)
+		}
+	}
+	progress := m.control(count)
 	label := fmt.Sprintf("Plan · r%d · %s", plan.Revision, oneLine(plan.Title))
 	label = ansi.Truncate(label, max(1, w-stringWidth(progress)-2), "…")
 	strokes := max(0, w-stringWidth(label)-stringWidth(progress)-2)
@@ -537,6 +596,11 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 	showHeader, showRun, showKeys := n >= 3, n >= 2, n >= 5
 	body := max(1, n-2) // drop the heading, then the Run row, before the focused task
 	if showKeys {
+		body--
+	}
+	worktree, worktreeAction := m.planWorktreeBar(d, v)
+	showWorktree := n >= 4 && body > 1 && worktree != ""
+	if showWorktree {
 		body--
 	}
 	// Spend spare rows on separation, not at the expense of the focused task
@@ -562,6 +626,9 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 		}
 	} else {
 		stateWidth := min(12, listWidth/2) // reserve room for both title and status
+		if v.snapshot.Chat {
+			stateWidth = min(13, listWidth/2)
+		}
 		if listWidth < 20 {
 			stateWidth = 0 // keep the selection mark and some title in a narrow pane
 		}
@@ -577,6 +644,8 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 				mark = m.paint(x.Good, "✓ ")
 			} else if p.selected[s.ID] || v.snapshot.Run != nil && v.snapshot.Run.State == "running" && slices.Contains(v.snapshot.Run.StepIDs, s.ID) {
 				mark = m.paint(x.Accent, "● ")
+			} else if v.done(s.ID) {
+				mark = m.paint(x.Muted, "– ")
 			}
 			title := focus + mark + oneLine(s.Title)
 			line := ""
@@ -614,37 +683,57 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 		add("", -1)
 	}
 	if showRun {
-		bar, preview, runnable := m.planRunBar(v, p, w)
+		bar, preview, runnable := m.planRunBar(d, v, w)
 		target := -1
 		if runnable && stringWidth(bar) <= w {
 			target = planRunTarget
 		}
 		add(bar+preview, target)
 	}
+	if showWorktree {
+		if stringWidth(worktree) > w {
+			worktreeAction = -1
+		}
+		add(m.control(worktree), worktreeAction)
+	}
 	if showKeys {
 		close := "esc close"
 		primary, compact, move := "space select  tab details", "space pick  tab info", "↑↓ move"
 		if p.details {
 			primary, compact, move = "tab steps", "tab steps", "↑↓ scroll"
-		} else if v.locked() || v.request != nil {
+		} else if p.workspace != "" || v.locked() || v.request != nil || m.threads[d.route.owner].plan.chatRequest != nil || m.threads[d.route.owner].plan.worktree != nil {
 			primary, compact = "tab details", "tab details"
 		}
-		if m.menuFeaturesFromBackend.Has(x.PlanReview) {
+		scoped := false
+		if m.planChatAvailable(v) && v.snapshot.RunAvailability == sdk.PlanRunScoped && !v.locked() &&
+			v.request == nil && m.threads[d.route.owner].plan.chatRequest == nil && m.threads[d.route.owner].plan.worktree == nil {
+			ids, reason := v.selection(p)
+			if len(ids) > 0 && reason == "" {
+				primary += "  s scoped"
+				compact += "  s scoped"
+				scoped = true
+			}
+		}
+		if p.workspace == "" && d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanReview) {
 			primary += "  v review"
 			compact += "  v review"
 		}
-		if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
+		if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
 			primary += "  h history"
-			if !v.snapshot.Closed {
+			if p.workspace == "" && !v.snapshot.Closed {
 				primary += "  c close plan"
-			} else if !v.snapshot.Complete {
+			} else if p.workspace == "" && !v.snapshot.Complete {
 				primary += "  c reopen"
 			}
 		}
 		if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
 			close = "esc back"
 		}
-		add(m.paint(x.Muted, m.hintRow(w, primary+"  "+move, compact, close)), -1)
+		hint, target := m.hintRow(w, primary+"  "+move, compact, close), -1
+		if scoped && strings.Contains(ansi.Strip(hint), "s scoped") {
+			target = planScopedTarget
+		}
+		add(m.paint(x.Muted, hint), target)
 	}
 	if gaps >= 1 {
 		add("", -1)
@@ -652,14 +741,37 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 	return
 }
 
-func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview string, runnable bool) {
+func (m *Model) planRunBar(d *dialog, v *planView, width int) (bar, preview string, runnable bool) {
+	p := d.plan
+	if p.workspace != "" {
+		return m.control("Read-only · " + oneLine(p.workspace)), "", false
+	}
+	if pending := m.threads[d.route.owner].plan.worktree; pending != nil {
+		if pending.selection.PlanID != v.snapshot.Plan.ID {
+			return m.control("Resolve the worktree request in its plan"), "", false
+		}
+		if pending.note != "" {
+			return m.paint(x.Warning, pending.note), "", false
+		}
+		return m.control(pending.label()), "", false
+	}
+	chat := v.request == nil && m.planChatAvailable(v)
+	if chat && m.threads[d.route.owner].plan.chatRequest != nil {
+		return m.chatRunBar(d, v, width) // a receipt is valid even if the original revision changed
+	}
 	switch {
 	case v.snapshot.Settling:
 		return m.control("Closing Run · current task is settling"), "", false
 	case v.snapshot.Complete:
 		return m.control("Complete · all tasks verified"), "", false
 	case v.snapshot.Closed:
+		if !d.route.owner.Valid() {
+			return m.control("Closed"), "", false
+		}
 		return m.control("Closed · c reopen"), "", false
+	}
+	if chat {
+		return m.chatRunBar(d, v, width)
 	}
 	switch v.snapshot.RunAvailability {
 	case sdk.PlanRunUnbound:
@@ -702,8 +814,15 @@ func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview 
 		}
 		return m.control("Select the steps to run"), "", false
 	}
+	return m.planSelectionBar(v, p, ids, width, "Run")
+}
+
+func (m *Model) planSelectionBar(v *planView, p *planPicker, ids []string, width int, label string) (bar, preview string, runnable bool) {
 	revision := fmt.Sprintf(" @ r%d", v.snapshot.Plan.Revision)
-	compact := fmt.Sprintf("↵ Run %d", len(ids))
+	compact := fmt.Sprintf("↵ %s %d", label, len(ids))
+	if stringWidth(compact) > width {
+		compact = fmt.Sprintf("↵ Run %d", len(ids))
+	}
 	if stringWidth(compact+revision) > width {
 		return planRunEmphasis(compact), "", true
 	}
@@ -713,7 +832,10 @@ func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview 
 		remaining = fmt.Sprintf("%d unselected", count)
 	}
 	if len(ids) == 1 {
-		const prefix = "↵ Run "
+		prefix := "↵ " + label + " "
+		if stringWidth(prefix+revision) >= width {
+			return planRunEmphasis(compact), "", true
+		}
 		title := ansi.Truncate(v.title(ids[0]), max(1, width-stringWidth(prefix+revision)), "…")
 		bar = planRunEmphasis(prefix + title + revision)
 		room := width - stringWidth(bar) - 2
@@ -753,7 +875,7 @@ func planRunEmphasis(label string) string { return "\x1b[1m" + label + "\x1b[22m
 
 func (v *planView) unselected(p *planPicker, first string) (count int, dependent string) {
 	for _, s := range v.snapshot.Plan.Steps {
-		if p.selected[s.ID] || v.progress(s.ID).State == "verified" {
+		if p.selected[s.ID] || v.done(s.ID) {
 			continue
 		}
 		count++
@@ -788,8 +910,15 @@ func (m *Model) planDetails(v *planView, s sdk.PlanStep, width int) []string {
 			rows = append(rows, prefix+line)
 		}
 	}
+	if report := v.taskReport(s.ID); report.State != "" {
+		add("Reported", oneLine(report.Detail))
+	}
 	if s.Blocker != "" {
-		add("Blocked", oneLine(s.Blocker))
+		label := "Blocked"
+		if v.snapshot.Chat {
+			label = "Plan note"
+		}
+		add(label, oneLine(s.Blocker))
 	}
 	for _, id := range s.Requires {
 		add("Needs", v.title(id))
@@ -835,6 +964,18 @@ func (v *planView) activity() string {
 	r := v.snapshot.Run
 	if r == nil {
 		return ""
+	}
+	if r.Chat {
+		switch r.State {
+		case "done":
+			return "Plan · Run here finished"
+		case "failed":
+			return "Plan · Run here interrupted"
+		case "closed":
+			return "Plan · Run closed"
+		default:
+			return "Plan · Run here in progress"
+		}
 	}
 	n := 0
 	for _, id := range r.StepIDs {

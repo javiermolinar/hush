@@ -1,8 +1,15 @@
 package sdk
 
-import "context"
+import (
+	"context"
+	"strings"
+	"unicode/utf8"
+)
 
 const PlanWorkspaceVersion = 1
+const PlanCatalogVersion = 1
+const planCatalog = "planCatalog"
+const planCatalogWait = "ext.planCatalog.wait"
 const planWorkspace = "planWorkspace"
 const planWorkspaceWait = "ext.planWorkspace.wait"
 const planWorkspaceInspect = "ext.planWorkspace.inspect"
@@ -12,13 +19,15 @@ const planWorkspaceUse = "ext.planWorkspace.use"
 
 // PlanSummary is a plan's live head, independently of a thread's binding.
 type PlanSummary struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Revision uint64 `json:"revision"`
-	Verified int    `json:"verified"`
-	Total    int    `json:"total"`
-	Status   string `json:"status"`
-	Closed   bool   `json:"closed"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Revision     uint64 `json:"revision"`
+	Verified     int    `json:"verified"`
+	ReportedDone int    `json:"reportedDone,omitempty"`
+	Total        int    `json:"total"`
+	Status       string `json:"status"`
+	Closed       bool   `json:"closed"`
+	Workspace    string `json:"workspace,omitempty"` // set for plans outside the calling thread's workspace
 }
 
 type PlanWorkspaceUpdate struct {
@@ -49,6 +58,10 @@ type PlanRunRecord struct {
 	PublicationUncertain bool               `json:"publicationUncertain,omitempty"`
 	Workers              []PlanWorkerRecord `json:"workers"`
 	Turns                []PlanTurnRecord   `json:"turns,omitempty"`
+	Chat                 bool               `json:"chat,omitempty"`
+	Worktree             bool               `json:"worktree,omitempty"`
+	EntryID              ID                 `json:"entryId,omitempty"`
+	Reports              []PlanTaskReport   `json:"reports,omitempty"`
 }
 
 type PlanHistoryPage struct {
@@ -62,10 +75,26 @@ func planWorkspaceWatch(method string) workspaceWatch {
 
 // WatchWorkspacePlans publishes one page of plans in a thread's workspace.
 func (c *Client) WatchWorkspacePlans(ctx context.Context, thread ID, page int) <-chan PlanWorkspaceUpdate {
-	w := planWorkspaceWatch(planWorkspaceWait)
+	return c.watchPlanPage(ctx, planWorkspaceWatch(planWorkspaceWait), thread, page)
+}
+
+// WatchPlanCatalog publishes one page of plans across the verified store's
+// workspaces. Offer planCatalog:1 with plan:1 and planWorkspace:1. Inspecting
+// or viewing history for another workspace does not grant authority to run.
+func (c *Client) WatchPlanCatalog(ctx context.Context, thread ID, page int) <-chan PlanWorkspaceUpdate {
+	w := workspaceWatch{method: planCatalogWait, capability: planCatalog, version: PlanCatalogVersion,
+		base: planWorkspace, baseVersions: []uint64{PlanWorkspaceVersion}}
+	return c.watchPlanPage(ctx, w, thread, page)
+}
+
+func (c *Client) watchPlanPage(ctx context.Context, w workspaceWatch, thread ID, page int) <-chan PlanWorkspaceUpdate {
 	if thread.Valid() && page >= 0 && page <= 1_000_000 {
 		w.params = map[string]any{"threadId": thread, "page": page}
 	}
+	return c.watchWorkspacePlans(ctx, w)
+}
+
+func (c *Client) watchWorkspacePlans(ctx context.Context, w workspaceWatch) <-chan PlanWorkspaceUpdate {
 	type report struct {
 		Revision string        `json:"revision"`
 		Plans    []PlanSummary `json:"plans"`
@@ -79,7 +108,8 @@ func (c *Client) WatchWorkspacePlans(ctx context.Context, thread ID, page int) <
 		seen := make(map[string]bool, len(v.Plans))
 		for _, p := range v.Plans {
 			if !token(p.ID) || seen[p.ID] || !goodPlanText(p.Title, 160) || p.Revision < 1 || p.Revision > 1<<53-1 ||
-				p.Total < 1 || p.Total > planStepLimit || p.Verified < 0 || p.Verified > p.Total {
+				p.Total < 1 || p.Total > planStepLimit || p.Verified < 0 || p.Verified > p.Total || p.ReportedDone < 0 || p.ReportedDone > p.Total-p.Verified ||
+				p.Workspace != "" && (w.method != planCatalogWait && w.method != planChatPlans || !validPlanWorkspace(p.Workspace)) {
 				return PlanWorkspaceUpdate{}, "", ErrProtocol
 			}
 			switch p.Status {
@@ -93,7 +123,12 @@ func (c *Client) WatchWorkspacePlans(ctx context.Context, thread ID, page int) <
 	}, func(err error) PlanWorkspaceUpdate { return PlanWorkspaceUpdate{Err: err} })
 }
 
-// WatchNamedPlan observes a workspace plan without attaching the thread.
+func validPlanWorkspace(workspace string) bool {
+	return strings.HasPrefix(workspace, "/") && !strings.ContainsRune(workspace, 0) && utf8.RuneCountInString(workspace) <= 4096
+}
+
+// WatchNamedPlan observes a plan without attaching the thread. With
+// planCatalog:1 negotiated, the plan may be in another workspace.
 func (c *Client) WatchNamedPlan(ctx context.Context, thread ID, planID string) <-chan PlanUpdate {
 	w := planWorkspaceWatch(planWorkspaceInspect)
 	if thread.Valid() && token(planID) {
@@ -147,8 +182,24 @@ func (c *Client) PlanHistory(ctx context.Context, thread ID, planID string, befo
 	}
 	for _, run := range out.Runs {
 		if !run.ID.Valid() || run.Revision < 1 || run.Revision > 1<<53-1 || !run.ThreadID.Valid() ||
-			!planRunState(run.State) || run.Failure != "" && (run.State != "failed" || !goodPlanText(run.Failure, 240)) ||
+			!planRunState(run.State, run.Chat) || run.Failure != "" && (run.State != "failed" || !goodPlanText(run.Failure, 240)) ||
 			run.PublicationUncertain && run.Failure == "" || !validPlanIDs(run.StepIDs) || run.Workers == nil || len(run.Workers)+len(run.Turns) > len(run.StepIDs) || run.Turns != nil && len(run.Workers) != 0 {
+			return PlanHistoryPage{}, ErrProtocol
+		}
+		if run.Chat {
+			if len(run.Workers) != 0 || run.Turns != nil || run.PublicationUncertain ||
+				run.EntryID != "" && !run.EntryID.Valid() || run.State == "done" && !run.EntryID.Valid() ||
+				run.State != "done" && len(run.Reports) != 0 {
+				return PlanHistoryPage{}, ErrProtocol
+			}
+			steps := make(map[string]bool, len(run.StepIDs))
+			for _, id := range run.StepIDs {
+				steps[id] = true
+			}
+			if !validPlanReports(run.Reports, steps) {
+				return PlanHistoryPage{}, ErrProtocol
+			}
+		} else if run.Worktree || run.EntryID != "" || run.Reports != nil {
 			return PlanHistoryPage{}, ErrProtocol
 		}
 		for i, turn := range run.Turns {

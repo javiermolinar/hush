@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -307,8 +308,9 @@ func TestDraftPlanCommandNeedsLocalWorkspaceCapability(t *testing.T) {
 	}{
 		{0, true, false},
 		{x.Plans, true, false},
-		{x.Plans | x.PlanWorkspace, false, false},
-		{x.Plans | x.PlanWorkspace, true, true},
+		{x.Plans | x.PlanWorkspace, true, false},
+		{x.Plans | x.PlanWorkspace | x.PlanChat, false, false},
+		{x.Plans | x.PlanWorkspace | x.PlanChat, true, true},
 	} {
 		m.menuFeaturesFromBackend, m.options.WorkspaceLocal = check.features, check.local
 		if got := len(m.slashMatches()) == 1; got != check.visible {
@@ -320,47 +322,125 @@ func TestDraftPlanCommandNeedsLocalWorkspaceCapability(t *testing.T) {
 type draftPlanFixtureBackend struct {
 	inertBackend
 	create func(string, sdk.Model, string) (sdk.Thread, error)
+	run    func(sdk.PlanSelection) (sdk.ID, error)
 }
 
 func (b draftPlanFixtureBackend) NewCatalogThread(_ context.Context, cwd string, model sdk.Model, thinking string) (sdk.Thread, error) {
 	return b.create(cwd, model, thinking)
 }
 
-func TestDraftPlanOpenPreservesDraftAndRespectsDismissal(t *testing.T) {
-	for _, name := range []string{"open", "dismiss"} {
-		t.Run(name, func(t *testing.T) {
-			m := modelFor(t, Options{WorkspaceLocal: true})
-			m.menuFeaturesFromBackend = x.Plans | x.PlanWorkspace
-			model := sdk.Model{Provider: "fixture", ModelID: "test"}
-			draft := m.threads[""]
-			draft.info.Model, draft.info.Thinking = model, "high"
-			m.editor.set("keep this draft")
-			m.backend = draftPlanFixtureBackend{create: func(cwd string, chosen sdk.Model, thinking string) (sdk.Thread, error) {
-				if cwd != "/workspace" || chosen != model || thinking != "high" {
-					t.Fatalf("thread creation lost its workspace or model: %q, %+v, %q", cwd, chosen, thinking)
-				}
-				return sdk.Thread{ID: "42"}, nil
-			}}
-			cmd := m.runAction(m.host.byID[planID], "")
-			if d := m.focusedDialog(); d == nil || d.planWorkspace == nil || m.active != "" {
-				t.Fatal("expected the workspace picker to wait for thread creation")
-			}
-			if name == "dismiss" {
-				press(m, tea.KeyEscape, 0)
-			}
-			workflowWork(t, m, cmd)
-			if draft.sending || m.editor.value() != "keep this draft" {
-				t.Fatal("opening the picker lost or locked the current draft")
-			}
-			d := m.focusedDialog()
-			if name == "dismiss" {
-				if m.active != "" || d != nil {
-					t.Fatal("a late reply reopened the picker or changed threads")
-				}
-			} else if m.active != "42" || d == nil || d.planWorkspace == nil || d.route.owner != "42" {
-				t.Fatal("the workspace picker did not follow the new thread")
-			}
-		})
+func (b draftPlanFixtureBackend) RunPlanInChat(_ context.Context, selection sdk.PlanSelection) (sdk.ID, error) {
+	return b.run(selection)
+}
+
+func (draftPlanFixtureBackend) WatchWorkspacePlansAt(context.Context, string, int) <-chan sdk.PlanWorkspaceUpdate {
+	return nil
+}
+
+func (draftPlanFixtureBackend) WatchNamedPlanAt(context.Context, string, string) <-chan sdk.PlanUpdate {
+	return nil
+}
+
+func chatPlanFixtureSnapshot() sdk.PlanSnapshot {
+	return sdk.PlanSnapshot{RunAvailability: sdk.PlanRunUnbound, Revision: strings.Repeat("c", 64), Chat: true,
+		Plan: &sdk.PlanDefinition{ID: "a-plan", Revision: 1, Title: "Profiles", Steps: []sdk.PlanStep{
+			{ID: "save", Title: "Save profiles"},
+			{ID: "restore", Title: "Restore profiles", Requires: []string{"save"}, Blocker: "Check the saved path"},
+		}}}
+}
+
+func TestStartupPlanBrowseDoesNotCreateThread(t *testing.T) {
+	m := modelFor(t, Options{WorkspaceLocal: true})
+	m.menuFeaturesFromBackend = x.Plans | x.PlanWorkspace | x.PlanChat
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 25})
+	model := sdk.Model{Provider: "fixture", ModelID: "test"}
+	draft := m.threads[""]
+	draft.info.Model, draft.info.Thinking = model, "high"
+	m.editor.set("keep this draft")
+	creates := 0
+	m.backend = draftPlanFixtureBackend{create: func(cwd string, chosen sdk.Model, thinking string) (sdk.Thread, error) {
+		creates++
+		if cwd != "/workspace" || chosen != model || thinking != "high" {
+			t.Fatalf("creation lost its workspace or model: %q, %+v, %q", cwd, chosen, thinking)
+		}
+		return sdk.Thread{ID: "42"}, nil
+	}, run: func(s sdk.PlanSelection) (sdk.ID, error) {
+		if s.ThreadID != "42" || !reflect.DeepEqual(s.StepIDs, []string{"restore"}) {
+			t.Fatalf("Run didn't target the first materialized thread: %+v", s)
+		}
+		return "43", nil
+	}}
+	m.runAction(m.host.byID[planID], "")
+	d := m.focusedDialog()
+	if d == nil || d.planWorkspace == nil || d.route.owner != "" || draft.sending || creates != 0 {
+		t.Fatal("opening the plan browser must not admit work or need a thread")
+	}
+	m.receivePlanWorkspace(planWorkspaceMsg{lease: d.planWorkspace.lease, ok: true, update: sdk.PlanWorkspaceUpdate{
+		Plans: []sdk.PlanSummary{{ID: "a-plan", Title: "Profiles", Revision: 1, Total: 2}},
+	}})
+	if cmd := m.planWorkspaceKey(d, "enter"); cmd == nil {
+		t.Fatal("startup browse couldn't inspect a plan")
+	}
+	d = m.focusedDialog()
+	m.receiveNamedPlan(namedPlanMsg{token: d.token, ok: true, update: sdk.PlanUpdate{Snapshot: chatPlanFixtureSnapshot()}})
+	if m.active != "" || m.editor.value() != "keep this draft" || creates != 0 || draft.sending {
+		t.Fatal("inspect changed the composer or materialized a thread")
+	}
+	assertFrame(t, m)
+	press(m, tea.KeyDown, 0)
+	press(m, tea.KeySpace, 0)
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Run here Restore profiles") {
+		t.Fatal(frame)
+	}
+	workflowWork(t, m, m.planKey(d, "enter"))
+	if creates != 1 || m.active != "42" || m.editor.value() != "keep this draft" || draft.sending || m.focusedDialog() != nil {
+		t.Fatal("only Run should materialize the first thread and leave its draft intact")
+	}
+}
+
+func TestRunNamedPlanHerePreservesThreadAndDraftAcrossReceiptRetry(t *testing.T) {
+	m, thread := demo(t, Options{ReducedMotion: true, Fills: FillOff})
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace | x.PlanChat
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 25})
+	m.editor.set("keep my unsent prompt")
+	var requests []sdk.PlanSelection
+	m.backend = draftPlanFixtureBackend{run: func(s sdk.PlanSelection) (sdk.ID, error) {
+		requests = append(requests, s)
+		if len(requests) == 1 {
+			return "", &sdk.TransportError{Err: context.DeadlineExceeded, Indeterminate: true}
+		}
+		return "42", nil
+	}}
+	open := func() {
+		p := &planPicker{named: "a-plan"}
+		d := &dialog{route: m.route(m.active, menusID), token: m.token(), plan: p, promptDock: true}
+		m.pushDialog(d)
+		m.receiveNamedPlan(namedPlanMsg{token: d.token, ok: true, update: sdk.PlanUpdate{Snapshot: chatPlanFixtureSnapshot()}})
+		assertFrame(t, m)
+	}
+	open()
+	press(m, tea.KeyDown, 0)
+	press(m, tea.KeySpace, 0)
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Run here Restore profiles") {
+		t.Fatal(frame)
+	}
+	cmd := press(m, tea.KeyEnter, 0)
+	if cmd == nil {
+		t.Fatal("Enter didn't admit Run here")
+	}
+	m.finishWork(cmd().(workMsg))
+	press(m, tea.KeyEscape, 0)
+	open()
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "retry Run here") {
+		t.Fatal(frame)
+	}
+	workflowWork(t, m, press(m, tea.KeyEnter, 0))
+	if len(requests) != 2 || !reflect.DeepEqual(requests[0], requests[1]) || requests[0].ThreadID != "1" ||
+		!reflect.DeepEqual(requests[0].StepIDs, []string{"restore"}) || thread.plan.snapshot.Plan != nil {
+		t.Fatalf("Run did not preserve exact scope and binding: %+v", requests)
+	}
+	if m.active != "1" || m.editor.value() != "keep my unsent prompt" || m.focusedDialog() != nil {
+		t.Fatal("Run switched threads, disturbed the composer or left the picker open")
 	}
 }
 
@@ -398,4 +478,189 @@ func TestPlanWorkspaceDockAndStatuses(t *testing.T) {
 	}
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 	assertFrame(t, m)
+}
+
+func TestPlanCatalogShowsForeignReadOnlyPlans(t *testing.T) {
+	m, _ := demo(t, Options{ReducedMotion: true, Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 104, Height: 24})
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace | x.PlanCatalog | x.PlanReview
+	r := m.route(m.active, menusID)
+	workspace := "/projects/source-checkout"
+	rows := []sdk.PlanSummary{{ID: "foreign", Title: "Other plan", Revision: 1, Total: 1, Status: "pending", Workspace: workspace}}
+	list := &dialog{route: r, token: m.token(), planWorkspace: &planWorkspacePicker{ready: true, rows: rows}, promptDock: true}
+	m.pushDialog(list)
+	frame := ansi.Strip(assertFrame(t, m))
+	for _, want := range []string{"all workspaces", "Other plan", "source-checkout", "↵ preview", "h history"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("missing %q:\n%s", want, frame)
+		}
+	}
+	for _, forbid := range []string{"v review", "c close plan"} {
+		if strings.Contains(frame, forbid) {
+			t.Fatalf("foreign plan offered %q", forbid)
+		}
+	}
+	p := &planPicker{named: "foreign", workspace: workspace}
+	detail := &dialog{route: r, token: m.token(), plan: p, promptDock: true}
+	m.pushDialog(detail)
+	m.receiveNamedPlan(namedPlanMsg{token: detail.token, ok: true, update: sdk.PlanUpdate{Snapshot: sdk.PlanSnapshot{
+		Plan:            &sdk.PlanDefinition{ID: "foreign", Revision: 1, Title: "Other plan", Steps: []sdk.PlanStep{{ID: "read", Title: "Read it"}}},
+		RunAvailability: sdk.PlanRunDisabled,
+		Workspace:       workspace,
+	}}})
+	frame = ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "Read-only · "+workspace) || strings.Contains(frame, "Use in this thread") {
+		t.Fatalf("wrong preview controls:\n%s", frame)
+	}
+	if p.view.snapshot.RunAvailability != sdk.PlanRunDisabled || slices.Contains(m.frame.dialogChoices, planRunTarget) {
+		t.Fatal("cross-workspace preview was made runnable")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 39, Height: 11})
+	assertFrame(t, m)
+}
+
+type planWorktreeFixture struct {
+	draftPlanFixtureBackend
+	prepare func(sdk.PlanSelection, sdk.PlanWorktreeSource) (sdk.PlanWorktree, error)
+	start   func(sdk.PlanWorktree, sdk.PlanSelection) (sdk.ID, error)
+}
+
+func (b planWorktreeFixture) PreparePlanWorktree(_ context.Context, q sdk.PlanSelection, source sdk.PlanWorktreeSource) (sdk.PlanWorktree, error) {
+	return b.prepare(q, source)
+}
+
+func (b planWorktreeFixture) StartPlanWorktree(_ context.Context, w sdk.PlanWorktree, q sdk.PlanSelection) (sdk.ID, error) {
+	return b.start(w, q)
+}
+
+func TestPlanWorktreeTrustStartsExactSelectionAndKeepsOriginalDraft(t *testing.T) {
+	const cwd = "/managed/preferences-fixture"
+	granted := false
+	trust := &WorkspaceTrustOptions{Review: func(_ context.Context, path string) (WorkspaceTrustPreview, error) {
+		if path != cwd {
+			t.Fatalf("review requested for %q, not the new checkout", path)
+		}
+		return WorkspaceTrustPreview{Path: path, Decide: func(_ context.Context, yes bool) error { granted = yes; return nil }}, nil
+	}}
+	m, source := demo(t, Options{ReducedMotion: true, Fills: FillOff, WorkspaceTrust: trust})
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace | x.PlanChat | x.PlanWorktree
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 25})
+	m.editor.set("source draft")
+	original := m.active
+	var selection sdk.PlanSelection
+	var prepares, starts int
+	checkout := sdk.PlanWorktree{ThreadID: "41", Title: "Preferences fixture"}
+	checkout.Checkout.CWD, checkout.Checkout.Branch = cwd, "hush/preferences-fixture"
+	m.backend = planWorktreeFixture{prepare: func(q sdk.PlanSelection, source sdk.PlanWorktreeSource) (sdk.PlanWorktree, error) {
+		prepares++
+		if q.ThreadID != original || source != (sdk.PlanWorktreeSource{}) || !reflect.DeepEqual(q.StepIDs, []string{"restore"}) {
+			t.Fatalf("bad worktree choice: %+v %+v", q, source)
+		}
+		selection = q
+		return checkout, nil
+	}, start: func(w sdk.PlanWorktree, q sdk.PlanSelection) (sdk.ID, error) {
+		starts++
+		if !granted || w != checkout || !reflect.DeepEqual(q, selection) {
+			t.Fatalf("unreviewed or changed checkout start: %+v %+v", w, q)
+		}
+		return "42", nil
+	}}
+	d := &dialog{route: m.route(original, menusID), token: m.token(), promptDock: true, plan: &planPicker{
+		named: "a-plan", view: planView{ready: true, snapshot: chatPlanFixtureSnapshot()}, focus: 1,
+	}}
+	m.pushDialog(d)
+	if frame := ansi.Strip(assertFrame(t, m)); strings.Contains(frame, "w Run in new worktree") {
+		t.Fatal("worktree was offered without selected tasks")
+	}
+	m.planKey(d, "space")
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "w Run in new worktree") || !strings.Contains(frame, "Run here Restore profiles") {
+		t.Fatal(frame)
+	}
+	prepared := m.planKey(d, "w")().(workMsg)
+	review := m.finishWork(prepared)
+	if m.active != original || prepares != 1 || starts != 0 || m.editor.value() != "source draft" || m.focusedDialog().workTrust == nil {
+		t.Fatal("prepare changed threads or started implementation before trust")
+	}
+	workspaceTrustStep(t, m, review)
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Trust this workspace?") || !strings.Contains(frame, cwd) {
+		t.Fatal(frame)
+	}
+	if m.workspaceTrustKey(m.focusedDialog(), "enter") != nil {
+		t.Fatal("Enter must not grant trust")
+	}
+	start := workspaceTrustStep(t, m, m.workspaceTrustKey(m.focusedDialog(), "t"))
+	workflowWork(t, m, start)
+	if m.active != checkout.ThreadID || starts != 1 || !granted || source.draft.text != "source draft" || m.editor.value() != "" {
+		t.Fatal("the run didn't open the worktree while retaining the source draft")
+	}
+}
+
+func TestPlanWorktreeStartupRetryKeepsExactSourceAndCanLeaveIdle(t *testing.T) {
+	const sourceCWD = "/project/component"
+	const cwd = "/managed/long path's \\name/" + "inside-component/inside-component/inside-component/inside-component/inside-component"
+	selected := sdk.Model{Provider: "staged", ModelID: "chosen"}
+	var copied string
+	m := modelFor(t, Options{ReducedMotion: true, Fills: FillOff, WorkspaceLocal: true, NewThread: sdk.NewThread{CWD: sourceCWD},
+		CopyText: func(_ context.Context, text string) error { copied = text; return nil }})
+	m.connection = x.Connected
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace | x.PlanChat | x.PlanWorktree
+	m.Update(tea.WindowSizeMsg{Width: 96, Height: 22})
+	m.editor.set("keep this draft")
+	m.threads[""].info.Model, m.threads[""].info.Thinking = selected, "high"
+	var selection sdk.PlanSelection
+	var prepares int
+	checkout := sdk.PlanWorktree{ThreadID: "41", Title: "Preferences fixture"}
+	checkout.Checkout.CWD, checkout.Checkout.Branch = cwd, "hush/preferences-fixture"
+	m.backend = planWorktreeFixture{prepare: func(q sdk.PlanSelection, source sdk.PlanWorktreeSource) (sdk.PlanWorktree, error) {
+		prepares++
+		if q.ThreadID != "" || source.CWD != sourceCWD || source.Model == nil || *source.Model != selected || source.ThinkingLevel != "high" {
+			t.Fatalf("bad startup source: %+v %+v", q, source)
+		}
+		if prepares == 1 {
+			selection = q
+			return sdk.PlanWorktree{}, &sdk.TransportError{Err: context.DeadlineExceeded, Indeterminate: true}
+		}
+		if !reflect.DeepEqual(q, selection) {
+			t.Fatalf("retry changed selection: %+v != %+v", q, selection)
+		}
+		return checkout, nil
+	}, start: func(sdk.PlanWorktree, sdk.PlanSelection) (sdk.ID, error) {
+		t.Fatal("reviewing instructions or leaving idle must not start the run")
+		return "", nil
+	}}
+	d := &dialog{route: m.route("", menusID), token: m.token(), promptDock: true, plan: &planPicker{
+		named: "a-plan", view: planView{ready: true, snapshot: chatPlanFixtureSnapshot()}, focus: 1,
+	}}
+	m.pushDialog(d)
+	m.planKey(d, "space")
+	assertFrame(t, m)
+	m.finishWork(m.planKey(d, "w")().(workMsg))
+	frame := ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "Worktree setup unconfirmed") || !strings.Contains(frame, "w retry setup") {
+		t.Fatal(frame)
+	}
+	m.threads[""].info.Model, m.threads[""].info.Thinking = sdk.Model{Provider: "later", ModelID: "different"}, "off"
+	m.finishWork(m.planKey(d, "w")().(workMsg))
+	trust := m.focusedDialog()
+	frame = ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "y copy grant command") || !strings.Contains(frame, "w start after granting") {
+		t.Fatal(frame)
+	}
+	workflowWork(t, m, m.workspaceTrustKey(trust, "y"))
+	want := `hush trust grant --cwd '/managed/long path'\''s '\\'name/inside-component/inside-component/inside-component/inside-component/inside-component'`
+	if copied != want {
+		t.Fatalf("copied wrong command: %q", copied)
+	}
+	m.workspaceTrustKey(trust, "esc")
+	assertFrame(t, m)
+	m.planKey(d, "w")
+	if m.focusedDialog().workTrust == nil || prepares != 2 {
+		t.Fatal("w must reopen the same trust instructions, not start or reallocate")
+	}
+	m.workspaceTrustKey(m.focusedDialog(), "esc")
+	assertFrame(t, m)
+	m.planKey(d, "x")
+	if m.active != "" || m.threads[""].plan.worktree != nil || m.editor.value() != "keep this draft" {
+		t.Fatal("leaving the worktree idle must retain the startup draft and leave no pending request")
+	}
 }
