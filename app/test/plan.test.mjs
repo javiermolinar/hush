@@ -17,6 +17,7 @@ const okay = frame => { assert.equal(frame.ok, true, JSON.stringify(frame)); ret
 
 async function terminalPlan(t, mode) {
   const faux = mode === "faux", scoped = mode === "scoped", batch = mode === "fileset", preview = mode === "preview";
+  const startup = mode === "startup", chat = mode === "chat";
   const promptText = preview ? "Lets work on creating a new plan to support subagents, independent reviews etc."
     : batch ? fileSetRequest : scoped ? executionRequest : createRequest;
   const previewDraft = { baseRevision: 0, title: "Subagents and independent reviews", steps: [
@@ -38,6 +39,15 @@ async function terminalPlan(t, mode) {
       await Promise.all(Object.entries(startingFiles).map(([path, content]) => writeFile(join(cwd, path), content)));
     } else delete process.env.HUSH_FILE_LIST_HELPER;
     const provider = faux ? undefined : await planProvider(t, agentDir, async turn => {
+      if (chat && turn.text.startsWith("Plan implementation\n")) {
+        const assignment = JSON.parse(turn.text.split("\n")[1]);
+        assert.deepEqual(assignment.selected, ["restore"]);
+        assert.ok(turn.tools.includes("write") && turn.tools.includes("hush_plan_report"));
+        assert.ok(!turn.messages.some(m => m.content === "keep this draft" || m.content === createRequest));
+        return turn.results.length ? "Restored the preferences." : [call("hush_plan_report", {
+          tasks: [{ stepId: "restore", state: "done", detail: "Checked the settings round-trip." }],
+        })];
+      }
       if (mode === "draft" && turn.text.startsWith("Plan review brief\n")) {
         assert.deepEqual(turn.tools, []);
         assert.equal(turn.messages.filter(m => m.role === "user").length, 1);
@@ -80,7 +90,7 @@ async function terminalPlan(t, mode) {
     });
     host = await startBackend({ faux, model: provider?.model, ephemeral: false, idleMs: 120_000, cwd, agentDir, dataDir, socket });
     peer = await dial(socket);
-    okay(await peer.send("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planReview: [1] } }));
+    okay(await peer.send("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planReview: [1], planChat: [1] } }));
     threadId = okay(await peer.send("thread.new", {})).id;
     if (scoped) {
       observer = await dial(socket);
@@ -90,8 +100,33 @@ async function terminalPlan(t, mode) {
       const { submissionId } = okay(await peer.send("submit", { threadId, text: "!plan-fixture", requestId: "prepare-pty", whenBusy: "reject" }));
       assert.equal(okay(await peer.send("submission.wait", { threadId, submissionId })).status, "done");
     }
+    let source, threads;
+    const list = async () => okay(await peer.send("thread.list", { limit: 32 })).threads;
+    if (startup || chat) {
+      const { submissionId } = okay(await peer.send("submit", { threadId, text: promptText, requestId: "prepare-live-plan", whenBusy: "reject" }));
+      assert.equal(okay(await peer.send("submission.wait", { threadId, submissionId })).status, "done");
+      source = okay(await peer.send("ext.plan.wait", { threadId })).plan.id;
+      if (chat) threadId = okay(await peer.send("thread.new", {})).id;
+      threads = await list();
+    }
     await exec("python3", [script, binary, socket, threadId, mode, promptText], { cwd, timeout: 16_000,
       env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } });
+    if (startup || chat) {
+      assert.deepEqual(await list(), threads, "browsing and running in an active thread don't create another thread");
+      const view = okay(await peer.send("ext.planWorkspace.inspect", { threadId, planId: source }));
+      if (startup) assert.equal(view.run, null, "startup browsing didn't admit work");
+      else {
+        assert.equal(view.run.state, "done");
+        assert.equal(view.run.ownerThreadId, threadId);
+        assert.deepEqual(view.run.stepIds, ["restore"]);
+        assert.deepEqual(view.progress, []);
+        assert.deepEqual(view.reports.map(r => [r.stepId, r.state]), [["restore", "done"]]);
+        const { entries } = okay(await peer.send("history", { threadId, limit: 32, range: { kind: "before", beforeEntryId: null } }));
+        assert.deepEqual(entries.filter(e => e.kind === "hush.plan.chat").map(e => e.threadId), [threadId]);
+        assert.ok(!entries.some(e => e.kind === "pi.user"));
+      }
+      return;
+    }
     const current = okay(await peer.send("ext.plan.wait", { threadId }));
     if (faux || scoped) {
       assert.equal(current.run.state, "verified");
@@ -114,9 +149,7 @@ async function terminalPlan(t, mode) {
       const { runs } = okay(await peer.send("ext.planWorkspace.history", { threadId, planId: current.plan.id }));
       assert.equal(runs.length, 1);
       assert.equal(runs[0].id, current.run.id);
-      assert.notEqual(runs[0].threadId, threadId, "the startup picker runs in a new thread, not the draft's thread");
-      const runHistory = await history(runs[0].threadId);
-      assert.ok(runHistory.entries.every(e => e.kind !== "pi.user"), "no chat message was needed to open the picker");
+      assert.equal(runs[0].threadId, threadId, "the fixture was launched from the active plan thread");
     }
     if (preview) {
       const { plans } = okay(await peer.send("ext.planWorkspace.wait", { threadId, page: 0 }));
@@ -162,9 +195,11 @@ async function terminalPlan(t, mode) {
   }
 }
 
-test("terminal UI opens /plan at startup and runs the selected steps without a first message", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI browses plans at startup without creating a thread or submitting the draft", { timeout: 45_000 }, t => terminalPlan(t, "startup"));
+test("terminal UI runs an unbound dependent task here without touching the composer", { timeout: 45_000 }, t => terminalPlan(t, "chat"));
+test("terminal UI runs the scoped fixture selection", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
 test("terminal UI saves an unsaved plan preview with 'ok save it'", { timeout: 45_000 }, t => terminalPlan(t, "preview"));
-test("terminal UI saves and independently reviews a plan on a draft-only host", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
-test("one Enter visibly verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));
+test("terminal UI saves and independently reviews a plan without the scoped file helper", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
+test("explicit scoped Run verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));
 
 test("terminal UI authorizes one checked file set and leaves other files untouched", { timeout: 45_000 }, t => terminalPlan(t, "fileset"));

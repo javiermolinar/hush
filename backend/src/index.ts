@@ -27,7 +27,7 @@ import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
 import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
-import { Plans, fixtureExtensions, isPlanWorker, recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
+import { Plans, fixtureExtensions, isPlanWorker, planChatExecution, recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
 import { checkPlanAdmission, foregroundPlan, PlanForeground } from "./plan-turn.js";
 import { PlanReviews, planReviewExtension } from "./plan-review.js";
 import { planAuthor } from "./plan-author.js";
@@ -297,6 +297,9 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
         return { text, agent: selection };
       },
     };
+    const chatPlans = planEnabled && !config.faux && !modelIssue && authorizeWork
+      ? planChatExecution(() => h!, authorizeWork, requireModel, selection) : undefined;
+    if (chatPlans) registry.install(chatPlans.extension);
     const store = config.dataDir ? await openNodeSqliteStorage(join(config.dataDir, "history.sqlite")) : new MemoryStorage();
     const settings = { ...hushSettings, extensions: base,
       ...(config.faux ? { retry: { enabled: false }, compaction: { enabled: false }, progress: { outputIntervalMs: 10 } } : {}),
@@ -364,7 +367,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const loadedContext = trust && config.dataDir ? new LoadedContext(harness, resources, trust) : undefined;
     const settingsHost = config.dataDir && useStoredDefaults
       ? new StandaloneSettingsHost(config.agentDir, runtime, localSettings, settings => { localSettings = settings; }) : undefined;
-    const plans = planEnabled && !modelIssue ? new Plans(harness, store, cwd => resources.directory(cwd), fauxPlan, scopedPlans) : undefined;
+    const plans = planEnabled && !modelIssue ? new Plans(harness, store, cwd => resources.directory(cwd), fauxPlan, scopedPlans, chatPlans) : undefined;
     const planDrafts = plans && authorizeWork ? new PlanDrafts(harness, cwd => resources.directory(cwd), fauxPlan, authorizeWork) : undefined;
     const planReviews = plans && !fauxPlan ? new PlanReviews(harness, plans, async (cwd, model, ctx) => {
       await authorizeWork?.(cwd, ctx);
@@ -372,7 +375,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, readOnlyReason, capabilities: { intro, threadDirectory, images,
       schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
-      plan: plans, planDraft: planDrafts, planReview: planReviews,
+      plan: plans, planChat: chatPlans && plans, planDraft: planDrafts, planReview: planReviews,
       gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
       workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });

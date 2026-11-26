@@ -49,13 +49,14 @@ async function layout(t) {
   const boot = async (changes = {}) => {
     const options = { ...config, ...changes };
     backend = await startBackend(options);
-    return async (versions = [1], negotiated = true, draftVersions = [1]) => {
+    return async (versions = [1], negotiated = true, draftVersions = [1], chatVersions = []) => {
       const peer = await dial(options.socket);
       peers.push(peer);
-      const hello = okay(await peer.send("hello", { versions: [1], capabilities: { plan: versions, planWorkspace: [1], planReview: [1], planDraft: draftVersions, nativeStop: [1] } }));
+      const hello = okay(await peer.send("hello", { versions: [1], capabilities: { plan: versions, planWorkspace: [1], planReview: [1], planDraft: draftVersions, ...(chatVersions.length && { planChat: chatVersions }), nativeStop: [1] } }));
       assert.equal(hello.capabilities.plan, negotiated ? 1 : undefined);
       assert.equal(hello.capabilities.planDraft, negotiated && draftVersions.includes(1) ? 1 : undefined);
       assert.equal(hello.capabilities.planWorkspace, negotiated ? 1 : undefined);
+      assert.equal(hello.capabilities.planChat, negotiated && !options.faux && !options.ephemeral && chatVersions.includes(1) ? 1 : undefined);
       assert.equal(hello.capabilities.planReview, negotiated && !options.faux && !options.ephemeral ? 1 : undefined);
       return peer;
     };
@@ -92,6 +93,109 @@ async function until(peer, id, done) {
 const history = async (peer, threadId) => okay(await peer.send("history", {
   threadId, limit: 32, range: { kind: "before", beforeEntryId: null },
 })).entries;
+
+test("Run here queues one native turn in the initiating thread without scoped edits or prerequisites", { timeout: 16_000 }, async t => {
+  helper(t, undefined);
+  const { boot, stop, config } = await layout(t);
+  const gate = Promise.withResolvers(), busy = Promise.withResolvers();
+  t.after(() => gate.resolve());
+  const request = "Create a plan to restore user preferences";
+  const definition = draftArgs();
+  definition.steps[1].blocker = "Check whether preferences already exist";
+  const reports = [{ stepId: "restore", state: "done", detail: "Created restored.txt with the selected theme." }];
+  const provider = await planProvider(t, config.agentDir, async turn => {
+    if (turn.text === request) return turn.results.length ? "Plan saved." : [call("hush_plan_propose", definition)];
+    if (turn.text === "Stay in this thread") { busy.resolve(); await gate.promise; return "Ready."; }
+    assert.match(turn.text, /^Plan implementation\n/);
+    const assigned = JSON.parse(turn.text.split("\n")[1]);
+    assert.deepEqual(assigned.selected, ["restore"]);
+    assert.deepEqual(assigned.tasks.map(task => task.id), ["save", "restore"]);
+    assert.deepEqual(assigned.tasks[1].requires, ["save"]);
+    assert.equal(assigned.tasks[1].blocker, definition.steps[1].blocker);
+    assert.ok(turn.messages.some(m => m.content === "Stay in this thread"));
+    assert.ok(!turn.messages.some(m => m.content === request));
+    assert.ok(turn.tools.includes("write") && turn.tools.includes("hush_plan_report"));
+    assert.ok(!turn.tools.includes("hush_plan_replace_text") && !turn.tools.includes("hush_plan_propose"));
+    if (!turn.results.length) return [call("write", { path: "restored.txt", content: "theme=mocha\n" })];
+    if (turn.results.length === 1) return [call("hush_plan_report", { tasks: [...reports, { ...reports[0], stepId: "save" }] })];
+    if (turn.results.length === 2) {
+      assert.match(turn.results.at(-1).content, /exactly one outcome per selected task/);
+      return [call("hush_plan_report", { tasks: reports })];
+    }
+    assert.match(turn.results.at(-1).content, /not an independent verification/);
+    return "Restored preferences.";
+  });
+  let connect = await boot({ faux: false, model: provider.model });
+  let a = await connect([1], true, [1], [1]);
+  const old = await connect();
+  const source = okay(await a.send("thread.new", {})).id;
+  await ask(a, source, request, "make-plan");
+  const { plan } = await snapshot(a, source);
+  const listThreads = async () => okay(await a.send("thread.list", { limit: 32 })).threads;
+  const original = await listThreads();
+  const browser = okay(await a.send("ext.planChat.workspace", { cwd: config.cwd, page: 0 }));
+  assert.deepEqual(browser.plans.map(p => p.id), [plan.id]);
+  assert.equal(okay(await a.send("ext.planChat.inspect", { cwd: config.cwd, planId: plan.id })).chat, true);
+  assert.deepEqual(await listThreads(), original, "launch browsing does not allocate a thread");
+  const foreign = join(dirname(config.cwd), "other");
+  await mkdir(foreign);
+  assert.equal((await a.send("ext.planChat.workspace", { cwd: foreign, page: 0 })).ok, false, "untrusted cwd must not expose plans");
+  const threadId = okay(await a.send("thread.new", {})).id;
+  const selection = { threadId, planId: plan.id, revision: 1, stepIds: ["restore"], requestId: "run-here" };
+  const run = (overrides = {}) => a.send("ext.planChat.run", { ...selection, ...overrides });
+  const inspect = async after => okay(await a.send("ext.planWorkspace.inspect", { threadId, planId: plan.id, after }));
+  const threads = await listThreads();
+  denied(await old.send("ext.planChat.run", selection), "unsupported_capability");
+  denied(await run({ revision: 2 }), "invalid_request", /Plan changed/);
+  await submit(a, threadId, "Stay in this thread", "busy-before-plan");
+  await gated(busy.promise, "ordinary turn did not start");
+  const canceled = okay(await run({ requestId: "close-queued" }));
+  const queued = await inspect();
+  assert.equal(queued.run.id, canceled.runId);
+  const submission = id => a.send("submission.get", { threadId, submissionId: id }).then(okay);
+  assert.equal((await submission(queued.run.submissionId)).status, "queued");
+  okay(await a.send("ext.planWorkspace.setClosed", { threadId, planId: plan.id, closed: true }));
+  assert.equal((await submission(queued.run.submissionId)).status, "unanswered");
+  let closed = await inspect();
+  if (closed.run.state === "running") closed = await inspect(closed.revision);
+  assert.equal(closed.run.state, "closed");
+  okay(await a.send("ext.planWorkspace.setClosed", { threadId, planId: plan.id, closed: false }));
+  const [receipt, retry] = (await Promise.all([run(), run()])).map(okay);
+  assert.deepEqual(receipt, retry);
+  denied(await run({ stepIds: ["save"] }), "invalid_request", /different selection/);
+  const admitted = await inspect();
+  assert.equal((await submission(admitted.run.submissionId)).status, "queued");
+  assert.deepEqual(await readdir(config.cwd), []);
+  gate.resolve();
+  let settled = await inspect();
+  if (settled.run.state === "running") settled = await inspect(settled.revision);
+  assert.equal(settled.run.state, "done");
+  assert.deepEqual(settled.run.stepIds, ["restore"]);
+  assert.deepEqual(settled.reports, reports);
+  assert.deepEqual(settled.progress, [], "an agent report isn't verification");
+  assert.equal((await snapshot(a, threadId)).plan, null, "Run here doesn't change the binding");
+  assert.deepEqual(await listThreads(), threads, "no new thread or task-owned worker");
+  const transcript = await history(a, threadId);
+  const input = transcript.filter(e => e.kind === "hush.plan.chat");
+  assert.equal(input.length, 1);
+  assert.equal(input[0].threadId, threadId);
+  assert.match(input[0].messages[0].blocks[0].text, /Selected: Restore preferences/);
+  assert.ok(transcript.some(e => e.kind === "hush.plan.result" && e.messages[0].blocks[0].text.includes("reported done")));
+  assert.equal((await history(a, source)).filter(e => e.kind === "hush.plan.chat").length, 0);
+  assert.equal(await readFile(join(config.cwd, "restored.txt"), "utf8"), "theme=mocha\n");
+  const log = () => a.send("ext.planWorkspace.history", { threadId, planId: plan.id }).then(okay);
+  const firstLog = await log();
+  assert.deepEqual(firstLog.runs.map(r => r.state), ["done", "closed"]);
+  assert.equal(firstLog.runs[0].entryId, input[0].id);
+  assert.deepEqual(firstLog.runs[0].workers, []);
+  assert.deepEqual(okay(await old.send("ext.planWorkspace.history", { threadId, planId: plan.id })).runs, []);
+  assert.equal((await snapshot(old, source)).run, null);
+  await stop();
+  connect = await boot({ faux: false, model: provider.model });
+  a = await connect([1], true, [1], [1]);
+  assert.deepEqual(await log(), firstLog);
+  assert.deepEqual(okay(await run()), receipt);
+});
 
 test("fixture plan admission is exact, durable and idempotent across clients and restart", { timeout: 18_000 }, async t => {
   const { boot, stop, config } = await layout(t);

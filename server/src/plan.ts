@@ -1,8 +1,10 @@
+import { isAbsolute } from "node:path";
 import { durableID, token, WireError } from "./wire.js";
 
 export const planVersion = 1;
 export const planWorkspaceVersion = 1;
 export const planDraftVersion = 1;
+export const planChatVersion = 1;
 export const planPreviewKind = "hush.plan.preview";
 export const planPreviewSavedKind = "hush.plan.preview-saved";
 export const planWorkspacePageSize = 48;
@@ -10,6 +12,7 @@ export const planHistoryPageSize = 12;
 export const planStepLimit = 24;
 export const planRunKind = "hush.plan.run";
 export const planTaskKind = "hush.plan.task";
+export const planChatKind = "hush.plan.chat";
 export const planResultKind = "hush.plan.result";
 export const planThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type PlanThinking = typeof planThinkingLevels[number];
@@ -32,19 +35,23 @@ export type PlanProgress = {
   stepId: string; state: "running" | "verified" | "failed"; effectiveThinking: PlanThinking;
   workerThreadId: string; entryId?: string; evidence?: string[];
 };
-export type PlanRunState = "running" | "verified" | "failed" | "closed";
-export type PlanRun = { id: string; stepIds: string[]; state: PlanRunState; ownerThreadId?: string; failure?: string; publicationUncertain?: true };
+export type PlanTaskReport = { stepId: string; state: "done" | "blocked" | "incomplete"; detail: string };
+export type PlanRunState = "running" | "verified" | "failed" | "closed" | "done";
+export type PlanRun = { id: string; stepIds: string[]; state: PlanRunState; ownerThreadId?: string; failure?: string; publicationUncertain?: true;
+  chat?: true; submissionId?: string };
 export type PlanStatus = "pending" | "running" | "attention" | "complete";
-export type PlanSummary = { id: string; title: string; revision: number; verified: number; total: number; status: PlanStatus; closed: boolean };
+export type PlanSummary = { id: string; title: string; revision: number; verified: number; reportedDone?: number; total: number; status: PlanStatus; closed: boolean };
 export type PlanWorkspace = { revision: string; plans: PlanSummary[]; more: boolean };
 export type PlanRunRecord = { id: string; revision: number; threadId: string; stepIds: string[]; state: PlanRunState; failure?: string; publicationUncertain?: true;
   workers: { stepId: string; threadId: string; state: PlanProgress["state"] }[];
-  turns?: { stepId: string; entryId: string; state: PlanProgress["state"] }[] };
+  turns?: { stepId: string; entryId: string; state: PlanProgress["state"] }[];
+  chat?: true; entryId?: string; reports?: PlanTaskReport[] };
 export type PlanHistory = { runs: PlanRunRecord[]; next: string | null };
 export type PlanSnapshot = {
   revision: string; plan: PlanDefinition | null; progress: PlanProgress[]; run: PlanRun | null;
   runAvailability: "disabled" | "fixture" | "scoped" | "pinned" | "unbound";
   closed?: true; complete?: true; settling?: true;
+  chat?: true; reports?: PlanTaskReport[];
 };
 export type PlanAttachment = { threadId: string; planId: string };
 export type PlanClosure = PlanAttachment & { closed: boolean };
@@ -64,18 +71,27 @@ export function parsePlanDraftTarget(p: Record<string, unknown>): PlanDraftTarge
 }
 
 export interface PlanHost {
-  wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string): Promise<PlanSnapshot>;
-  workspace(query: PlanWorkspaceQuery, signal: AbortSignal): Promise<PlanWorkspace>;
-  history(query: PlanHistoryQuery, signal: AbortSignal): Promise<PlanHistory>;
+  wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string, chat?: boolean): Promise<PlanSnapshot>;
+  workspace(query: PlanWorkspaceQuery, signal: AbortSignal, chat?: boolean): Promise<PlanWorkspace>;
+  history(query: PlanHistoryQuery, signal: AbortSignal, chat?: boolean): Promise<PlanHistory>;
   setClosed(closure: PlanClosure, signal: AbortSignal): Promise<Record<string, never>>;
   attach(attachment: PlanAttachment, signal: AbortSignal, replace?: boolean): Promise<Record<string, never>>;
   run(selection: PlanSelection, signal: AbortSignal): Promise<{ runId: string }>;
+}
+
+export type PlanWorkspaceAt = Omit<PlanWorkspaceQuery, "threadId"> & { cwd: string };
+export type PlanInspectAt = { cwd: string; planId: string; after?: string };
+export interface PlanChatHost {
+  runInChat(selection: PlanSelection, signal: AbortSignal): Promise<{ runId: string }>;
+  workspaceAt(query: PlanWorkspaceAt, signal: AbortSignal): Promise<PlanWorkspace>;
+  inspectAt(query: PlanInspectAt, signal: AbortSignal): Promise<PlanSnapshot>;
 }
 
 export const planStepID = (v: unknown): v is string => typeof v === "string" && v.length <= 64 && token(v);
 
 const watchToken = (s: unknown): s is string | undefined => s === undefined || typeof s === "string" && /^[a-f0-9]{64}$/.test(s) && s.length === 64;
 const fields = (p: Record<string, unknown>, ...keys: string[]) => Object.keys(p).every(k => keys.includes(k));
+const planPage = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && v <= 1_000_000;
 
 export function parsePlanWait(p: Record<string, unknown>, named = false) {
   if (!fields(p, ...(named ? ["threadId", "after", "planId"] : ["threadId", "after"])) || !durableID(p.threadId) ||
@@ -85,7 +101,7 @@ export function parsePlanWait(p: Record<string, unknown>, named = false) {
 
 export function parsePlanWorkspace(p: Record<string, unknown>): PlanWorkspaceQuery {
   if (!fields(p, "threadId", "page", "after") || !durableID(p.threadId) || !watchToken(p.after) ||
-      typeof p.page !== "number" || !Number.isSafeInteger(p.page) || p.page < 0 || p.page > 1_000_000) throw new WireError("invalid_request");
+      !planPage(p.page)) throw new WireError("invalid_request");
   return { threadId: p.threadId, page: p.page, after: p.after };
 }
 
@@ -105,6 +121,22 @@ export function parsePlanHistory(p: Record<string, unknown>): PlanHistoryQuery {
 export function parsePlanAttach(p: Record<string, unknown>): PlanAttachment {
   if (Object.keys(p).length !== 2 || !durableID(p.threadId) || !token(p.planId)) throw new WireError("invalid_request");
   return { threadId: p.threadId, planId: p.planId };
+}
+
+export function parsePlanAt(p: Record<string, unknown>, inspect: true): PlanInspectAt;
+export function parsePlanAt(p: Record<string, unknown>, inspect: false): PlanWorkspaceAt;
+export function parsePlanAt({ cwd, ...p }: Record<string, unknown>, inspect: boolean): PlanInspectAt | PlanWorkspaceAt {
+  if (typeof cwd !== "string" || !isAbsolute(cwd) || Buffer.byteLength(cwd) > 4096 || !cwd.isWellFormed() || /[\x00-\x1f\x7f-\x9f]/.test(cwd)) {
+    throw new WireError("invalid_request");
+  }
+  const { after, planId, page } = p;
+  if (!watchToken(after)) throw new WireError("invalid_request");
+  if (inspect) {
+    if (!fields(p, "planId", "after") || !token(planId)) throw new WireError("invalid_request");
+    return { cwd, planId, after };
+  }
+  if (!fields(p, "page", "after") || !planPage(page)) throw new WireError("invalid_request");
+  return { cwd, page, after };
 }
 
 export function parsePlanRun(p: Record<string, unknown>): PlanSelection {

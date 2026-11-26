@@ -8,7 +8,7 @@ import { WireError } from "../../server/src/wire.js";
 import type { PlanFiles } from "./plan-files.js";
 import { allowsPlanFileTool, inspectPlanTurn, isPlanFileTool, planTaskInstructions, planTurnTools } from "./plan-turn.js";
 import { previewPlan, type DraftProposal } from "./plan-draft.js";
-import { currentPlan, planRevisionLimit, proposePlan, type PlanSources } from "./plan.js";
+import { currentPlan, hasChatAssignment, planReportName, planReportTool, planRevisionLimit, proposePlan, type PlanSources } from "./plan.js";
 
 const readTool = "hush_plan_current", writeTool = "hush_plan_propose", previewTool = "hush_plan_preview";
 const planTool = (name: string) => name === readTool || name === writeTool || name === previewTool;
@@ -20,7 +20,7 @@ const failed = (text: string) => ({ ...result(text), isError: true });
 const workspaceUnavailable = "The workspace is not authorized for plan drafting.";
 const draftPrompt = "Start your request with ‘Create a plan …’ or ‘Revise the plan …’ to save a draft in /plan.";
 const advertised = `${draftPrompt} Start with ‘Preview a plan …’ to show a draft without saving it. Saving a plan does not authorize implementation. Do not write a Markdown file as a substitute for saving to /plan.`;
-const protectedPrompt = (mode: DraftMode) => `This request is for a draft only. You may inspect files to draft it. Do not implement, run commands, or edit files. Use ${readTool} to read the current plan before replacing a revision. Use baseRevision 0 for a new plan. A closed or completed plan cannot be revised. Create a separate plan only if the user asked for a new one. ${mode === "preview" ? "Show" : "Save"} structured tasks and acceptance checks with ${authorTool(mode)}, not in Markdown or as chat text alone. If one task can be done by one exact replacement in an existing small text file, specify edit.path (workspace-relative) and edit.contains (literal text that should be newly present after the edit). Use it only when a literal check is sufficient. Alternatively declare scope.write (1–4 existing files), optional scope.read (read-only inputs, maximum 8 files total), and scope.acceptance (label and JavaScript body). It receives the frozen files object keyed by exact path, without tools, shell, imports, or network. It must return false on the original files and true on the proposed contents. No edits to undeclared paths, duplicate paths, or file creation. Do not use scope for checks that need the real workspace, a project test runner or a service; leave such tasks as drafts. ${mode === "preview" ? "After showing a preview, say it is not saved and point to Save to /plan. If that action is unavailable, ask the user to start a new message with ‘Create a plan from the preview above’." : "Once saved, tell the user to open /plan. If the save conflicts, report that the plan changed rather than overwriting it."}`;
+const protectedPrompt = (mode: DraftMode) => `This request is for a draft only. You may inspect files to draft it. Do not implement, run commands, or edit files. Use ${readTool} to read the current plan before replacing a revision. Use baseRevision 0 for a new plan. A closed or completed plan cannot be revised. Create a separate plan only if the user asked for a new one. ${mode === "preview" ? "Show" : "Save"} structured tasks and acceptance checks with ${authorTool(mode)}, not in Markdown or as chat text alone. Describe outcomes and relevant checks in prose. Use dependencies and blockers only as helpful context. Tasks can run in chat with normal tools without declaring file scopes. If the user asks for isolated, verified edits, optionally specify edit.path and edit.contains for one exact replacement in an existing small text file, or scope.write (1–4 existing files), optional scope.read (maximum 8 files total), and scope.acceptance (label and JavaScript body). That body receives frozen files keyed by path, without tools, shell, imports, or network, and must return false before and true after. Isolated scopes cannot create files, write undeclared paths, or run project tests. ${mode === "preview" ? "After showing a preview, say it is not saved and point to Save to /plan. If that action is unavailable, ask the user to start a new message with ‘Create a plan from the preview above’." : "Once saved, tell the user to open /plan. If the save conflicts, report that the plan changed rather than overwriting it."}`;
 
 // Preview wording grants no authority to save. Both modes are based only on
 // placed user inputs, never on instructions in model or tool output.
@@ -179,17 +179,19 @@ export function planAuthor(harness: () => Harness, directory: (cwd?: string) => 
       }
     },
   });
-  return defineExtension({ name: "hush-plan-author", tools: [current, author("save"), author("preview"), ...(files ? planTurnTools(files) : [])], hooks: [
+  return defineExtension({ name: "hush-plan-author", tools: [current, author("save"), author("preview"),
+    ...(!fixture ? [planReportTool] : []), ...(files ? planTurnTools(files) : [])], hooks: [
     hook(GenerationTask, { async beforeRequest({ messages }, api, ctx) {
       const tools = getCurrentTools(messages);
       const scope = fixture ? undefined : await inspectPlanTurn(harness(), api.conversationId, { generation: api.taskId }, ctx);
-      if (!scope && !tools.some(t => planTool(t.name) || isPlanFileTool(t.name))) return;
+      if (!scope && !tools.some(t => planTool(t.name) || isPlanFileTool(t.name) || t.name === planReportName)) return;
       const draft = !scope && await drafting(harness(), api.conversationId, fixture, ctx);
+      const chat = !scope && !draft && tools.some(t => t.name === planReportName) && await hasChatAssignment(harness(), api.conversationId, ctx);
       const lastSystem = messages.findLastIndex(m => m.role === "system");
       const msg = messages[lastSystem];
       if (msg?.role !== "system") return; // Offering a tool requires a system entry.
       const visible = (t: { name: string }) => scope ? scope.authorized && allowsPlanFileTool(t.name, scope.fileSet)
-        : draft ? allowsDraftTool(draft, t.name) : !planTool(t.name) && !isPlanFileTool(t.name);
+        : draft ? allowsDraftTool(draft, t.name) : t.name === planReportName ? chat : !planTool(t.name) && !isPlanFileTool(t.name);
       const instruction = scope ? scope.authorized ? planTaskInstructions(scope.fileSet) : "This plan task no longer has authority. Do not take further actions."
         : draft ? `${advertised}\n\n${protectedPrompt(draft)}` : advertised;
       // Durable dispatch uses the stored loadout. Filter the request and also
@@ -210,6 +212,7 @@ export function planAuthor(harness: () => Harness, directory: (cwd?: string) => 
       const draft = await drafting(harness(), api.conversationId, fixture, ctx);
       if (draft && !allowsDraftTool(draft, call.name)) return { block: draft === "preview"
         ? "Plan previewing only permits reading and showing the draft." : "Plan drafting only permits reading and saving the draft." };
+      if (call.name === planReportName && call.parent) return { block: "Only the foreground plan turn can report its outcome." };
       if (!draft && planTool(call.name)) return { block: draftPrompt };
     } }),
   ] });

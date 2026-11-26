@@ -1,9 +1,10 @@
 # Structured plans (`plan:1`, experimental)
 
-Persistent Hush hosts can draft plans in chat and browse them in `/plan`. A host
-with the matching Hush file helper can run scoped text edits. Other tasks stay
-inspectable as drafts. Invocation-private and legacy format-1 stores do not
-offer `plan:1`. The native core frames are unchanged.
+Persistent Hush hosts can draft plans in chat and browse them in `/plan`.
+`planChat:1` runs selected tasks as a normal turn in the current thread.
+A host with the matching Hush file helper can also run isolated, scoped edits.
+Invocation-private and legacy format-1 stores do not offer `plan:1`.
+The native core frames are unchanged.
 
 ## Draft in chat
 
@@ -30,7 +31,8 @@ that confirmation. Saving doesn't call the model, run tasks, or write a
 Markdown file. Without preview saving, use the explicit create or revise
 request above.
 
-A runnable step declares one of two scopes:
+A normal chat run needs only a task description and prose checks. A step can
+also declare one of two scopes to opt into backend verification:
 
 - `edit: {path, contains}`: one exact replacement with a literal newly present
   afterward. Existing single-file plans still work.
@@ -52,20 +54,21 @@ shell, or general test-suite execution. Prose `checks` are not executed.
 ## Browse, close, and reopen
 
 `/plan` lists plans from the active thread's recorded working directory, not
-just the plan bound to that thread. At the local startup prompt, `/plan` creates
-an empty thread in the launch directory and opens the list without sending a
-message. The list shows status, numbered revision, and verified task count. Open
-plans precede closed plans. Enter opens the focused plan without attaching it or
-starting work. For a plan from another thread, `a` explicitly makes it the current
-plan for this thread; `p` in the list opens this thread's historical pin when it
-has one. Neither action authorizes Run.
+just the plan bound to that thread. With `planChat:1`, `/plan` at the local
+startup prompt can browse the trusted launch directory without creating a
+thread or changing the draft. The list shows status, numbered revision, and task
+counts. Open plans precede closed plans. Enter opens the focused plan without
+attaching it or starting work. `a` explicitly makes a named live plan current
+for this thread; it isn't needed to Run here. `p` opens this thread's historical
+pin when it has one. Neither action authorizes Run.
 
 `c` closes a plan or reopens an incomplete closed plan. Closing blocks new Run
-admissions immediately and lets the currently submitted task settle. It does
-not roll back changes. The remainder of the old selection cannot start, even if
-someone reopens before the active task settles. Reopening retains verified tasks
-and requires a fresh selection and Run. A plan is complete only when **every**
-task at its current revision is verified. A completed plan can be closed but not
+admissions immediately, withdraws a still-queued chat run, and lets a placed
+turn settle. It doesn't roll back changes. A scoped run cannot start the
+remaining tasks, even if someone reopens before the active task settles.
+Reopening retains task results and requires a fresh selection and Run. A plan
+is complete for verified-plan lifecycle rules only when **every** task at its
+current revision is verified. A completed plan can be closed but not
 reopened or edited. Start a new draft in place of a closed or completed plan with
 base revision `0`; this does not remove the old plan from the workspace list.
 
@@ -98,13 +101,31 @@ blocking. They do not alter the plan, affect verification, or authorize fixes.
 Changing the plan makes the report stale, but the old revision remains
 inspectable. Stop and restart interrupt active reviews; retry is explicit.
 
-## Run from the task picker
+## Run here
 
-Select tasks in `/plan` and press Enter once. It admits the exact revision and
-selection and returns to the initiating thread. The transcript shows the accepted
-selection, each task's tool calls, and the backend's verification or failure.
-The run reserves that thread until it settles. New chat, steers, and Continue
-are not accepted while it is running.
+Use Space to select tasks and Enter to run them as one turn in the active
+thread, even if the plan was drafted elsewhere in the same workspace. This
+uses the ordinary tools and workspace trust rules. It doesn't change the
+binding, fork the conversation, copy the drafting prompt, or submit the unsent
+draft. If the thread is busy, the run is a normal follow-up. If there is no
+active thread, Run here creates the first thread in the launch directory and
+keeps the draft in the composer.
+
+The model receives the exact revision and selected task IDs, with other tasks,
+dependencies, and blockers as context rather than selection gates. It should do
+necessary setup, run relevant checks, and continue independent selected work
+when another task is blocked. No unselected task is added to the run. Task
+outcomes in the transcript and picker are advisory, not backend verification.
+Reported tasks can be selected again. Closing the picker or disconnecting
+leaves admitted work alone; normal Stop applies to the native input.
+
+## Run scoped edits
+
+Press `s` when the task picker shows **s scoped** to opt into isolated
+verification of a valid selection on the bound thread. On peers without
+`planChat:1`, Enter retains its original scoped or fixture behavior. A scoped
+Run reserves the thread until it settles. New chat, steers, and Continue are
+not accepted while it is running.
 
 Each selected task runs as a scoped native turn **in that same conversation**,
 in authored order. It can read only declared inputs and stage exactly one text
@@ -185,7 +206,8 @@ Offer `capabilities: {"plan":[1]}` in `hello`. Unsupported hosts do not show
 A definition has `{id, revision, title, steps}`. Steps have `{id, title,
  description, checks, requires?, after?, blocker?, thinking?, edit?, scope?}`. ID
 references point to earlier steps. `requires` records hard requirements;
-`after` records a separate timing dependency. Both must be satisfied at Run.
+`after` records a separate timing dependency. Both must be satisfied for a
+scoped or fixture Run. Run here treats them as model context.
 
 `runAvailability` is `disabled`, `pinned`, `scoped`, `fixture`, or `unbound`.
 Only `scoped` and `fixture` authorize Run requests, and named inspection can
@@ -199,6 +221,38 @@ all selected tasks started). `plan:1`-only peers see that last state as `failed`
 with a close diagnostic. A selected step that has not started has no progress
 entry. `--faux` uses `!plan-fixture` and scripted checks with no file writes.
 It cannot run or verify ordinary drafts.
+
+### Foreground plan input (`planChat:1`)
+
+Offer `planChat:1` along with `plan:1` and `planWorkspace:1`. This extension never
+widens the permissions of `ext.plan.run`.
+
+- `ext.planChat.run {threadId, planId, revision, stepIds, requestId}` commits a
+  single native follow-up input and its run receipt and returns `{runId}`.
+  The thread must be ownerless and in the plan's recorded workspace. The
+  revision must be the open live head, and none of the selected IDs may already
+  be verified. Identical retries return the same receipt; the key cannot be
+  reused for another selection or Run mode. No plan attachment is changed.
+- `ext.planChat.workspace {cwd, page, after?}` and
+  `ext.planChat.inspect {cwd, planId, after?}` watch a launch directory without
+  creating a thread. `cwd` must name an absolute, trusted backend directory;
+  only plans in that workspace are visible. The reply shapes are the same as
+  the thread-scoped inventory and inspection operations.
+- Plan snapshots for eligible live plans add `chat: true` and `reports` with
+  zero or more `{stepId, state, detail}` records. Task report states are `done`,
+  `blocked`, and `incomplete`. They do not populate `progress` or count toward
+  `verified`. Inventory rows can include `reportedDone` (excluding verified
+  tasks). Chat run snapshots add `chat: true` and `submissionId`; chat history
+  records add `chat: true`, optionally `entryId` and `reports`, and no worker
+  or per-task turn records. A settled chat run can have state `done` without
+  any tasks being verified or even reported. Legacy peers don't receive chat
+  records in plan snapshots or run history.
+
+One typed `hush.plan.chat` entry represents the selected input in the
+initiating transcript. The backend tracks the normal input's settlement and
+records `hush.plan.result` there. This does not open a subagent or worker
+conversation. An independent review still uses its explicitly separate,
+read-only reviewer conversation.
 
 ### Workspace inventory (`planWorkspace:1`)
 

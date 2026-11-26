@@ -2,10 +2,12 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, configure, defineDoc, defineDocFamily, defineEntry, defineExtension, defineTask, defineTool, InboxDoc, LiveDoc, SubmissionSettled,
-  type AgentState, type ConversationId, type Cursor, type Harness, type LiveState, type Observation, type Observer, type Storage, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
-import { planHistoryPageSize, planWorkspacePageSize, planRunKind, planTaskKind, planResultKind, type PlanAttachment, type PlanClosure, type PlanDefinition, type PlanHistoryQuery,
-  type PlanHost, type PlanProgress, type PlanRun, type PlanRunRecord, type PlanRunState, type PlanSelection, type PlanSnapshot,
-  type PlanStep, type PlanSummary, type PlanWorkspaceQuery } from "../../server/src/plan.js";
+  type AgentChange, type AgentState, type ConversationId, type Cursor, type Harness, type LiveState, type Observation, type Observer, type Storage, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { planChatKind, planHistoryPageSize, planStepLimit, planWorkspacePageSize, planRunKind, planTaskKind, planResultKind,
+  type PlanAttachment, type PlanChatHost, type PlanClosure, type PlanDefinition, type PlanHistoryQuery,
+  type PlanHost, type PlanInspectAt, type PlanProgress, type PlanRun, type PlanRunRecord, type PlanRunState, type PlanSelection, type PlanSnapshot,
+  type PlanStep, type PlanSummary, type PlanTaskReport, type PlanWorkspaceAt, type PlanWorkspaceQuery } from "../../server/src/plan.js";
+import { checkPreparedModel, type NativeHost } from "../../server/src/durable.js";
 import type { PlanReviewTarget } from "../../server/src/plan-review.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { PlanFileError, type PlanFiles, type FileProposal, type PlanFileTarget } from "./plan-files.js";
@@ -24,8 +26,8 @@ type Pin = { planId: string; revision: number };
 type Binding = { cursor: string; pin?: Pin & { liveThread: ConversationId } };
 type PlanState = { cursor: string; revision: number; workspace: string; members: ConversationId[];
   fixture: boolean; progress: PlanProgress[]; run?: PlanRun; previousTask?: string;
-  closed?: true; halt?: true; lifecycle?: string; publication?: { stage?: string } };
-type Receipt = Omit<PlanSelection, "threadId" | "requestId"> & { runId: string };
+  closed?: true; halt?: true; lifecycle?: string; publication?: { stage?: string }; reports?: PlanTaskReport[] };
+type Receipt = Omit<PlanSelection, "threadId" | "requestId"> & { runId: string; chat?: true };
 type Assignment = { checks?: string[]; evidence?: string[] };
 
 // A fork copies the binding as of its anchor. Only the original liveThread
@@ -66,6 +68,16 @@ const RunLog = defineDocFamily<{ runs: PlanRunRecord[] }, null>({
 });
 const revisionKey = (id: string, revision: number) => `${id}:${revision}`;
 const verifiedCount = (state: PlanState) => state.progress.filter(p => p.state === "verified").length;
+const reportedCount = (state: PlanState) => state.reports?.filter(r => r.state === "done" &&
+  !state.progress.some(p => p.stepId === r.stepId && p.state === "verified")).length ?? 0;
+
+function runReceipt(records: { requestId: string; receipt: Receipt }[], q: PlanSelection, chat?: true) {
+  const existing = records.find(r => r.requestId === q.requestId)?.receipt;
+  if (!existing) return;
+  if (existing.chat === chat && existing.planId === q.planId && existing.revision === q.revision && existing.stepIds.length === q.stepIds.length &&
+      existing.stepIds.every((id, i) => id === q.stepIds[i])) return existing.runId;
+  throw invalid("Run request ID already belongs to a different selection or Run mode.");
+}
 
 async function refreshCatalog(tx: Tx, planId: string, state: PlanState, definition?: PlanDefinition) {
   const catalog = await tx.doc(WorkspaceCatalog, state.workspace, null);
@@ -74,8 +86,11 @@ async function refreshCatalog(tx: Tx, planId: string, state: PlanState, definiti
   const plan = definition ?? (previous?.revision === state.revision ? previous : await readDefinition(tx, { planId, revision: state.revision }));
   const total = "steps" in plan ? plan.steps.length : plan.total, verified = verifiedCount(state);
   const status = verified === total ? "complete" : state.run?.state === "running" ? "running" : state.run?.state === "failed" ? "attention" : "pending";
-  const row: PlanSummary = { id: planId, title: plan.title, revision: state.revision, total, verified, status, closed: !!state.closed };
-  if (previous && previous.revision === row.revision && previous.verified === verified && previous.status === status && previous.closed === row.closed) return;
+  const reportedDone = reportedCount(state);
+  const row: PlanSummary = { id: planId, title: plan.title, revision: state.revision, total, verified, status, closed: !!state.closed,
+    ...(reportedDone && { reportedDone }) };
+  if (previous && previous.revision === row.revision && previous.verified === verified && (previous.reportedDone ?? 0) === reportedDone &&
+      previous.status === status && previous.closed === row.closed) return;
   if (index < 0) catalog.rows.push(row);
   else catalog.rows[index] = row;
   catalog.cursor = cursor();
@@ -176,6 +191,7 @@ export async function proposePlan(tx: Tx, owner: ConversationId, directory: (cwd
   record.sources = combineSources(previousSources, sources, baseRevision > 0);
   state.revision = plan.revision;
   state.progress = [];
+  delete state.reports;
   if (state.run) state.previousTask = state.run.id;
   delete state.run;
   await update(tx, planId, state, plan);
@@ -268,7 +284,14 @@ async function finishRun(tx: Tx, planId: string, state: PlanState, outcome: Excl
     if (state.run.failure) row.failure = state.run.failure;
     if (state.run.publicationUncertain) row.publicationUncertain = true;
     for (const turn of [...row.workers, ...(row.turns ?? [])]) if (turn.state === "running") turn.state = "failed";
-    if (row.turns) {
+    if (row.chat) {
+      if (outcome !== "done") delete row.reports;
+      const label = outcome === "done" ? "Plan run finished" : outcome === "closed" ? "Plan run closed" : "Plan run interrupted";
+      const details = row.reports?.map(r => `${r.stepId}: ${r.state === "done" ? "reported done" : r.state} · ${r.detail}`).join("\n")
+        ?? (outcome === "done" ? "No task outcomes reported." : undefined);
+      await reportTurn(tx, planResultKind, row.threadId, row.id,
+        `${label}${state.run.failure ? "\n" + state.run.failure : ""}${details ? "\n" + details : ""}`, { outcome });
+    } else if (row.turns) {
       const foreground = await tx.doc(PlanForeground, thread(row.threadId));
       if (String(foreground.run?.id) === row.id) delete foreground.run;
       const verified = row.turns.filter(turn => turn.state === "verified").length;
@@ -526,6 +549,88 @@ export function scopedPlanExecution(files: PlanFiles, acceptance: PlanAcceptance
 }
 type ScopedExecution = ReturnType<typeof scopedPlanExecution>;
 
+const ChatInput = defineEntry<Pin & { text: string; timestampMs: number }>(planChatKind);
+
+async function chatAssignment(tx: Tx, owner: ConversationId) {
+  const live = (await tx.doc(LiveDoc, owner)).run;
+  if (live?.first === undefined) return;
+  const entry = await tx.entry(ChatInput, live.first);
+  if (!entry || entry.conversationId !== owner) return;
+  const { planId, revision } = entry.data;
+  const state = await tx.doc(State, planId, null), run = state.run;
+  if (state.revision === revision && run?.chat && run.state === "running" && run.ownerThreadId === String(owner) &&
+      live.inputs.includes(Number(run.submissionId) as SubmissionId)) return { planId, run };
+}
+
+export const planReportName = "hush_plan_report";
+export const planReportTool = defineTool({
+  name: planReportName,
+  description: "Report the outcome and checks or blocker for every selected task of this Run. This is an advisory report, not verification.",
+  callers: ["model"], replay: "safe",
+  parameters: { type: "object", required: ["tasks"], additionalProperties: false, properties: { tasks: {
+    type: "array", minItems: 1, maxItems: planStepLimit, items: {
+      type: "object", required: ["stepId", "state", "detail"], additionalProperties: false, properties: {
+        stepId: { type: "string", maxLength: 64 }, state: { type: "string", enum: ["done", "blocked", "incomplete"] },
+        detail: { type: "string", minLength: 1, maxLength: 180, pattern: "\\S" },
+      },
+    },
+  } } } as const,
+  async execute({ tasks }: { tasks: PlanTaskReport[] }, api, ctx) {
+    return api.commit(async tx => {
+      const assignment = await chatAssignment(tx, api.conversationId);
+      if (!assignment) return { ...result("No active plan assignment to report on."), isError: true };
+      const { planId, run } = assignment;
+      if (tasks.length !== run.stepIds.length || new Set(tasks.map(t => t.stepId)).size !== tasks.length ||
+          tasks.some(t => !run.stepIds.includes(t.stepId) || !t.detail.isWellFormed() || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(t.detail))) {
+        return { ...result("Report exactly one outcome per selected task, with a single-line detail."), isError: true };
+      }
+      const record = await logRun(tx, planId, run.id);
+      if (!record) throw new WireError("internal");
+      record.reports = run.stepIds.map(id => ({ ...tasks.find(t => t.stepId === id)! }));
+      return result("Report recorded. It is not an independent verification.");
+    }, ctx);
+  },
+});
+
+export async function hasChatAssignment(h: Harness, owner: ConversationId, ctx: Context) {
+  return h.commit(async tx => !!await chatAssignment(tx, owner), ctx);
+}
+
+export function planChatExecution(harness: () => Harness, authorize: (cwd: string | undefined, ctx: Context) => Promise<string>,
+    requireModel: NativeHost["requireModel"], agent: AgentChange) {
+  const task = defineTask<Pin & { submission: SubmissionId }, { phase: "settle" }, null>({
+    name: "hush.plan-chat-tracker", version: 1, initial: () => ({ phase: "settle" }),
+    phases: { settle: async (task, runtime, ctx) => {
+      // Observe the one native submission, including queued withdrawal. This
+      // observer never invokes a model, owns a conversation or resubmits input.
+      const { planId, revision, submission } = task.input;
+      const wait = withAbortSignal(runtime.signal, ctx);
+      const settled = await (await harness().submission(submission, wait))?.wait(wait);
+      return runtime.commit(async tx => {
+        const state = await tx.doc(State, planId, null);
+        if (state.revision !== revision || state.run?.id !== String(task.id)) return ended;
+        const row = await logRun(tx, planId, state.run.id);
+        if (row && settled?.entry !== undefined) row.entryId = String(settled.entry);
+        if (settled?.status !== "done" || settled.conversationId !== runtime.conversationId) {
+          if (state.halt && settled?.entry === undefined) return finishRun(tx, planId, state, "closed");
+          return failRun(tx, planId, state, settled?.entry === undefined
+            ? "Plan input did not start." : "Plan turn did not finish. Inspect any changes before retrying.");
+        }
+        const reports = row?.reports ?? [];
+        state.reports = [...state.reports?.filter(r => !state.run!.stepIds.includes(r.stepId)) ?? [], ...reports];
+        return finishRun(tx, planId, state, "done");
+      }, ctx);
+    } },
+    abort: (task, runtime, ctx) => runtime.commit(async tx => {
+      const state = await tx.doc(State, task.input.planId, null);
+      if (state.run?.id === String(task.id)) await failRun(tx, task.input.planId, state, "Run tracking stopped. Check the initiating thread before retrying.");
+      return aborted;
+    }, ctx),
+  });
+  return { task, authorize, requireModel, agent, extension: defineExtension({ name: "hush-plan-chat", tasks: [task] }) };
+}
+type ChatExecution = ReturnType<typeof planChatExecution>;
+
 export async function isPlanWorker(h: Harness, owner: ConversationId, ctx: Context) {
   // Ownership is immutable. Do not grant authority even if the worker's
   // extension, assignment or invocation-private profile changed on reopen.
@@ -572,10 +677,11 @@ function checkFileClaims<T extends { writable: boolean }>(claims: readonly T[], 
   }
 }
 
-export class Plans implements PlanHost {
+export class Plans implements PlanHost, PlanChatHost {
   #catalog?: Promise<void>;
   constructor(private readonly harness: Harness, private readonly storage: Storage,
-    private readonly directory: (cwd?: string) => string, private readonly fixture: boolean, private readonly scoped?: ScopedExecution) {}
+    private readonly directory: (cwd?: string) => string, private readonly fixture: boolean, private readonly scoped?: ScopedExecution,
+    private readonly chat?: ChatExecution) {}
 
   async #definition(pin: Pin, ctx: Context) {
     const plan = (await this.harness.snapshot(Definition, revisionKey(pin.planId, pin.revision), ctx))?.plan;
@@ -588,11 +694,14 @@ export class Plans implements PlanHost {
     return this.directory((await tx.doc(AgentDoc, owner)).cwd);
   }
 
-  async #inWorkspace(tx: Tx, q: PlanAttachment) {
-    const cwd = await this.#threadWorkspace(tx, thread(q.threadId));
-    const state = await tx.doc(State, q.planId, null);
+  async #workspacePlan(tx: Tx, cwd: string, planId: string) {
+    const state = await tx.doc(State, planId, null);
     if (!state.revision || state.workspace !== cwd) throw new WireError("not_found");
     return state;
+  }
+
+  async #inWorkspace(tx: Tx, q: PlanAttachment) {
+    return this.#workspacePlan(tx, await this.#threadWorkspace(tx, thread(q.threadId)), q.planId);
   }
 
   async reviewTarget(tx: Tx, q: PlanReviewTarget) {
@@ -624,29 +733,60 @@ export class Plans implements PlanHost {
     await h.commit(async tx => { (await tx.doc(CatalogReady)).ready = true; }, ctx);
   }
 
-  async workspace(q: PlanWorkspaceQuery, signal: AbortSignal) {
+  async workspace(q: PlanWorkspaceQuery, signal: AbortSignal, chat = false) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const cwd = await this.harness.commit(tx => this.#threadWorkspace(tx, thread(q.threadId)), ctx);
+    return this.#workspacePage(cwd, q, signal, chat);
+  }
+
+  async workspaceAt(q: PlanWorkspaceAt, signal: AbortSignal) {
+    const cwd = await this.#launchDirectory(q.cwd, signal);
+    const page = await this.#workspacePage(cwd, q, signal, true);
+    await this.#launchDirectory(cwd, signal); // A wait may outlive the grant.
+    return page;
+  }
+
+  async inspectAt(q: PlanInspectAt, signal: AbortSignal) {
+    const cwd = await this.#launchDirectory(q.cwd, signal);
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    await this.harness.commit(tx => this.#workspacePlan(tx, cwd, q.planId), ctx);
+    const snapshot = await this.#watchPlan(q.planId, undefined, q.after, signal, true, true);
+    await this.#launchDirectory(cwd, signal);
+    return snapshot;
+  }
+
+  async #launchDirectory(path: string, signal: AbortSignal) {
+    if (!this.chat) throw new WireError("unsupported_capability", "planChat");
+    const cwd = this.directory(path);
+    await this.chat.authorize(cwd, withAbortSignal(signal, BACKGROUND_CONTEXT));
+    return cwd;
+  }
+
+  async #workspacePage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    const owner = thread(q.threadId), cwd = await h.commit(tx => this.#threadWorkspace(tx, owner), ctx);
     await (this.#catalog ??= this.#indexExistingPlans().catch(error => { this.#catalog = undefined; throw error; }));
     if (!(await h.snapshot(WorkspaceCatalog, cwd, ctx))) await h.commit(tx => tx.doc(WorkspaceCatalog, cwd, null), ctx);
-    const token = (catalog: Readonly<Catalog>) => createHash("sha256").update(`${catalog.cursor}:${q.page}`).digest("hex");
+    const token = (catalog: Readonly<Catalog>) => createHash("sha256").update(`${catalog.cursor}:${q.page}:${chat}`).digest("hex");
     const catalog = await observed(observer => h.observeDoc(WorkspaceCatalog, cwd, observer, ctx), token, q.after, signal);
     const ordered = catalog.rows.slice().reverse().sort((a, b) => Number(a.closed) - Number(b.closed));
     const first = q.page * planWorkspacePageSize;
-    return { revision: token(catalog), plans: ordered.slice(first, first + planWorkspacePageSize), more: ordered.length > first + planWorkspacePageSize };
+    const plans = ordered.slice(first, first + planWorkspacePageSize);
+    return { revision: token(catalog), plans: chat ? plans : plans.map(({ reportedDone: _, ...plan }) => plan), more: ordered.length > first + planWorkspacePageSize };
   }
 
-  async history(q: PlanHistoryQuery, signal: AbortSignal) {
+  async history(q: PlanHistoryQuery, signal: AbortSignal, chat = false) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     // Scope and the page are observed in the same transaction.
     return h.commit(async tx => {
       await this.#inWorkspace(tx, q);
       const log = await tx.doc(RunLog, q.planId, null);
-      const end = q.before === undefined ? log.runs.length : log.runs.findIndex(r => r.id === q.before);
+      const visible = chat ? log.runs : log.runs.filter(r => !r.chat);
+      const end = q.before === undefined ? visible.length : visible.findIndex(r => r.id === q.before);
       if (end < 0) throw new WireError("invalid_request");
       const start = Math.max(0, end - planHistoryPageSize);
-      const runs = log.runs.slice(start, end).reverse().map(r => ({ ...r, stepIds: r.stepIds.slice(),
-        workers: r.workers.map(w => ({ ...w })), ...(r.turns && { turns: r.turns.map(t => ({ ...t })) }) }));
+      const runs = visible.slice(start, end).reverse().map(({ reports, ...r }) => ({ ...r, stepIds: r.stepIds.slice(),
+        workers: r.workers.map(w => ({ ...w })), ...(r.turns && { turns: r.turns.map(t => ({ ...t })) }),
+        ...(r.state === "done" && reports && { reports: reports.map(t => ({ ...t })) }) }));
       return { runs, next: start > 0 ? runs.at(-1)!.id : null };
     }, ctx);
   }
@@ -660,7 +800,22 @@ export class Plans implements PlanHost {
       if (!!state.closed === q.closed) return;
       if (q.closed) {
         state.closed = true;
-        if (state.run?.state === "running") state.halt = true;
+        if (state.run?.state === "running") {
+          state.halt = true;
+          if (state.run.chat) {
+            const owner = thread(state.run.ownerThreadId!);
+            const id = Number(state.run.submissionId) as SubmissionId;
+            const submission = await tx.submission(id);
+            if (submission?.status === "queued" && submission.conversationId === owner) {
+              const inbox = (await tx.doc(InboxDoc, owner)).items;
+              const i = inbox.findIndex(item => item.id === id && item.mode === "followUp");
+              if (i >= 0) {
+                inbox.splice(i, 1);
+                tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
+              }
+            }
+          }
+        }
       } else {
         // Reopening is not renewal of the previous Run's authorisation.
         delete state.closed;
@@ -671,7 +826,7 @@ export class Plans implements PlanHost {
     return {};
   }
 
-  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string): Promise<PlanSnapshot> {
+  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string, chat = false): Promise<PlanSnapshot> {
     const owner = thread(id), h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     let binding = await h.snapshot(Binding, owner, ctx);
     if (named) {
@@ -686,11 +841,16 @@ export class Plans implements PlanHost {
         plan: pin ? await this.#definition(pin, ctx) : null, runAvailability: pin ? "pinned" : this.fixture ? "fixture" : "disabled",
         progress: [], run: null };
     }
-    const planId = named ?? binding!.pin!.planId;
+    return this.#watchPlan(named ?? binding!.pin!.planId, owner, after, signal, !!named, chat);
+  }
+
+  async #watchPlan(planId: string, owner: ConversationId | undefined, after: string | undefined, signal: AbortSignal, named: boolean, chat: boolean): Promise<PlanSnapshot> {
+    const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const compatible = (state: Readonly<PlanState>) => state.fixture === this.fixture;
+    const chatAvailable = (state: Readonly<PlanState>) => chat && !!this.chat && compatible(state) && !state.fixture;
     const availability = (state: Readonly<PlanState>) => !compatible(state) ? "disabled"
-      : !state.members.includes(owner) ? "unbound" : state.fixture ? "fixture" : this.scoped ? "scoped" : "disabled";
-    const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}`).digest("hex");
+      : owner === undefined || !state.members.includes(owner) ? "unbound" : state.fixture ? "fixture" : this.scoped ? "scoped" : "disabled";
+    const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}:${chatAvailable(state)}`).digest("hex");
     // An unexpected task fault may settle without running its abort callback.
     // Race its receipt against the head update; neither wait survives detach.
     const settle = (state: Readonly<PlanState>, abort: AbortSignal) => {
@@ -707,12 +867,15 @@ export class Plans implements PlanHost {
       });
     };
     const state = await observed(observer => h.observeDoc(State, planId, observer, ctx), token, after, signal, settle);
-    if (!named && !state.members.includes(owner)) return this.wait(id, undefined, signal);
+    if (!named && owner !== undefined && !state.members.includes(owner)) return this.wait(String(owner), undefined, signal, undefined, chat);
     const runAvailability = availability(state);
     const plan = await this.#definition({ planId, revision: state.revision }, ctx);
-    const showRun = compatible(state) && (state.fixture || !!this.scoped);
-    return { revision: token(state), plan, runAvailability, progress: showRun ? state.progress : [], run: showRun ? state.run ?? null : null,
-      ...(state.closed && { closed: true as const }), ...(state.halt && { settling: true as const }),
+    const showChat = chatAvailable(state);
+    const showProgress = showChat || compatible(state) && (state.fixture || !!this.scoped);
+    const run = showProgress && (!state.run?.chat || showChat) ? state.run ?? null : null;
+    return { revision: token(state), plan, runAvailability, progress: showProgress ? state.progress : [], run,
+      ...(state.closed && { closed: true as const }), ...(run && state.halt && { settling: true as const }),
+      ...(showChat && { chat: true as const, reports: state.reports ?? [] }),
       ...(verifiedCount(state) === plan.steps.length && { complete: true as const }) };
   }
 
@@ -732,15 +895,83 @@ export class Plans implements PlanHost {
     return {};
   }
 
+  async runInChat(q: PlanSelection, signal: AbortSignal) {
+    const chat = this.chat;
+    if (!chat || this.fixture) throw new WireError("unsupported_capability", "planChat");
+    const h = this.harness, owner = thread(q.threadId), ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const target = await h.conversation(owner, ctx);
+    if (!target) throw new WireError("not_found");
+    const inspect = async (tx: Tx) => {
+      const state = await this.#inWorkspace(tx, q);
+      if (state.fixture) throw new WireError("unsupported_capability", "planChat");
+      const receipts = (await tx.doc(Receipts, owner)).records;
+      const receipt = runReceipt(receipts, q, true);
+      if (receipt) return { receipt } as const;
+      if (state.closed) throw invalid("This plan is closed. Reopen it before running tasks.");
+      if (state.revision !== q.revision) throw invalid("Plan changed; review and select the current revision.");
+      if (state.run?.state === "running" || await foregroundPlan(tx, owner)) throw new WireError("busy");
+      const last = state.run?.id ?? state.previousTask;
+      if (last) {
+        const task = await tx.task(Number(last) as TaskId);
+        if (!task || task.state.status !== "terminal") throw new WireError("busy");
+      }
+      if (receipts.length >= receiptLimit) throw new WireError("limit");
+      const plan = await readDefinition(tx, q);
+      const steps = plan.steps.filter(step => q.stepIds.includes(step.id));
+      if (steps.length !== q.stepIds.length) throw invalid("Selection includes an unknown task.");
+      const status = (id: string) => state.progress.some(p => p.stepId === id && p.state === "verified") ? "verified"
+        : state.reports?.find(r => r.stepId === id)?.state;
+      if (steps.some(s => status(s.id) === "verified")) throw invalid("Selection includes an already verified task.");
+      return { state, plan, steps, status, receipts, agent: await tx.doc(AgentDoc, owner) };
+    };
+    const before = await h.commit(async tx => {
+      const inspected = await inspect(tx);
+      if (inspected.receipt !== undefined) return inspected;
+      const { cwd, model } = inspected.agent;
+      return { cwd, model: model && { provider: model.provider, modelId: model.modelId }, lifecycle: inspected.state.lifecycle };
+    }, ctx);
+    if ("receipt" in before) return { runId: before.receipt };
+    const verify = await checkPreparedModel(chat.requireModel, before.model, chat.agent);
+    await chat.authorize(before.cwd, ctx);
+    const runId = await h.commit(async tx => {
+      const inspected = await inspect(tx);
+      if (inspected.receipt !== undefined) return inspected.receipt;
+      const { state, plan, steps, status, receipts, agent } = inspected;
+      if (agent.cwd !== before.cwd) throw new WireError("busy");
+      if (state.lifecycle !== before.lifecycle) throw invalid("The plan was closed or reopened; select the tasks again.");
+      verify?.(agent.model);
+      // The selected revision is input data, not a replay of the authoring prompt.
+      // Normal tools apply; none of the scoped file scripts or grants are passed.
+      const stepIds = steps.map(s => s.id);
+      const content = "Plan implementation\n" + JSON.stringify({ title: plan.title, revision: plan.revision, selected: stepIds,
+        tasks: plan.steps.map(({ id, title, description, checks, requires, after, blocker }) =>
+          ({ id, title, description, checks, requires, after, blocker, status: status(id) })) }) +
+        "\nImplement only the selected outcomes in this turn. Use the other tasks and their dependencies as context, not assignments. " +
+        "Inspect what already exists, do setup necessary for the selected work, and run relevant checks. If a real blocker remains, " +
+        "continue with independent selected tasks. Do not launch background workers for this run. " +
+        `Call ${planReportName} with the outcome and checks or blocker for each selected task, then summarize. ` +
+        "Treat this assignment as a record in later turns, not a standing request.";
+      await configure(tx, owner, chat.agent);
+      const submission = await target.submit(tx, { type: "input", whenBusy: "followUp", content,
+        entry: { kind: planChatKind, data: { planId: q.planId, revision: q.revision, timestampMs: Date.now(),
+          text: `Plan run · ${plan.title} · r${q.revision}\nSelected: ${steps.map(s => s.title).join(", ")}` } } });
+      const tracker = await tx.createTask(chat.task, { planId: q.planId, revision: q.revision, submission },
+        { ownership: { kind: "conversation" }, conversationId: owner, background: true });
+      const id = String(tracker);
+      delete state.halt;
+      state.run = { id, stepIds, state: "running", chat: true, ownerThreadId: q.threadId, submissionId: String(submission) };
+      (await tx.doc(RunLog, q.planId, null)).runs.push({ id, revision: q.revision, threadId: q.threadId, stepIds, state: "running", chat: true, workers: [] });
+      receipts.push({ requestId: q.requestId, receipt: { runId: id, chat: true, planId: q.planId, revision: q.revision, stepIds: q.stepIds } });
+      await update(tx, q.planId, state, plan);
+      return id;
+    }, ctx);
+    h.resume();
+    return { runId };
+  }
+
   async run(q: PlanSelection, signal: AbortSignal) {
     const h = this.harness, owner = thread(q.threadId), ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    const receipt = (records: { requestId: string; receipt: Receipt }[]) => {
-      const existing = records.find(r => r.requestId === q.requestId)?.receipt;
-      if (!existing) return;
-      if (existing.planId === q.planId && existing.revision === q.revision && existing.stepIds.length === q.stepIds.length &&
-          existing.stepIds.every((id, i) => id === q.stepIds[i])) return existing.runId;
-      throw invalid("Run request ID already belongs to a different selection.");
-    };
+    const receipt = (records: { requestId: string; receipt: Receipt }[]) => runReceipt(records, q);
     const inspect = async (tx: Tx) => {
       await checkThread(tx, owner);
       const { pin } = await tx.doc(Binding, owner);

@@ -15,7 +15,7 @@ binary, socket, thread, mode, draft = sys.argv[1:]
 master, slave = os.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 26, 124, 0, 0))
 args = [binary, "--socket", socket, "--fills", "off"]
-args += ["--local"] if mode == "faux" else ["--thread", thread]
+args += ["--local"] if mode == "startup" else ["--thread", thread]
 child = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave)
 ansi = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*?(?:\x07|\x1b\\)|[()][A-Za-z0-9]|[=>])")
 pending = bytearray()
@@ -54,7 +54,23 @@ def open_plan(title, count):
 
 
 try:
-    if mode == "preview":
+    if mode in ("startup", "chat"):
+        wait_for("ask anything")
+        os.write(master, b"keep this draft")
+        wait_for("keep this draft")
+        os.write(master, b"\x18in")  # ctrl+x i n opens /plan without replacing the draft
+        wait_for("Workspace plans", "Interface preferences")
+        os.write(master, b"\r")
+        wait_for("Select tasks to run here", "Restore preferences")
+        if mode == "chat":
+            os.write(master, b"\x1b[B ")
+            wait_for("Run here Restore preferences")
+            os.write(master, b"\r")
+            wait_for("Plan run finished", "reported done")
+        else:
+            os.write(master, b"\x1b")
+            wait_for("Workspace plans")
+    elif mode == "preview":
         wait_for("ask anything")
         submit(draft)
         wait_for("Plan preview · Subagents and independent reviews", "Save to /plan")
@@ -62,21 +78,21 @@ try:
         wait_for("Saved Subagents and independent reviews (r1)")
         open_plan("Subagents and independent reviews", "0/1 · r1")
         # The terminal renderer may reuse 'Plan' cells from the inventory header.
-        wait_for("Join worker results", "Draft only · execution unavailable")
+        wait_for("Join worker results", "Select tasks to run here")
     elif mode == "draft":
         wait_for("ask anything")
         submit(draft)
         wait_for("Saved Interface preferences (r1)")
         open_plan("Interface preferences", "0/2 · r1")
-        wait_for("Plan · r1 · Interface preferences", "Draft only · execution unavailable", "Pending")
-        os.write(master, b" \r\x1b[B")
+        wait_for("Plan · r1 · Interface preferences", "Select tasks to run here", "Pending")
+        os.write(master, b"\x1b[B")
         wait_for("› ○ Restore preferences")
         os.write(master, b"v")
         wait_for("Plan review · r1 · Interface preferences", "No review yet", "start review")
         os.write(master, b"\r")
         wait_for("Blocking · acceptance · save", "Check how omitted values keep their defaults.")
         os.write(master, b"\x1b")
-        wait_for("0/2 verified", "Draft only")
+        wait_for("0/2 verified", "Select tasks to run here")
         os.write(master, b"\x1b")
         wait_for("Workspace plans", "0/2 · r1")
         os.write(master, b"\x1b")
@@ -88,8 +104,8 @@ try:
         open_plan("Align saved profile themes", "0/2 · r1")
         wait_for("save.txt", "restore.txt", "reference.json")
         os.write(master, b" ")
-        wait_for("Run Align both profiles @ r1", "1 unselected")
-        os.write(master, b"\r")
+        wait_for("Run here Align both profiles @ r1", "s scoped")
+        os.write(master, b"s")
         wait_for("Isolated acceptance passed: Both profiles match the reference", "Plan run verified")
     elif mode == "scoped":
         wait_for("ask anything")
@@ -98,10 +114,11 @@ try:
         open_plan("Switch preference themes", "0/3 · r1")
         wait_for("Plan · r1 · Switch preference themes")
         os.write(master, b"\x1b[B ")
-        wait_for("Blocked · select Save preferences")
+        wait_for("Run here Restore preferences")
         os.write(master, b"\x1b[A ")
-        wait_for("Run 2 @ r1", "1 unselected")
-        os.write(master, b"\r")
+        # The renderer reuses the unchanged "Run here " prefix.
+        wait_for("2 @ r1", "s scoped")
+        os.write(master, b"s")
         wait_for("Plan run verified · 2/2 verified", "Literal check passed: restore.txt", "1 proposal")
         open_plan("Switch preference themes", "2/3 · r1")
         wait_for("2/3 verified", "Update notes")
@@ -122,9 +139,7 @@ try:
         os.write(master, b"\r")
         wait_for("Workspace plans", "Workspace profiles", "0/4 · r1")
         os.write(master, b"\r")
-        wait_for("Plan · r1 · Workspace profiles", "a Use in this thread")
-        os.write(master, b"a")
-        wait_for("Select the steps to run")
+        wait_for("Plan · r1 · Workspace profiles", "Select the steps to run")
         os.write(master, b"\x1b[B ")
         wait_for("Blocked · select Save a profile")
         os.write(master, b"\x1b[A ")
