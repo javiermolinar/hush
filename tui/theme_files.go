@@ -23,9 +23,12 @@ const (
 	maxThemeCount = 64
 )
 
+// A built-in preset also carries a light set, used instead of colors when
+// the terminal reports a light background. JSON themes have one set.
 type namedTheme struct {
 	name   string
 	colors themeColors
+	light  themeColors
 }
 
 func validThemeName(name string) bool {
@@ -383,22 +386,66 @@ func (s themeStore) save(ctx context.Context, chosen namedTheme) error {
 			return errors.New("theme changed on disk; reopen Themes to preview the edited file")
 		}
 	}
-	// Replace, rather than follow or truncate, the preference name.
+	return writePreference(ctx, agent, "theme", name)
+}
+
+// Replace, rather than follow or truncate, a one-line preference file.
+func writePreference(ctx context.Context, agent *os.Root, file, value string) error {
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return err
 	}
-	tmp := ".theme-" + hex.EncodeToString(nonce[:])
+	tmp := "." + file + "-" + hex.EncodeToString(nonce[:])
 	f, err := agent.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
 	defer agent.Remove(tmp)
-	_, writeErr := io.WriteString(f, name+"\n")
+	_, writeErr := io.WriteString(f, value+"\n")
 	if err := errors.Join(writeErr, f.Close(), ctx.Err()); err != nil {
 		return err
 	}
-	return agent.Rename(tmp, "theme")
+	return agent.Rename(tmp, file)
+}
+
+// Fills are a client preference like the theme: they depend on the terminal,
+// not the backend. A missing file means auto.
+func (s themeStore) loadFills() (FillMode, error) {
+	agent, err := s.agent(false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return FillAuto, nil
+	}
+	if err != nil {
+		return FillAuto, fmt.Errorf("open ~/.hush: %w", err)
+	}
+	defer agent.Close()
+	raw, err := readThemeFile(agent, "fills", 16)
+	if errors.Is(err, fs.ErrNotExist) {
+		return FillAuto, nil
+	}
+	if err != nil {
+		return FillAuto, fmt.Errorf("read ~/.hush/fills: %w", err)
+	}
+	switch mode := FillMode(strings.TrimSpace(string(raw))); mode {
+	case FillAuto, FillOn, FillOff:
+		return mode, nil
+	}
+	return FillAuto, errors.New("~/.hush/fills: expected auto, on or off")
+}
+
+func (s themeStore) saveFills(ctx context.Context, mode FillMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if mode != FillAuto && mode != FillOn && mode != FillOff {
+		return errors.New("invalid fill mode")
+	}
+	agent, err := s.agent(true)
+	if err != nil {
+		return err
+	}
+	defer agent.Close()
+	return writePreference(ctx, agent, "fills", string(mode))
 }
 
 func clientThemeStore() (themeStore, error) {

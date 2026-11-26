@@ -79,10 +79,14 @@ func (p *palette) terminalRole(role colorRole) resolvedRole {
 	return resolvedRole{ink: def.terminal, rgb: rgb}
 }
 
-func (p *palette) resolveRoles(allowRGB bool) {
+func (p *palette) resolveRoles(allowRGB, light bool) {
+	p.requested = p.overrides
+	if light && p.lightOverrides != (themeColors{}) {
+		p.requested = p.lightOverrides
+	}
 	for role, def := range colorRoles {
 		value := p.terminalRole(colorRole(role))
-		if rgb := p.overrides[role]; def.name != "" && allowRGB && rgb != nil && p.background != nil &&
+		if rgb := p.requested[role]; def.name != "" && allowRGB && rgb != nil && p.background != nil &&
 			contrastRatio(rgb, p.background) >= 4.5 {
 			end := resetForeground
 			if def.terminal.end == resetSyntax {

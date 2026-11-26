@@ -184,9 +184,9 @@ func TestThemeSlashPreviewsAndAppliesPreset(t *testing.T) {
 		}
 	}
 	d := open()
-	chooseThemeForTest(t, m, d, "gruvbox-dark")
+	chooseThemeForTest(t, m, d, "gruvbox")
 	body := assertFrame(t, m)
-	if m.themes.active.name != "gruvbox-dark" || !strings.Contains(body, "\x1b[38;2;250;189;47mAccent") ||
+	if m.themes.active.name != "gruvbox" || !strings.Contains(body, "\x1b[38;2;250;189;47mAccent") ||
 		!strings.Contains(ansi.Strip(body), "enter apply") {
 		t.Fatalf("missing live preset preview or apply hint:\n%s", ansi.Strip(body))
 	}
@@ -269,13 +269,14 @@ func TestThemePickerExplainsFallbacks(t *testing.T) {
 		profile                    colorprofile.Profile
 		bg                         color.Color
 	}{
-		{"applied", "gruvbox-dark", "", "", colorprofile.TrueColor, themeRGB(0x282828)},
-		{"no truecolor", "gruvbox-dark", "", "needs truecolor: showing terminal colors", colorprofile.ANSI256, themeRGB(0x282828)},
-		{"NO_COLOR", "gruvbox-dark", "1", "NO_COLOR is set: showing terminal colors", colorprofile.TrueColor, themeRGB(0x282828)},
-		{"unknown background", "gruvbox-dark", "", "background unknown: showing terminal colors", colorprofile.TrueColor, nil},
-		{"one role", "gruvbox-dark", "", "error uses its terminal color for contrast", colorprofile.TrueColor, themeRGB(0x32302f)},
+		{"dark terminal", "gruvbox", "", "", colorprofile.TrueColor, themeRGB(0x282828)},
+		{"light terminal", "gruvbox", "", "", colorprofile.TrueColor, themeRGB(0xeff1f5)},
+		{"no truecolor", "gruvbox", "", "needs truecolor: showing terminal colors", colorprofile.ANSI256, themeRGB(0x282828)},
+		{"NO_COLOR", "gruvbox", "1", "NO_COLOR is set: showing terminal colors", colorprofile.TrueColor, themeRGB(0x282828)},
+		{"unknown background", "gruvbox", "", "background unknown: showing terminal colors", colorprofile.TrueColor, nil},
+		{"one role", "gruvbox", "", "error uses its terminal color for contrast", colorprofile.TrueColor, themeRGB(0x32302f)},
 		{"two roles", "rose-pine", "", "muted and syntax_comment use terminal colors for contrast", colorprofile.TrueColor, themeRGB(0x282c34)},
-		{"every role", "rose-pine-dawn", "", "low contrast here: showing terminal colors", colorprofile.TrueColor, themeRGB(0x1e1e2e)},
+		{"every role", "gruvbox", "", "low contrast here: showing terminal colors", colorprofile.TrueColor, themeRGB(0x6b6b6b)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			freshThemeHome(t, tc.noColor)
@@ -309,6 +310,115 @@ func TestThemePickerExplainsFallbacks(t *testing.T) {
 				t.Fatalf("save notice should read %q:\n%s", want, ansi.Strip(assertFrame(t, m)))
 			}
 		})
+	}
+}
+
+func TestPresetFollowsTerminalBackground(t *testing.T) {
+	freshThemeHome(t, "")
+	m := modelFor(t, Options{Fills: FillOff, ReducedMotion: true})
+	m.Update(tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
+	preset, _ := presetTheme("rose-pine")
+	m.applyTheme(preset)
+	for _, tc := range []struct {
+		bg   color.Color
+		want themeColors
+	}{{themeRGB(0x191724), preset.colors}, {themeRGB(0xfaf4ed), rosePineDawn}, {themeRGB(0x1e1e2e), preset.colors}} {
+		m.Update(tea.BackgroundColorMsg{Color: tc.bg})
+		for role, def := range colorRoles {
+			if def.name != "" && (!m.palette.roles[role].custom || m.palette.roles[role].rgb != tc.want[role]) {
+				t.Fatalf("on %v, %s didn't use the set for that background", tc.bg, def.name)
+			}
+		}
+		if m.themes.active.name != "rose-pine" || m.themeNote() != "" {
+			t.Fatalf("background change replaced the choice or fell back: %q", m.themeNote())
+		}
+	}
+	// A JSON theme has one set, used on any background.
+	custom := namedTheme{name: "custom", colors: themeColors{roleAccent: themeRGB(0x402886)}}
+	m.applyTheme(custom)
+	if m.palette.roles[roleAccent].custom || m.themeNote() != "low contrast here: showing terminal colors" {
+		t.Fatal("dark ink applied on a dark background")
+	}
+	m.Update(tea.BackgroundColorMsg{Color: themeRGB(0xfaf4ed)})
+	if !m.palette.roles[roleAccent].custom || m.palette.roles[roleAccent].rgb != custom.colors[roleAccent] {
+		t.Fatal("a one-set theme didn't apply on a light background")
+	}
+}
+
+func TestFillsPreferenceSavesFromThemePicker(t *testing.T) {
+	home := freshThemeHome(t, "")
+	pref := filepath.Join(home, ".hush", "fills")
+	m := modelFor(t, Options{ReducedMotion: true})
+	darkThemeTerminal(m)
+	m.Update(tea.WindowSizeMsg{Width: 96, Height: 24})
+	if m.themes.fills != FillAuto || m.options.Fills != FillOn || !m.theme.Fills {
+		t.Fatalf("fresh fills: %q %q %v", m.themes.fills, m.options.Fills, m.theme.Fills)
+	}
+	d := openTestThemes(t, m)
+	press(m, tea.KeyRight, 0)
+	press(m, tea.KeyRight, 0)
+	body := ansi.Strip(assertFrame(t, m))
+	if m.themes.fills != FillOff || m.theme.Fills || !strings.Contains(body, "fills  auto  on  off") || !strings.Contains(body, "←→ fills") {
+		t.Fatalf("→ didn't preview fills off:\n%s", body)
+	}
+	press(m, tea.KeyEscape, 0)
+	if m.themes.fills != FillAuto || !m.theme.Fills || m.focusedDialog() != nil {
+		t.Fatal("Esc didn't restore the fill preference")
+	}
+	if _, err := os.Stat(pref); !os.IsNotExist(err) {
+		t.Fatalf("preview wrote the fill preference: %v", err)
+	}
+	d = openTestThemes(t, m)
+	f := m.frame
+	row := slices.Index(f.dialogChoices, themeFillsTarget)
+	if row < 0 {
+		t.Fatal("fills row not visible")
+	}
+	for range 2 { // click cycles: auto → on → off
+		m.Update(tea.MouseClickMsg(tea.Mouse{X: f.dialogX + 3, Y: f.dialogY + row, Button: tea.MouseLeft}))
+	}
+	if m.themes.fills != FillOff || d.themePicker.saving {
+		t.Fatalf("clicking the fills row: %q", m.themes.fills)
+	}
+	cmd := press(m, tea.KeyEnter, 0)
+	saved, ok := cmd().(themeSaved)
+	if !ok || saved.err != nil || saved.fills != FillOff {
+		t.Fatalf("Enter didn't save fills: %+v", saved)
+	}
+	m.Update(saved)
+	if raw, err := os.ReadFile(pref); err != nil || string(raw) != "off\n" || !strings.Contains(m.notice.text, "fills off") {
+		t.Fatalf("saved %q (%v), notice %q", raw, err, m.notice.text)
+	}
+	if next := modelFor(t, Options{}); next.themes.fills != FillOff || next.options.Fills != FillOff {
+		t.Fatal("saved fills didn't load on the next launch")
+	}
+	if next := modelFor(t, Options{Fills: FillOn}); next.themes.fills != FillOn || next.options.Fills != FillOn {
+		t.Fatal("--fills didn't override the saved choice")
+	}
+	if raw, _ := os.ReadFile(pref); string(raw) != "off\n" {
+		t.Fatal("a launch override changed the saved choice")
+	}
+}
+
+func TestFillsAutoAndInvalidPreference(t *testing.T) {
+	home := freshThemeHome(t, "")
+	t.Setenv("TERM_PROGRAM", "rex")
+	m := modelFor(t, Options{ReducedMotion: true})
+	darkThemeTerminal(m)
+	if m.themes.fills != FillAuto || m.options.Fills != FillOff || !strings.HasSuffix(ansi.Strip(m.themeFillsRow(80)), "· off in Rex") {
+		t.Fatalf("auto in Rex: %q %q", m.options.Fills, ansi.Strip(m.themeFillsRow(80)))
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".hush"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeThemeFixture(t, filepath.Join(home, ".hush"), "fills", "on\n")
+	if m := modelFor(t, Options{}); m.options.Fills != FillOn {
+		t.Fatal("a saved on didn't apply in Rex")
+	}
+	writeThemeFixture(t, filepath.Join(home, ".hush"), "fills", "sometimes")
+	m = modelFor(t, Options{})
+	if m.themes.fills != FillAuto || m.fillsProblem != "~/.hush/fills: expected auto, on or off" {
+		t.Fatalf("invalid preference: %q %q", m.themes.fills, m.fillsProblem)
 	}
 }
 

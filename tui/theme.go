@@ -3,6 +3,7 @@ package tui
 import (
 	"image/color"
 	"math"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -23,10 +24,24 @@ const (
 	FillOff  FillMode = "off"
 )
 
+var fillModes = []string{string(FillAuto), string(FillOn), string(FillOff)}
+
+// effectiveFills resolves a fill preference for this terminal.
+func effectiveFills(mode FillMode) FillMode {
+	if mode == FillOn || mode == FillOff {
+		return mode
+	}
+	if os.Getenv("TERM_PROGRAM") == "rex" {
+		return FillOff
+	}
+	return FillOn
+}
+
 type palette struct {
 	background, foreground        color.Color
 	ansiColors                    [16]color.Color
-	overrides                     themeColors
+	overrides, lightOverrides     themeColors // a non-empty light set replaces overrides on a light background
+	requested                     themeColors // the set roles were last resolved from
 	noColor                       bool
 	roles                         [roleCount]resolvedRole
 	soft, key, selected           color.Color
@@ -133,16 +148,16 @@ func (m *Model) refreshTheme() {
 	bg := p.background
 	m.theme.BackgroundKnown = bg != nil
 	m.theme.Fills = bg != nil && m.theme.TrueColor && m.options.Fills != FillOff && !p.noColor
-	p.resolveRoles(m.theme.TrueColor && !p.noColor)
+	var l, a, b float64
+	if bg != nil {
+		l, a, b = oklab(bg)
+		m.theme.Light = l >= 0.6
+	}
+	p.resolveRoles(m.theme.TrueColor && !p.noColor, bg != nil && m.theme.Light)
 	p.soft, p.key, p.selected = nil, nil, nil
 	p.added, p.removed = nil, nil
 	p.softInk, p.activeTab, p.parkedTab = "", "", ""
-	if bg == nil {
-		return
-	}
-	l, a, b := oklab(bg)
-	m.theme.Light = l >= 0.6
-	if !m.theme.Fills {
+	if bg == nil || !m.theme.Fills {
 		return
 	}
 	p.selected = p.roleFill(roleAccent, .15)

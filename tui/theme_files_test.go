@@ -82,20 +82,23 @@ func TestPresetThemesOnFreshHome(t *testing.T) {
 	}
 	seen := map[string]bool{terminalTheme: true}
 	for _, theme := range book.choices[1:] {
-		if !validThemeName(theme.name) || seen[theme.name] || theme.colors[roleText] != nil {
+		if !validThemeName(theme.name) || seen[theme.name] || theme.colors[roleText] != nil || theme.light[roleText] != nil {
 			t.Fatalf("invalid or duplicate preset: %+v", theme)
 		}
 		seen[theme.name] = true
-		// Check the Catppuccin review terminal and the background of the
-		// palette a preset adapts, which may be lighter than the review one.
-		refs := []uint32{0x1e1e2e}
-		if theme.name == "rose-pine-dawn" {
-			refs = []uint32{0xeff1f5}
-		}
-		for _, bg := range append(refs, presetBackgrounds[theme.name]...) {
-			for role, def := range colorRoles {
-				if def.name != "" && (theme.colors[role] == nil || contrastRatio(theme.colors[role], themeRGB(bg)) < 4.5) {
-					t.Errorf("%s: %s doesn't meet contrast on #%06x", theme.name, def.name, bg)
+		// Check each set on the Catppuccin review terminal and on the
+		// background of the palette it adapts, which may be harder to meet.
+		refs := presetBackgrounds[theme.name]
+		for _, set := range []struct {
+			name   string
+			colors themeColors
+			bgs    []uint32
+		}{{"dark", theme.colors, append([]uint32{0x1e1e2e}, refs.dark...)}, {"light", theme.light, append([]uint32{0xeff1f5}, refs.light...)}} {
+			for _, bg := range set.bgs {
+				for role, def := range colorRoles {
+					if def.name != "" && (set.colors[role] == nil || contrastRatio(set.colors[role], themeRGB(bg)) < 4.5) {
+						t.Errorf("%s %s: %s doesn't meet contrast on #%06x", theme.name, set.name, def.name, bg)
+					}
 				}
 			}
 		}
@@ -111,12 +114,11 @@ func TestPresetThemesOnFreshHome(t *testing.T) {
 	}
 }
 
-// Source backgrounds: Gruvbox dark0, and Rosé Pine base for each variant.
-var presetBackgrounds = map[string][]uint32{
-	"gruvbox-dark":   {0x282828},
-	"rose-pine":      {0x191724},
-	"rose-pine-moon": {0x232136},
-	"rose-pine-dawn": {0xfaf4ed},
+// Source backgrounds: Gruvbox dark0 and light0, and Rosé Pine's bases.
+var presetBackgrounds = map[string]struct{ dark, light []uint32 }{
+	"gruvbox":        {[]uint32{0x282828}, []uint32{0xfbf1c7}},
+	"rose-pine":      {[]uint32{0x191724}, []uint32{0xfaf4ed}},
+	"rose-pine-moon": {[]uint32{0x232136}, []uint32{0xfaf4ed}},
 }
 
 func TestPresetRolesStayDistinct(t *testing.T) {
@@ -151,10 +153,12 @@ func TestPresetRolesStayDistinct(t *testing.T) {
 		pairs = append(pairs, pair{roleError, b, 0.1})
 	}
 	for _, theme := range presetThemes {
-		for _, p := range pairs {
-			if d := distance(theme.colors[p.a], theme.colors[p.b]); d < p.min {
-				t.Errorf("%s: %s and %s are too similar (OKLab %.3f < %.2f)", theme.name,
-					colorRoles[p.a].name, colorRoles[p.b].name, d, p.min)
+		for set, colors := range map[string]themeColors{"dark": theme.colors, "light": theme.light} {
+			for _, p := range pairs {
+				if d := distance(colors[p.a], colors[p.b]); d < p.min {
+					t.Errorf("%s %s: %s and %s are too similar (OKLab %.3f < %.2f)", theme.name, set,
+						colorRoles[p.a].name, colorRoles[p.b].name, d, p.min)
+				}
 			}
 		}
 	}
@@ -176,7 +180,7 @@ func TestPresetsNeedAResolvableThemeDirectory(t *testing.T) {
 			if len(book.choices) != 1 || book.choices[0].name != terminalTheme || !strings.HasPrefix(book.problem, "Open ~/") {
 				t.Fatalf("offered presets that can't be applied: %+v", book)
 			}
-			preset, _ := presetTheme("gruvbox-dark")
+			preset, _ := presetTheme("gruvbox")
 			if err := store.save(t.Context(), preset); err == nil {
 				t.Fatal("saved a preset that can't resolve")
 			}

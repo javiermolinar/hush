@@ -101,9 +101,10 @@ click a row to preview it. The sample shows the active accent, link, status, and
 Press Enter or click the row again to apply and save locally, or Esc to restore the previous theme
 without saving.
 
-Built-in choices are `panther`, `gruvbox-dark`, `keanu`, `rose-pine`, `rose-pine-moon`,
-`rose-pine-dawn`, and `kitt`. Dawn is intended for a light terminal; the other presets are
-intended for a dark terminal. Gruvbox and Rosé Pine use foreground adaptations of the MIT-licensed
+Built-in choices are `panther`, `gruvbox`, `keanu`, `kitt`, `rose-pine`, and `rose-pine-moon`.
+They only change foreground colors, so each has a set for dark terminals and one for light
+terminals, and Hush picks the set from the background the terminal reports. On a light terminal
+both Rosé Pine presets use Dawn. Gruvbox and Rosé Pine use foreground adaptations of the MIT-licensed
 [Gruvbox palette](https://github.com/ellisonleao/gruvbox.nvim) and
 [Rosé Pine palette](https://github.com/rose-pine/rose-pine-palette)
 ([notices](app/redistribution/THIRD_PARTY_NOTICES/INDEX.tsv)). Panther, Keanu, and KITT are Hush
@@ -118,8 +119,8 @@ For a custom theme, choose **Copy starter JSON** in `/theme`, paste it into
 
 Use a lowercase name with letters, digits, hyphens or underscores (starting with a letter
 or digit). The starter lists every supported foreground role. Remove any role to inherit
-the terminal default. The client rejects unknown roles, non-hex colors, and settings other
-than `version`, `base`, and `colors`.
+the terminal default. A JSON theme has one set of colors, used on any background. The client
+rejects unknown roles, non-hex colors, and settings other than `version`, `base`, and `colors`.
 
 Reopen `/theme` to load the file. A local JSON file takes precedence over a built-in theme
 of the same name; `terminal` is reserved. `hush --theme NAME` overrides the saved choice for
@@ -128,7 +129,11 @@ override is invalid, Hush reports the error and keeps the saved choice if it is 
 The terminal still owns the background; custom RGB needs truecolor and a
 reported background with sufficient contrast. When colors fall back to the terminal palette, the
 picker title and the save notice say which and why. `NO_COLOR` suppresses custom colors and fills.
-`--fills off` (the automatic default in Rex) leaves backgrounds unpainted.
+
+Fills tint the tab band, selected rows, tool cards, inline code and diffs. In `/theme`, use ←/→ (or
+click the **fills** row) to choose `auto` (on, except in Rex), `on`, or `off`. Enter saves the choice
+with the theme in `~/.hush/fills`; `hush --fills MODE` overrides it for one launch. With fills off,
+backgrounds stay unpainted.
 
 ## Restart the local backend
 

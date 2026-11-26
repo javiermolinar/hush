@@ -141,7 +141,7 @@ func parse(args []string) (options, error) {
 	f.StringVar(&atEntry, "at-entry", "", "")
 	f.BoolVar(&local, "local", false, "")
 	f.StringVar(&o.ui.Theme, "theme", "", "")
-	f.StringVar(&o.ui.Fills, "fills", "auto", "")
+	f.StringVar(&o.ui.Fills, "fills", "", "") // unset uses the choice saved in /theme
 	f.StringVar(&o.ui.Images, "images", "auto", "")
 	f.BoolVar(&o.ui.Motion, "motion", true, "")
 	f.StringVar(&submission, "submission-id", "", "")

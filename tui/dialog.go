@@ -262,6 +262,7 @@ func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) te
 	}
 	if d.themePicker != nil && !accepted && !d.themePicker.saving {
 		m.applyTheme(d.themePicker.before)
+		m.previewFills(d.themePicker.fillsBefore)
 	}
 	if !m.live(d.route) || d.done == nil {
 		return nil

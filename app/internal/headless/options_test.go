@@ -88,6 +88,13 @@ func TestInteractiveRouting(t *testing.T) {
 	if err != nil || o.ui.Thread != "7" || o.ui.Socket != "/tmp/sock" || o.ui.Local == nil || *o.ui.Local || o.ui.Motion || o.ui.Fills != "off" || o.ui.Images != "none" || o.ui.Theme != "violet" || !o.uiFlags {
 		t.Fatalf("interactive options = %+v, %v", o.ui, err)
 	}
+	// Without --fills the TUI uses the choice saved in /theme.
+	if o, err := parse(nil); err != nil || o.ui.Fills != "" || o.uiFlags {
+		t.Fatalf("default fills = %q, flags %t, %v", o.ui.Fills, o.uiFlags, err)
+	}
+	if _, err := parse([]string{"--fills="}); err == nil {
+		t.Fatal("accepted an empty --fills")
+	}
 }
 
 func TestThemeFlagDoesNotApplyToHeadlessCommands(t *testing.T) {

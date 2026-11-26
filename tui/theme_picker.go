@@ -15,20 +15,26 @@ const themesID x.ActionID = coreID + ".themes"
 const openThemesOp x.LocalOp = "themes.open"
 const themeTemplateChoice = ":template"
 
+// themeFillsTarget is the picker row that cycles the fill preference.
+const themeFillsTarget = -20
+
 type clientThemes struct {
 	store  themeStore
 	active namedTheme
+	fills  FillMode // the chosen preference; options.Fills is its effect here
 	save   *themeSave
 }
 
 type themeSave struct {
-	token  uint64
-	picker *dialog
-	before namedTheme
+	token       uint64
+	picker      *dialog
+	before      namedTheme
+	fillsBefore FillMode
 }
 
 type themePicker struct {
 	before          namedTheme
+	fillsBefore     FillMode
 	themes          map[string]namedTheme
 	loading, saving bool
 	problem         string
@@ -37,6 +43,7 @@ type themePicker struct {
 type themeSaved struct {
 	token uint64
 	name  string
+	fills FillMode // set when the fill preference changed
 	err   error
 }
 
@@ -46,7 +53,7 @@ func (m *Model) themeNote() string {
 	var requested int
 	var fallback []string
 	for role, def := range colorRoles {
-		if def.name != "" && m.themes.active.colors[role] != nil {
+		if def.name != "" && m.palette.requested[role] != nil {
 			requested++
 			if !m.palette.roles[role].custom {
 				fallback = append(fallback, def.name)
@@ -107,7 +114,7 @@ func (m *Model) applyTheme(theme namedTheme) {
 		return
 	}
 	m.themes.active = theme
-	m.palette.overrides = theme.colors
+	m.palette.overrides, m.palette.lightOverrides = theme.colors, theme.light
 	m.refreshTheme()
 }
 
@@ -122,7 +129,7 @@ func (m *Model) openThemes(r ownerRoute, budget *int) tea.Cmd {
 	if store.home == "" {
 		return m.notifyRoute(r, "Themes require an absolute client home directory", x.Warning)
 	}
-	p := &themePicker{before: m.themes.active, loading: true}
+	p := &themePicker{before: m.themes.active, fillsBefore: m.themes.fills, loading: true}
 	d := &dialog{route: r, token: m.token(), budget: budget, title: "Themes", themePicker: p}
 	open := m.pushDialog(d)
 	load := m.startWork(r, func(ctx context.Context) (any, error) { return store.list(ctx), nil },
@@ -192,13 +199,57 @@ func (m *Model) acceptTheme(d *dialog) tea.Cmd {
 	}
 	m.applyTheme(theme)
 	store, ctx := m.themes.store, m.ctx
+	var fills FillMode
+	if m.themes.fills != p.fillsBefore {
+		fills = m.themes.fills
+	}
 	token := m.token()
 	p.saving = true
-	m.themes.save = &themeSave{token: token, picker: d, before: p.before}
+	m.themes.save = &themeSave{token: token, picker: d, before: p.before, fillsBefore: p.fillsBefore}
 	return func() tea.Msg {
 		err := store.save(ctx, theme)
-		return themeSaved{token: token, name: theme.name, err: err}
+		if err == nil && fills != "" {
+			err = store.saveFills(ctx, fills)
+		}
+		return themeSaved{token: token, name: theme.name, fills: fills, err: err}
 	}
+}
+
+// previewFills shows a fill preference now. Enter saves it with the theme;
+// Esc restores the previous one.
+func (m *Model) previewFills(mode FillMode) {
+	if m.themes.fills == mode {
+		return
+	}
+	m.themes.fills = mode
+	m.options.Fills = effectiveFills(mode)
+	m.refreshTheme()
+}
+
+func (m *Model) moveFills(d *dialog, delta int) {
+	if p := d.themePicker; !p.loading && !p.saving {
+		m.previewFills(FillMode(cycleValue(fillModes, string(m.themes.fills), delta)))
+	}
+}
+
+func (m *Model) themeFillsRow(w int) string {
+	row := m.control("fills") + "  " + m.configOptions(fillModes, string(m.themes.fills), max(1, w-7))
+	why := ""
+	switch {
+	case m.themes.fills == FillAuto && m.options.Fills == FillOff:
+		why = "off in Rex"
+	case m.options.Fills == FillOff || m.theme.Fills:
+	case m.palette.noColor:
+		why = "off with NO_COLOR"
+	case !m.theme.TrueColor:
+		why = "need truecolor"
+	default:
+		why = "need a reported background"
+	}
+	if why != "" {
+		row += m.paint(x.Muted, " · "+why)
+	}
+	return row
 }
 
 func (m *Model) receiveThemeSaved(msg themeSaved) tea.Cmd {
@@ -212,6 +263,7 @@ func (m *Model) receiveThemeSaved(msg themeSaved) tea.Cmd {
 	p.saving = false
 	if msg.err != nil {
 		m.applyTheme(save.before)
+		m.previewFills(save.fillsBefore)
 		p.problem = "Could not save theme: " + msg.err.Error()
 		if m.focusedDialog() != d {
 			return m.notify(m.active, p.problem, x.Warning)
@@ -219,6 +271,9 @@ func (m *Model) receiveThemeSaved(msg themeSaved) tea.Cmd {
 		return nil
 	}
 	saved := "Saved theme " + msg.name
+	if msg.fills != "" {
+		saved += " · fills " + string(msg.fills)
+	}
 	if note := m.themeNote(); note != "" {
 		saved += " · " + note
 	}
@@ -241,6 +296,10 @@ func (m *Model) themePickerKey(d *dialog, key string) tea.Cmd {
 		m.moveTheme(d, -1)
 	case "down":
 		m.moveTheme(d, 1)
+	case "left":
+		m.moveFills(d, -1)
+	case "right":
+		m.moveFills(d, 1)
 	case "enter":
 		return m.acceptTheme(d)
 	}
@@ -294,6 +353,10 @@ func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
 	if showSample {
 		budget--
 	}
+	showFills := budget >= 5
+	if showFills {
+		budget--
+	}
 	first := min(max(0, d.selected-budget+1), max(0, len(d.filtered)-budget))
 	for i := first; i < min(first+budget, len(d.filtered)); i++ {
 		choice := d.choices[d.filtered[i]]
@@ -313,13 +376,20 @@ func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
 	if showSample {
 		add(m.themeSampleRow(), -1)
 	}
+	if showFills {
+		add(m.themeFillsRow(w), themeFillsTarget)
+	}
 	if showKeys {
 		action := "apply"
 		if c, ok := d.choice(); ok && c.ID == themeTemplateChoice {
 			action = "copy"
 		}
-		full := m.keyHint("↑↓", "preview") + "  " + m.keyHint("enter", action) + "  " + m.keyHint("esc", "cancel")
-		add(m.hintRow(w, full, "↑↓  enter  esc", ""), -1)
+		full, compact := m.keyHint("↑↓", "preview")+"  ", "↑↓  "
+		if showFills {
+			full, compact = full+m.keyHint("←→", "fills")+"  ", compact+"←→  "
+		}
+		full += m.keyHint("enter", action) + "  " + m.keyHint("esc", "cancel")
+		add(m.hintRow(w, full, compact+"enter  esc", ""), -1)
 	}
 	return rows, hits
 }

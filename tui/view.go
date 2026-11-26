@@ -874,6 +874,10 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 						d.selected = target
 						return m.acceptChoice(d)
 					}
+					if target == themeFillsTarget && d.themePicker != nil {
+						m.moveFills(d, 1)
+						return nil
+					}
 					if d.workTrust != nil {
 						switch target {
 						case workspaceTrustGrantTarget:

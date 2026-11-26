@@ -43,7 +43,7 @@ type Options struct {
 	ClientEnvironment sdk.ClientEnvironment
 
 	// Set WorkspaceLocal only when the client and backend share the workspace.
-	Fills          FillMode
+	Fills          FillMode  // auto, on or off for this launch; empty uses the saved choice
 	ThemeName      string    // interactive client-local theme; empty uses the saved choice
 	Images         ImageMode // auto uses known Unicode-placeholder terminals; none keeps text only
 	WorkspaceLocal bool
@@ -89,6 +89,7 @@ type Model struct {
 	palette                   palette
 	themes                    clientThemes
 	themeProblem              string
+	fillsProblem              string
 	hover                     string
 	copied                    copyLabel
 	editorTemp                string
@@ -131,12 +132,7 @@ func New(ctx context.Context, backend Backend, options Options) (*Model, error) 
 		return nil, sdk.ErrProtocol
 	}
 	switch options.Fills {
-	case "", FillAuto:
-		options.Fills = FillOn
-		if os.Getenv("TERM_PROGRAM") == "rex" {
-			options.Fills = FillOff
-		}
-	case FillOn, FillOff:
+	case "", FillAuto, FillOn, FillOff:
 	default:
 		return nil, errors.New("tui: invalid fill mode")
 	}
@@ -176,10 +172,23 @@ func New(ctx context.Context, backend Backend, options Options) (*Model, error) 
 		editor: newPrompt(), width: 80, height: 24, frame: &frameMemo{},
 		images: imageState{mode: options.Images}, localTime: local.Location(),
 	}
-	m.palette.resolveRoles(false)
+	m.palette.resolveRoles(false, false)
 	m.palette.noColor = os.Getenv("NO_COLOR") != ""
 	m.themes.active.name = terminalTheme
-	if store, err := clientThemeStore(); err == nil {
+	store, storeErr := clientThemeStore()
+	m.themes.fills = options.Fills
+	if m.themes.fills == "" && storeErr == nil {
+		saved, err := store.loadFills()
+		if err != nil {
+			m.fillsProblem = err.Error()
+		}
+		m.themes.fills = saved
+	}
+	if m.themes.fills == "" {
+		m.themes.fills = FillAuto
+	}
+	m.options.Fills = effectiveFills(m.themes.fills)
+	if storeErr == nil {
 		m.themes.store = store
 		chosen, err := store.launch(options.ThemeName)
 		if err != nil {
@@ -189,7 +198,7 @@ func New(ctx context.Context, backend Backend, options Options) (*Model, error) 
 			m.applyTheme(chosen)
 		}
 	} else if options.ThemeName != "" && options.ThemeName != terminalTheme {
-		m.themeProblem = err.Error()
+		m.themeProblem = storeErr.Error()
 	}
 	m.editor.area.SetVirtualCursor(false)
 	m.ensureThread("")
@@ -240,10 +249,17 @@ func (m *Model) Init() tea.Cmd {
 	for i, out := range initial {
 		commands = append(commands, m.admit(m.route(owner, m.host.registrations[i].ID), out, &budget))
 	}
+	var problems []string
 	if m.themeProblem != "" {
-		commands = append(commands, m.notify(owner, m.themeProblem+" · using "+m.themes.active.name+" theme", extension.Warning))
-		m.themeProblem = ""
+		problems = append(problems, m.themeProblem+" · using "+m.themes.active.name+" theme")
 	}
+	if m.fillsProblem != "" {
+		problems = append(problems, m.fillsProblem+" · using auto fills")
+	}
+	if len(problems) != 0 {
+		commands = append(commands, m.notify(owner, strings.Join(problems, "; "), extension.Warning))
+	}
+	m.themeProblem, m.fillsProblem = "", ""
 	return tea.Batch(append(commands, m.syncClock(), m.syncWorkspaceTrust(), m.loadSettings())...)
 }
 
