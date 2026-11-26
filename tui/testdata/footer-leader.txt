@@ -9,7 +9,7 @@
   c         Copy last code block
   q         Recall queued messages
   type a chord  esc back
-  ◌ Working ──────────────────────────────────────────────────────────────────────────
+  ◌ Working ──────────────────────────────────────────────────────────── model-v1 high
   steer ›
-  Repo workspace · inbox 2 · model-v1 high                      ctx ▰▰▰▰▰▱ 80% · $1.23
+  Repo workspace · inbox 2                                      ctx ▰▰▰▰▰▱ 80% · $1.23
   › ◐ Working thread ⎇ agent/1    ⏸ ⑂ Untitled thread    ✓ Untitled thread  +2

@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  See the docs and app/main.go:12.
+
+  ── go  copy     ────────────────────────
+    func main() { println(42) }
+  ────────────────────────────────────────
+  ◌ Editing go.mod · 12s ──── / commands  test-model high  ± 4 files  +82 −18*
+  you ›
+  Workspace src
+  › ○ src

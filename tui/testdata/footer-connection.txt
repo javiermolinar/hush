@@ -9,7 +9,7 @@
   ── go  copy     ────────────────────────
     func main() { println(42) }
   ────────────────────────────────────────
-  ◌ Working ───────────────────────────────────────────────────────────────── esc stop
+  ◌ Working ────────────────────────────────────────────────── esc stop  model-v1 high
   steer ›
-  Repo workspace · ◌ reconnecting · inbox 2 · model-v1 high     ctx ▰▰▰▰▰▱ 80% · $1.23
+  Repo workspace · ◌ reconnecting · inbox 2                     ctx ▰▰▰▰▰▱ 80% · $1.23
   › ◐ Working thread ⎇ agent/1    ⏸ ⑂ Untitled thread    ✓ Untitled thread  +2

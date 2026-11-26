@@ -14,7 +14,7 @@
     ✓ git ls-files | wc -l                                                                  0.2s
     ✓ rg -n tokens docs/                                                                    0.2s
     … 10 more · enter open
-  ⟳ Retry 2 · 4s ──────────────────────────────────────────────────────────────────────── esc stop
+  ⟳ Retry 2 · 4s ───────────────────────────────────────────────────── esc stop  fixture-model max
   steer ›
-  Workspace hush · fixture-model max                                                         $0.13
+  Workspace hush                                                                             $0.13
   › ◐ hush

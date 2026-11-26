@@ -71,7 +71,10 @@ func TestFooterUsageDetails(t *testing.T) {
 	if tab := ansi.Strip(m.frame.rows[y+1]); !strings.Contains(tab, "⎇ main") {
 		t.Fatalf("missing branch on thread tab: %q", tab)
 	}
-	for _, want := range []string{"Repo hush", "test-model", "ctx ", "26%", "$5.48"} {
+	if rule := ansi.Strip(m.frame.rows[m.frame.ruleY]); !strings.Contains(rule, "test-model") {
+		t.Fatalf("missing model on the rule: %q", rule)
+	}
+	for _, want := range []string{"Repo hush", "ctx ", "26%", "$5.48"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("missing %q in status %q", want, line)
 		}
@@ -273,7 +276,7 @@ func TestPinnedFooterOutlivesIntro(t *testing.T) {
 		if len(m.tabs) > 0 || m.active.Valid() {
 			y-- // the active thread has a tab even when it is the only one
 		}
-		line := ansi.Strip(m.frame.rows[y])
+		line := ansi.Strip(m.frame.rows[y] + "\n" + m.frame.rows[m.frame.ruleY])
 		for _, s := range expect {
 			if !strings.Contains(line, s) {
 				t.Fatalf("missing %q in bottom bar:\n%s", s, ansi.Strip(frame))

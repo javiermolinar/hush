@@ -444,32 +444,57 @@ func (m *Model) promptRows(t *threadState, pane paneLayout, slash []registeredAc
 	return rows, cursor
 }
 
-// The rule takes one row in every state. Its left side is live activity;
-// optional hints and the worktree action share the right without taking
-// space from the editor or wrapping the rule into the transcript.
+// Keep state at the left edge and reserve the right edge for the changes
+// badge. Optional hints fit between live state and model metadata.
 func (m *Model) promptRule(t *threadState, w int, paused string, hints []string) displayRow {
 	phase, tool, count := t.liveStatus()
+	const ruleSpace = 3 // a stroke and room on each side
+	stateFloor := 0
+	switch phase {
+	case liveIdle:
+	case liveToolRunning, liveToolPending, liveToolParked:
+		stateFloor = min(32, w-ruleSpace)
+	case liveFailed:
+		stateFloor = min(w-ruleSpace, max(28, 2*w/3))
+	default:
+		stateFloor = min(20, w-ruleSpace)
+	}
+	badge := m.gitDiffBadgeRow(t, w-ruleSpace-stateFloor)
+	room := w - ruleSpace - stateFloor
+	if badge.text != "" {
+		room -= stringWidth(badge.text) + 2
+	}
+	var metadata displayRow
+	if model := m.ruleModel(t, min(w/3, room)); model != "" {
+		metadata.text = m.quiet(model)
+	}
+	mergeRow(&metadata, badge, "  ")
 	var right displayRow
 	if paused != "" {
 		key := shellKeys.follow.Help().Key
 		resume := paused + " · " + key + " resume"
 		if phase != liveIdle && stringWidth(resume) > w/3 {
 			resume = key + " resume"
-			if w < 52 {
-				resume = key
-			}
 		}
-		if stringWidth(resume) > w-3 {
+		room := w - ruleSpace - stateFloor - stringWidth(metadata.text)
+		if metadata.text != "" {
+			room -= 2
+		}
+		if stringWidth(resume) > room {
 			resume = paused
 		}
-		right.text = m.control(ansi.Truncate(resume, max(0, w-3), "…"))
+		if stringWidth(resume) <= room {
+			right.text = m.quiet(resume)
+		}
 	}
-	const ruleSpace = 3 // a stroke and room on each side
-	liveWidth := w - ruleSpace - stringWidth(right.text)
+	liveWidth := w - ruleSpace - stringWidth(right.text) - stringWidth(metadata.text)
+	if right.text != "" && metadata.text != "" {
+		liveWidth -= 2
+	}
 	if len(hints) > 0 && phase != liveFailed && w >= 56 {
 		first := stringWidth(hints[0]) + 2
-		if liveWidth-first >= 28 {
-			liveWidth -= first // keep the most important hint beside long commands
+		if liveWidth-first >= stateFloor && liveWidth-first >= 28 {
+			liveWidth -= first
 		}
 	}
 	out := m.liveActivity(t, liveWidth, phase, tool, count)
@@ -480,7 +505,10 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 		}
 	}
 	leftWidth := stringWidth(out.text)
-	room := w - ruleSpace - leftWidth - stringWidth(right.text)
+	room = w - ruleSpace - leftWidth - stringWidth(right.text) - stringWidth(metadata.text)
+	if metadata.text != "" {
+		room -= 2
+	}
 	for _, hint := range hints {
 		n := stringWidth(hint)
 		if right.text != "" {
@@ -492,10 +520,7 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 		mergeRow(&right, displayRow{text: hint}, "  ")
 		room -= n
 	}
-	if right.text != "" {
-		room -= 2
-	}
-	mergeRow(&right, m.gitDiffBadgeRow(t, room), "  ")
+	mergeRow(&right, metadata, "  ")
 	strokes := w - leftWidth - stringWidth(right.text)
 	if out.text != "" {
 		out.text += " "
@@ -504,9 +529,29 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	if right.text != "" {
 		strokes--
 	}
-	out.text += m.paint(x.Muted, strings.Repeat("─", max(0, strokes)))
+	out.text += m.quiet(strings.Repeat("─", max(0, strokes)))
 	mergeRow(&out, right, " ")
 	return out
+}
+
+func (m *Model) ruleModel(t *threadState, room int) string {
+	if room < 6 {
+		return ""
+	}
+	thread := m.footerThread(t)
+	label, effort := oneLine(thread.Model.ModelID), oneLine(thread.Thinking)
+	if label == "" {
+		return ""
+	}
+	if effort != "" {
+		if stringWidth(label)+stringWidth(effort)+1 <= room {
+			return label + " " + effort
+		}
+		if stringWidth(label) > room && room >= stringWidth(effort)+9 {
+			return ansi.Truncate(label, room-stringWidth(effort)-1, "…") + " " + effort
+		}
+	}
+	return ansi.Truncate(label, room, "…")
 }
 
 func (m *Model) ruleHints(t *threadState, slashes, files bool, fileChoices int) []string {

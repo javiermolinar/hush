@@ -8,9 +8,9 @@
   ── go  copy     ────────────────────
     func main() { println(42) }
   ────────────────────────────────────
-  ◌ Working ──── esc stop  enter steer
+  ◌ Working ─────── esc stop  model-v1
   steer › first prompt line
           second prompt line
           third prompt line
-  workspace · model-v1         ctx 80%
+  workspace · inbox 2  ctx 80% · $1.23
   › ◐ Working thread ⎇ agent/1  +4

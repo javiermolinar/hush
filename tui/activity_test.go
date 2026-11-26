@@ -489,7 +489,8 @@ func TestTranscriptAndSingleThreadShareLeftEdge(t *testing.T) {
 	}
 	repo := ansi.Strip(m.frame.rows[m.height-2])
 	tab := ansi.Strip(m.frame.rows[m.height-1])
-	if !strings.HasPrefix(repo, "  Workspace hush · fixture-model max") || !strings.Contains(tab, "› ◐ ") {
+	if !strings.HasPrefix(repo, "  Workspace hush") || !strings.Contains(tab, "› ◐ ") ||
+		!strings.Contains(ansi.Strip(m.frame.rows[m.frame.ruleY]), "fixture-model max") {
 		t.Fatalf("single-thread footer:\n%s", body)
 	}
 	m.options.Fills = FillOn

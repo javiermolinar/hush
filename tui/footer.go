@@ -110,18 +110,6 @@ func footerRegistration() x.Registration {
 				return x.Outcome{x.Local{Op: openUsageOp}}
 			}},
 	}, Segments: []x.Segment{
-		{Key: "model", Slot: x.StatusLeft, Order: 30, Priority: 46, Render: func(c x.RenderContext) x.Line {
-			t := c.Thread
-			if t.Model.ModelID == "" {
-				return nil
-			}
-			room := max(1, c.Width/3)
-			label := oneLine(t.Model.ModelID)
-			if t.Thinking != "" && stringWidth(label)+1+stringWidth(t.Thinking) <= room {
-				label += " " + oneLine(t.Thinking)
-			}
-			return x.Line{{Text: ansi.Truncate(label, room, "…"), Tone: x.Muted}}
-		}},
 		{Key: "context", Slot: x.StatusRight, Order: 10, Priority: 46, Render: func(c x.RenderContext) x.Line {
 			v := c.Thread.ContextUse
 			if !v.Known || v.Window == 0 {

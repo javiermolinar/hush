@@ -12,7 +12,7 @@
   ── go  copy     ────────────────────────
     func main() { println(42) }
   ────────────────────────────────────────
-  ◌ Working ─────────────────────────────────────────────────── esc stop  enter steer  alt+enter follow-up
+  ◌ Working ──────────────────────────────────── esc stop  enter steer  alt+enter follow-up  model-v1 high
   steer › Keep this draft
-  Repo workspace · inbox 2 · model-v1 high                                          ctx ▰▰▰▰▰▱ 80% · $1.23
+  Repo workspace · inbox 2                                                          ctx ▰▰▰▰▰▱ 80% · $1.23
   › ◐ Working thread ⎇ agent/1    ⏸ ⑂ Untitled thread    ✓ Untitled thread    ○ Untitled thread  +1
