@@ -30,6 +30,7 @@ type frameMemo struct {
 	dialogX, dialogY, dialogWidth, dialogHeight int
 	dialogChoices                               []int
 	dialogListWidth, dialogBodyHeight           int
+	dialogBodyStart                             int
 	slashStart, slashEnd                        int
 	hasHover                                    bool
 	intro                                       introFrame
@@ -364,7 +365,7 @@ func (m *Model) View() tea.View {
 		}
 		f.dialogToken, f.dialogX, f.dialogY = d.token, pane.edge, top
 		f.dialogWidth, f.dialogHeight, f.dialogChoices = w, len(panel.rows), panel.targets
-		f.dialogListWidth, f.dialogBodyHeight = panel.listWidth, panel.bodyHeight
+		f.dialogListWidth, f.dialogBodyHeight, f.dialogBodyStart = panel.listWidth, panel.bodyHeight, panel.bodyStart
 		if d.plan != nil {
 			f.dialogPlanRev = m.planViewFor(d).snapshot.Revision
 			f.dialogPlanSelectionRev = d.plan.selectionRev
@@ -867,8 +868,10 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 			}
 		}
 		if inside && d.custom != nil {
-			x, y := f.dialogX, f.dialogY+1 // skip the title row
-			return m.customUpdate(d, relativeMouse(event, x, y))
+			x, y := f.dialogX, f.dialogY+f.dialogBodyStart
+			if p.Y >= y && p.Y < y+f.dialogBodyHeight {
+				return m.customUpdate(d, relativeMouse(event, x, y))
+			}
 		}
 		return nil
 	}

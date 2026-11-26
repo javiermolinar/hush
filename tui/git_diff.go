@@ -529,6 +529,8 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) menuFrame {
 	if !g.patch && g.cancel == nil && g.err == nil && len(g.list.Files) > 0 {
 		c.consequence = menuLine{m.menuAction("Open diff", oneLine(g.list.Files[g.selected].Path)), gitOpenTarget}
 		keys = append(keys, "↵ open")
+	} else if !g.patch && g.cancel == nil && g.err == nil {
+		c.consequence = chromeLine(m.quiet("No files to open · u refresh"))
 	} else if g.patch && g.view != nil && g.view.truncated {
 		c.consequence = chromeLine(m.paint(x.Warning, "This preview is clipped"))
 	}
@@ -581,9 +583,7 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) menuFrame {
 				}
 				return list
 			})
-			out.rows = append(out.rows, list.rows...)
-			out.targets = append(out.targets, list.targets...)
-			out.listWidth = list.listWidth
+			out.appendBody(list)
 		}
 		return out
 	})

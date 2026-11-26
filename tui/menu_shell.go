@@ -16,6 +16,7 @@ type menuFrame struct {
 	targets               []int // -1 for chrome, otherwise a row or action in the owner's input handler
 	cursor                *tea.Cursor
 	listWidth, bodyHeight int
+	bodyStart             int
 	consequence           menuLine // optional override once the body knows its visible window
 }
 
@@ -26,6 +27,8 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	w, n := m.pane().width, min(available, max(1, m.height*7/10))
 	if d.full {
 		n = available
+	} else if d.custom != nil {
+		n = min(n, max(2, m.height/2-2)) // match the child model's existing body budget
 	}
 	var frame menuFrame
 	switch {
@@ -114,6 +117,7 @@ func (m *Model) menuShell(w, n int, c menuChrome, body func(int) menuFrame) menu
 		out.cursor = content.cursor
 		out.cursor.Position.Y += len(out.rows)
 	}
+	out.bodyStart = len(out.rows)
 	out.rows = append(out.rows, content.rows...)
 	out.targets = append(out.targets, content.targets...)
 	out.bodyHeight = len(content.rows)
