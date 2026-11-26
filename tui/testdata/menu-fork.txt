@@ -11,12 +11,12 @@
 │ What changed in @app/main.go:12?
 
   Answer
-
-  Fork transcript at an entry · files unchanged
+  Fork transcript at an entry · files unchanged ──────────────────── 2 choices
   › Type to filter
-  › 2 · Done  transcript fork
-    1 · Open the fixture  transcript fork
-  enter choose  ↑↓ move  esc close
+  › 2 · Done                             │ 2 · Done
+    1 · Open the fixture                 │ transcript fork
+  ↵ Choose  2 · Done
+  ↑↓ move  ↵ choose  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

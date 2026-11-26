@@ -10,14 +10,14 @@
 
 
 │ What changed in @app/main.go:12?
-
-  Answer
-
-  Child
+  Child ──────────────────────────────────────────────────────────────────────
   Only the top panel is drawn
   › No
     Yes
-  enter choose  ↑↓ move  esc close
+
+  ↵ Keep unchanged
+  ↑↓ move  ↵ choose  y yes  n no  esc back
+
   ────────────────────────────────────────────────────────────────────────────
   you › Keep the draft
         Keep the second line

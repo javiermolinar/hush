@@ -11,12 +11,12 @@
 │ What changed in @app/main.go:12?
 
   Answer
-
-  Permission mode
+  Permission mode ────────────────────────────────────────────────── 2 choices
   › Type to filter
   › Review
     Ask
-  enter choose  ↑↓ move  esc close
+  ↵ Choose  Review
+  ↑↓ move  ↵ choose  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

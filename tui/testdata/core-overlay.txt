@@ -7,12 +7,12 @@
 
   ── go  copy     ────────────────────────
     func main() { println(42) }
-  ────────────────────────────────────────
-  Confirm
+  Confirm ────────────────────────────────────────────────────
   This is a layered overlay.
   › No
     Yes
-  enter choose  ↑↓ move  esc close
+  ↵ Keep unchanged
+  ↑↓ move  ↵ choose  y yes  n no  esc back
   ◌ Running go test ./... ────────────────────────────────────
   steer ›
   dir workspace

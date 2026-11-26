@@ -307,7 +307,7 @@ func TestNewThreadUsesLaunchDirectory(t *testing.T) {
 	}
 }
 
-func TestSheetShowsRangeAndFooterDoesNotSelect(t *testing.T) {
+func TestSheetShowsCountAndFooterDoesNotSelect(t *testing.T) {
 	m, _ := demo(t, Options{Intro: &IntroOptions{}})
 	m.Update(tea.WindowSizeMsg{Width: 58, Height: 29})
 	var choices []x.Choice
@@ -321,7 +321,7 @@ func TestSheetShowsRangeAndFooterDoesNotSelect(t *testing.T) {
 	d := m.sheet
 	d.selected = 13
 	frame := ansi.Strip(assertFrame(t, m))
-	for _, want := range []string{"Type to filter", "enter choose", "↑↓", "esc", "1–17 / 42"} {
+	for _, want := range []string{"Type to filter", "↵ Choose  item 14", "↑↓ move", "esc back", "42 choices"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("sheet missing %q:\n%s", want, frame)
 		}

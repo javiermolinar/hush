@@ -11,12 +11,12 @@
 │ What changed in @app/main.go:12?
 
   Answer
-
-  See the docs and app/main.go:12.
-  Select model
+  Select model ────────────────────────────────────────────────────── 1 choice
   › Type to filter
-  › fake/reasoner  Reasoning
-  enter choose  ↑↓ move  esc close
+  › fake/reasoner                        │ fake/reasoner
+                                         │ Reasoning
+  ↵ Choose  fake/reasoner
+  ↑↓ move  ↵ choose  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

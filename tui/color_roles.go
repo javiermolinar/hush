@@ -132,3 +132,16 @@ func (p *palette) diffFill(tone x.Tone) color.Color {
 func (m *Model) paint(tone x.Tone, s string) string {
 	return m.palette.roles[roleForTone(tone)].ink.paint(s)
 }
+
+// Strong and Quiet are type levels, independent of the row's state color.
+var strongInk = roleInk{"\x1b[1m", "\x1b[22m"}
+
+func strongText(s string) string       { return strongInk.paint(s) }
+func (m *Model) quiet(s string) string { return m.paint(x.Muted, s) }
+
+func (m *Model) cursorRow(row string, width int, focused bool) string {
+	if focused {
+		return fill(fit(row, width), m.palette.selected)
+	}
+	return row
+}

@@ -29,6 +29,7 @@ type frameMemo struct {
 	dialogPlanSelectionRev                      uint64
 	dialogX, dialogY, dialogWidth, dialogHeight int
 	dialogChoices                               []int
+	dialogListWidth, dialogBodyHeight           int
 	slashStart, slashEnd                        int
 	hasHover                                    bool
 	intro                                       introFrame
@@ -339,6 +340,7 @@ func (m *Model) View() tea.View {
 		}
 		f.dialogToken, f.dialogX, f.dialogY = d.token, pane.edge, top
 		f.dialogWidth, f.dialogHeight, f.dialogChoices = w, len(panel.rows), panel.targets
+		f.dialogListWidth, f.dialogBodyHeight = panel.listWidth, panel.bodyHeight
 		if d.plan != nil {
 			f.dialogPlanRev = m.planViewFor(d).snapshot.Revision
 			f.dialogPlanSelectionRev = d.plan.selectionRev
@@ -756,6 +758,9 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				if i >= 0 && i < len(f.dialogChoices) {
 					target := f.dialogChoices[i]
 					if target >= 0 {
+						if f.dialogListWidth > 0 && p.X >= f.dialogX+f.dialogListWidth {
+							return nil // the same row in the detail pane is not a list hit
+						}
 						if d.planWorkspace != nil {
 							d.selected = target
 							return m.planWorkspaceKey(d, "enter")

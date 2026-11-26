@@ -11,12 +11,12 @@
 │ What changed in @app/main.go:12?
 
   Answer
-
-  Archive thread?
+  Archive thread? ────────────────────────────────────────────────────────────
   Hide the thread without deleting its history or files.
   › No
     Yes
-  enter choose  ↑↓ move  esc close
+  ↵ Keep unchanged
+  ↑↓ move  ↵ choose  y yes  n no  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

@@ -13,10 +13,10 @@
   Answer
 
   See the docs and app/main.go:12.
-
-  Rename thread
+  Rename thread ──────────────────────────────────────────────────────────────
   Thread title
-  enter accept  esc cancel
+  ↵ Accept
+  ↵ accept  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

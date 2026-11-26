@@ -644,138 +644,149 @@ func (m *Model) changeDialogQuery(d *dialog, query string) tea.Cmd {
 	return nil
 }
 
-// targets maps every drawn row to its filtered choice, or -1 for chrome.
-func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
-	if n <= 0 {
-		return nil, nil
-	}
+func (m *Model) dialogRows(d *dialog, w, n int) menuFrame {
 	title := d.title
 	if title == "" {
 		title = "Select"
 	}
-	var rows []string
-	var targets []int
-	add := func(row string, target int) {
-		rows, targets = append(rows, row), append(targets, target)
-	}
+	c := menuChrome{title: title}
 	if d.custom != nil {
-		add(m.paint(x.Accent, oneLine(title)), -1)
-		body := scopeView(d.custom.View().Content, min(recordBytes, w*n*8))
-		for s := range strings.SplitSeq(body, "\n") {
-			if len(rows) >= n {
-				break
+		return m.menuShell(w, n, c, func(h int) menuFrame {
+			var out menuFrame
+			body := scopeView(d.custom.View().Content, min(recordBytes, w*h*8))
+			for s := range strings.SplitSeq(body, "\n") {
+				if len(out.rows) >= h {
+					break
+				}
+				row := ansiCut(s, w)
+				if strings.Contains(row, "\x1b[") {
+					row += ansi.ResetStyle
+				}
+				out.add(row, -1)
 			}
-			row := ansiCut(s, w)
-			if strings.Contains(row, "\x1b[") {
-				row += ansi.ResetStyle
-			}
-			add(row, -1)
-		}
-		return rows, targets
-	}
-
-	footer := n >= 3 && (d.threadPicker == nil || n >= 5)
-	if d.confirm {
-		// Preserve the question and choices before optional chrome. A one-row
-		// confirmation can show the question, but cannot be accepted.
-		if d.message == "" {
-			add(m.paint(x.Accent, oneLine(title)), -1)
-			footer = n >= 4
-		} else {
-			if n >= 5 {
-				add(m.paint(x.Accent, oneLine(title)), -1)
-			}
-			add(m.control(ansi.Truncate(oneLine(d.message), w, "…")), -1)
-			footer = n >= 4
-		}
-	} else if n >= 4 || d.input != nil && n >= 3 {
-		add(m.paint(x.Accent, oneLine(title)), -1)
-	}
-	if footer {
-		n--
+			return out
+		})
 	}
 	if d.input != nil {
-		for _, text := range d.input.rows(max(1, w-2), n-len(rows)) {
-			add(text, -1)
+		keys := []string{"↵ accept"}
+		if d.multiline {
+			keys = append(keys, "shift+enter newline")
 		}
-		if footer {
-			plain := m.keyHint("enter", "accept") + "  " + m.keyHint("esc", "cancel")
-			full := plain
-			if d.multiline {
-				full += "  " + m.keyHint("shift+enter", "newline")
+		c.consequence = chromeLine(m.menuAction("Accept", ""))
+		c.keys = chromeLine(m.menuKeys(w, keys...))
+		return m.menuShell(w, n, c, func(h int) menuFrame {
+			var out menuFrame
+			for _, text := range d.input.rows(max(1, w-2), h) {
+				out.add(text, -1)
 			}
-			add(m.hintRow(w, full, plain, ""), -1)
-		}
-		return rows, targets
+			return out
+		})
 	}
-	if !d.confirm && d.message != "" && n-len(rows) >= 3 {
-		add(m.control(oneLine(d.message)), -1)
-	}
-	if !d.confirm && n-len(rows) >= 2 {
-		placeholder := "Type to filter"
-		if p := d.threadPicker; p != nil {
-			placeholder = "Workspace, thread, or message"
-			if p.creation != nil {
-				placeholder = "Filter working directories"
-			}
+	if d.confirm {
+		question := d.message
+		if question == "" {
+			question = title
 		}
-		filter, _ := m.filterInput(d.query, w, placeholder)
-		add(filter, -1)
-	}
-	count, budget := len(d.filtered), n-len(rows)
-	lo, hi := 0, 0
-	if p := d.threadPicker; p != nil {
-		if status := p.message(d); status != "" && budget > 0 && (count == 0 || budget > 1) {
-			add(m.control(ansi.Truncate("  "+status, w, "…")), -1)
-			budget--
-			if count == 0 {
-				budget = 0 // do not also show the generic empty-list row
-			}
-		}
-		lo, hi = m.threadPickerRows(d, w, budget, add)
-	} else {
-		lo = min(max(0, d.selected-budget+1), max(0, count-budget))
-		hi = min(lo+budget, count)
-		for i := lo; i < hi; i++ {
-			item := d.choices[d.filtered[i]]
-			prefix, tone := "  ", x.Plain
-			if i == d.selected {
-				prefix, tone = "› ", x.Accent
-			}
-			if item.Disabled {
-				tone = x.Muted
-			}
-			label, detail := oneLine(item.Label), oneLine(item.Description)
-			text := m.paint(tone, ansi.Truncate(prefix+label, w, "…"))
-			if detail != "" {
-				tail := ansiCut(detail, max(0, w/2))
-				text = m.paint(tone, ansiCut(prefix+label, max(0, w-stringWidth(tail)-2))) + "  " + m.control(tail)
-			}
-			add(text, i)
-		}
-	}
-	if count == 0 && budget > 0 {
-		status := "No matches"
-		if search := d.modelSearch; search != nil {
-			if search.cancel != nil {
-				status = "Searching models…"
-			} else if search.failed {
-				status = "Model search failed · edit to retry"
-			}
-		}
-		add(m.control(ansi.Truncate("  "+status, w, "…")), -1)
-	}
-	if footer {
-		if (d.modelSearch != nil || d.threadPicker != nil) && count == 0 {
-			hint := m.keyHint("esc", "close")
-			add(m.hintRow(w, hint, hint, ""), -1)
-		} else if d.threadPicker != nil {
-			add(m.threadPickerFooter(d, w, visibleRange(lo, hi, count)), -1)
+		c.minBody = 2 // never draw an actionable choice without its question
+		c.keys = chromeLine(m.menuKeys(w, "↑↓ move", "↵ choose", "y yes", "n no"))
+		choice, _ := d.choice()
+		if choice.ID == "yes" {
+			c.consequence = chromeLine(m.menuAction("Confirm", ""))
 		} else {
-			add(m.choiceFooter(w, "choose", visibleRange(lo, hi, count)), -1)
+			c.consequence = chromeLine(m.menuAction("Keep unchanged", ""))
 		}
+		return m.menuShell(w, n, c, func(h int) menuFrame {
+			var out menuFrame
+			out.add(m.control(oneLine(question)), -1)
+			lo, hi := menuWindow(d.selected, len(d.filtered), h-1)
+			for i := lo; i < hi; i++ {
+				item := d.choices[d.filtered[i]]
+				out.add(m.menuRow(w, 0, menuItem{title: item.Label, focus: i == d.selected}), i)
+			}
+			return out
+		})
 	}
-	return rows, targets
+	return m.selectRows(d, w, n)
+}
+
+func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
+	count := len(d.filtered)
+	c := menuChrome{title: d.title, count: menuCount(count, "choice", "choices")}
+	if c.title == "" {
+		c.title = "Select"
+	}
+	key := "↵ choose"
+	if d.modelSearch != nil {
+		c.count = menuCount(count, "model", "models")
+	}
+	if choice, ok := d.choice(); ok {
+		c.consequence = chromeLine(m.menuAction("Choose", oneLine(choice.Label)))
+	} else {
+		c.consequence = chromeLine(m.quiet("No available choice"))
+	}
+	if d.threadPicker != nil {
+		c.keys = chromeLine(m.threadPickerFooter(d, w, ""))
+	} else {
+		c.keys = chromeLine(m.menuKeys(w, "↑↓ move", key, "type to filter"))
+	}
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		var out menuFrame
+		if d.message != "" && h >= 3 {
+			out.add(m.quiet(oneLine(d.message)), -1)
+		}
+		if h-len(out.rows) >= 2 {
+			placeholder := "Type to filter"
+			if p := d.threadPicker; p != nil {
+				placeholder = "Workspace, thread, or message"
+				if p.creation != nil {
+					placeholder = "Filter working directories"
+				}
+			}
+			filter, _ := m.filterInput(d.query, w, placeholder)
+			out.add(filter, -1)
+		}
+		budget := h - len(out.rows)
+		if p := d.threadPicker; p != nil {
+			if status := p.message(d); status != "" && (count == 0 || budget > 1) {
+				out.add(m.quiet(status), -1)
+				if count == 0 {
+					return out
+				}
+				budget--
+			}
+			m.threadPickerRows(d, w, budget, out.add)
+			return out
+		}
+		if count == 0 {
+			status := "No matches"
+			if search := d.modelSearch; search != nil {
+				if search.cancel != nil {
+					status = "Searching models…"
+				} else if search.failed {
+					status = "Model search failed · edit to retry"
+				}
+			}
+			out.add(m.quiet(status), -1)
+			return out
+		}
+		var detail func(int, int) []string
+		if focus := d.choices[d.filtered[d.selected]]; focus.Description != "" {
+			detail = func(width, height int) []string { return m.menuDetail(focus.Label, focus.Description, width, height) }
+		}
+		list := m.menuColumns(w, budget, detail, func(lw, lh int) menuFrame {
+			var list menuFrame
+			lo, hi := menuWindow(d.selected, count, lh)
+			for i := lo; i < hi; i++ {
+				item := d.choices[d.filtered[i]]
+				list.add(m.menuRow(lw, 0, menuItem{title: item.Label, focus: i == d.selected, disabled: item.Disabled}), i)
+			}
+			return list
+		})
+		out.rows = append(out.rows, list.rows...)
+		out.targets = append(out.targets, list.targets...)
+		out.listWidth = list.listWidth
+		return out
+	})
 }
 
 func threadLabel(id sdk.ID) string {

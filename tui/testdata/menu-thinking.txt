@@ -10,13 +10,13 @@
 
 │ What changed in @app/main.go:12?
 
-  Answer
-  Thinking level
+  Thinking level ─────────────────────────────────────────────────── 3 choices
   › Type to filter
   › off
     low
     high
-  enter choose  ↑↓ move  esc close
+  ↵ Choose  off
+  ↑↓ move  ↵ choose  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

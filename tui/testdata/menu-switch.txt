@@ -9,13 +9,13 @@
 
 
 │ What changed in @app/main.go:12?
-
-  Switch thread · workspace unverified
+  Switch thread · workspace unverified ───────────────────────────── 3 choices
   › Workspace, thread, or message
     Workspace unknown
     › ◌ workspace #1 · current  idle · Answer See the docs and app/main.go:12…
       ⑂ thread 14  fork of #1
     + New thread
+  ↵ Choose  workspace #1 · current
   enter choose  ↑↓ move  esc close
   ────────────────────────────────────────────────────────────────────────────
   you ›
