@@ -359,7 +359,7 @@ func (m *Model) View() tea.View {
 		top := f.ruleY - len(panel.rows)
 		for j, row := range panel.rows {
 			y := top + j
-			f.rows[y] = margin + fit(row, w) + margin
+			f.rows[y] = surface(margin+fit(row, w)+margin, m.palette.panelInk)
 			f.hits[y] = nil // the focused panel owns this row
 		}
 		f.dialogToken, f.dialogX, f.dialogY = d.token, pane.edge, top

@@ -26,9 +26,11 @@ const (
 // A built-in preset also carries a light set, used instead of colors when
 // the terminal reports a light background. JSON themes have one set.
 type namedTheme struct {
-	name   string
-	colors themeColors
-	light  themeColors
+	name    string
+	surface surfaceMode
+	base    themeBase
+	colors  themeColors
+	light   themeColors
 }
 
 func validThemeName(name string) bool {
@@ -47,6 +49,7 @@ func validThemeName(name string) bool {
 type themeFile struct {
 	Version int               `json:"version"`
 	Base    string            `json:"base"`
+	Surface surfaceMode       `json:"surface,omitempty"`
 	Colors  map[string]string `json:"colors"`
 }
 
@@ -58,23 +61,43 @@ func decodeTheme(name string, source []byte) (namedTheme, error) {
 	if err := json.Unmarshal(source, &file, json.RejectUnknownMembers(true)); err != nil {
 		return namedTheme{}, fmt.Errorf("invalid theme JSON: %w", err)
 	}
-	if file.Version != 1 {
-		return namedTheme{}, errors.New("expected theme version 1")
-	}
-	if file.Base != terminalTheme {
-		return namedTheme{}, errors.New("base must be terminal")
+	var base themeBase
+	switch file.Version {
+	case 1:
+		if file.Base != terminalTheme || file.Surface != "" {
+			return namedTheme{}, errors.New("base must be terminal and surface omitted in theme version 1")
+		}
+	case 2:
+		base = themeBase(file.Base)
+		if base != baseAuto && base != baseDark && base != baseLight {
+			if file.Base == terminalTheme {
+				return namedTheme{}, errors.New("base terminal requires theme version 1")
+			}
+			return namedTheme{}, errors.New("base must be auto, dark or light in theme version 2")
+		}
+		switch file.Surface {
+		case surfaceTransparent, surfaceTinted, surfaceSolid:
+		default:
+			return namedTheme{}, errors.New("surface must be transparent, tinted or solid in theme version 2")
+		}
+	default:
+		return namedTheme{}, errors.New("expected theme version 1 or 2")
 	}
 	if file.Colors == nil {
 		return namedTheme{}, errors.New("colors must be a JSON object")
 	}
-	out := namedTheme{name: name}
+	out := namedTheme{name: name, base: base, surface: file.Surface}
 	for name, value := range file.Colors {
 		var role colorRole
-		valid := false
-		for i, def := range colorRoles {
-			if def.name != "" && def.name == name {
-				role, valid = colorRole(i), true
-				break
+		var valid bool
+		if file.Version == 2 {
+			role, valid = map[string]colorRole{"accent": roleAccent, "ok": roleSuccess, "warn": roleWarning, "err": roleError}[name]
+		} else {
+			for i, def := range colorRoles {
+				if def.name != "" && def.name == name {
+					role, valid = colorRole(i), true
+					break
+				}
 			}
 		}
 		if !valid {

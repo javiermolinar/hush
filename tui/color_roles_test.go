@@ -89,7 +89,7 @@ func TestPaletteRevisionRepaintsIntro(t *testing.T) {
 	m, _ := introFixture(t, Options{Fills: FillOn, ReducedMotion: true})
 	applyIntroFixtureTheme(m)
 	before := assertFrame(t, m)
-	if !strings.Contains(m.frame.rows[0], "\x1b[38;2;65;115;250m") {
+	if ink := m.palette.roles[roleAccent].ink.start; !strings.HasPrefix(ink, "\x1b[38;2;") || !strings.Contains(m.frame.rows[0], ink) {
 		t.Fatal("fixture did not render the ANSI-derived intro accent")
 	}
 	m.palette.overrides[roleAccent] = color.NRGBA{R: 72, G: 46, B: 157, A: 255}

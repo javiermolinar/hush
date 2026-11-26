@@ -170,3 +170,88 @@ func (m *Model) linkText(text string, path, quiet bool) string {
 	}
 	return linkUnderline.paint(text)
 }
+
+func (p *palette) ensureContrast(allowRGB bool) {
+	p.contrastAdjusted = false
+	if p.background == nil || !allowRGB {
+		return
+	}
+	bg := p.background
+	end := color.Color(color.Black)
+	if contrastRatio(color.White, bg) > contrastRatio(end, bg) {
+		end = color.White
+	}
+	for role, current := range p.roles {
+		if colorRole(role) == roleLive {
+			continue // derived roles are refreshed below
+		}
+		requested := p.requested[role]
+		rgb := current.rgb
+		if p.semanticTheme {
+			var base colorRole
+			switch colorRole(role) {
+			case roleSyntaxKeyword:
+				base = roleAccent
+			case roleSyntaxLiteral:
+				base = roleSuccess
+			}
+			if base != 0 && p.roles[base].rgb != nil {
+				rgb = p.roles[base].rgb
+				current = resolvedRole{rgb: rgb, ink: roleInk{ansi.NewStyle().ForegroundColor(rgb).String(), resetForeground}}
+				p.roles[role] = current
+			}
+		}
+		if rgb == nil && p.semanticTheme && colorRoles[role].ansiSlot != 0 {
+			// Some terminals don't report all palette slots. Use a measured
+			// base swatch or the terminal foreground rather than guessing ANSI RGB.
+			rgb = p.foreground
+			if rgb == nil {
+				rgb = end
+			}
+			current = resolvedRole{rgb: rgb, ink: roleInk{ansi.NewStyle().ForegroundColor(rgb).String(), resetForeground}}
+			p.roles[role] = current
+		}
+		if requested != nil && contrastRatio(requested, bg) < 4.5 {
+			// Preserve legacy fallback choices. Version 2 treats the four base
+			// inks as inputs and raises the requested color itself.
+			if p.semanticTheme {
+				rgb = requested
+			}
+			p.contrastAdjusted = true
+		}
+		if rgb == nil || contrastRatio(rgb, bg) >= 4.5 {
+			continue
+		}
+
+		// Blend toward the readable endpoint, checking the quantized RGB.
+		lo, hi := 0.0, 1.0
+		for range 12 {
+			mid := (lo + hi) / 2
+			if contrastRatio(blendPalette(rgb, end, mid), bg) >= 4.5 {
+				hi = mid
+			} else {
+				lo = mid
+			}
+		}
+		adjusted := blendPalette(rgb, end, hi)
+		// Leave a margin for conversion to 8-bit after interpolation.
+		if contrastRatio(adjusted, bg) < 4.5 {
+			adjusted = end
+		}
+		ink := roleInk{ansi.NewStyle().ForegroundColor(adjusted).String(), resetForeground}
+		if def := colorRoles[role].terminal; def.end == resetSyntax {
+			ink.end = resetSyntax
+		}
+		p.roles[role] = resolvedRole{rgb: adjusted, ink: ink, custom: p.semanticTheme && requested != nil}
+		p.contrastAdjusted = true
+	}
+	if p.semanticTheme {
+		// The four semantic inks are the only configurable colors in v2.
+		link := p.roles[roleAccent]
+		p.roles[roleLink] = link
+		comment := p.roles[roleMuted]
+		p.roles[roleSyntaxComment] = comment
+	}
+	accent := p.roles[roleAccent]
+	p.roles[roleLive] = resolvedRole{rgb: accent.rgb, ink: roleInk{accent.ink.start + "\x1b[3m", "\x1b[23m" + accent.ink.end}}
+}

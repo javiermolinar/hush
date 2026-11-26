@@ -95,7 +95,7 @@ func TestIntroGoldens(t *testing.T) {
 			golden(t, "intro-1000", m)
 		case 54:
 			golden(t, "intro-1800", m)
-			if !strings.Contains(m.frame.rows[0], "\x1b[38;2;65;115;250m") {
+			if !strings.Contains(m.frame.rows[0], m.palette.roles[roleAccent].ink.start) {
 				t.Fatal("intro did not use the terminal's reported accent")
 			}
 		default:
@@ -543,9 +543,9 @@ func TestIntroLateForegroundRepaintsBanner(t *testing.T) {
 	m, _ := introFixture(t, Options{Fills: FillOn, ReducedMotion: true})
 	applyIntroFixtureTheme(m)
 	before := assertFrame(t, m)
-	m.Update(tea.ForegroundColorMsg{Color: color.NRGBA{R: 211, G: 132, B: 243, A: 255}})
+	m.Update(tea.ForegroundColorMsg{Color: color.NRGBA{R: 91, G: 40, B: 120, A: 255}})
 	after := assertFrame(t, m)
-	if before == after || !strings.Contains(m.frame.rows[0], "\x1b[38;2;211;132;243m") {
+	if before == after || !strings.Contains(m.frame.rows[0], "\x1b[38;2;91;40;120m") {
 		t.Fatal("late foreground did not repaint the settled banner")
 	}
 }

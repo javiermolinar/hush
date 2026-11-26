@@ -110,27 +110,30 @@ both Rosé Pine presets use Dawn. Gruvbox and Rosé Pine use foreground adaptati
 ([notices](app/redistribution/THIRD_PARTY_NOTICES/INDEX.tsv)). Panther, Keanu, and KITT are Hush
 interpretations of the palettes previewed in Crush.
 
-For a custom theme, choose **Copy starter JSON** in `/theme`, paste it into
-`~/.hush/themes/<name>.json`, and edit it. For example:
+Custom themes live in `~/.hush/themes/<name>.json`. Version 2 declares four semantic
+colors, a surface, and a base. For example:
 
 ```json
-{"version":1,"base":"terminal","colors":{"accent":"#8b9df5","syntax_keyword":"#c69af7"}}
+{"version":2,"base":"auto","surface":"tinted","colors":{"accent":"#8b9df5","ok":"#a6e3a1","warn":"#f9e2af","err":"#f38ba8"}}
 ```
 
-Use a lowercase name with letters, digits, hyphens or underscores (starting with a letter
-or digit). The starter lists every supported foreground role. Remove any role to inherit
-the terminal default. A JSON theme has one set of colors, used on any background. The client
-rejects unknown roles, non-hex colors, and settings other than `version`, `base`, and `colors`.
+Choose `transparent`, `tinted`, or `solid` for `surface`, and `auto`, `dark`, or `light` for
+`base`. Auto uses the OSC 11 terminal background report. Solid panels use that background color;
+Hush never changes the terminal background itself. Omit a color to use the terminal default.
+The client raises measurable low-contrast roles to about 4.5:1 when it can emit RGB.
+
+Use a lowercase name with letters, digits, hyphens or underscores (starting with a letter or
+digit). Existing version 1 files with `base: "terminal"` and individual foreground roles still
+load; **Copy starter JSON** copies the version 1 template.
 
 Reopen `/theme` to load the file. A local JSON file takes precedence over a built-in theme
 of the same name; `terminal` is reserved. `hush --theme NAME` overrides the saved choice for
 that launch; `hush --theme terminal` always uses the terminal palette. If the
 override is invalid, Hush reports the error and keeps the saved choice if it is valid.
-The terminal still owns the background; custom RGB needs truecolor and a
-reported background with sufficient contrast. When colors fall back to the terminal palette, the
-picker title and the save notice say which and why. `NO_COLOR` suppresses custom colors and fills.
+Custom RGB needs truecolor and a reported background. If colors fall back to the terminal palette,
+the picker title and the save notice say why. `NO_COLOR` suppresses custom colors and fills.
 
-Fills tint the tab band, selected rows, tool cards, inline code and diffs. In `/theme`, use ←/→ (or
+Fills can tint the tab band, focused rows, tool cards, inline code, and menu surfaces. In `/theme`, use ←/→ (or
 click the **fills** row) to choose `auto` (on, except in Rex), `on`, or `off`. Enter saves the choice
 with the theme in `~/.hush/fills`; `hush --fills MODE` overrides it for one launch. With fills off,
 backgrounds stay unpainted.

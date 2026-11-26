@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	x "github.com/javiermolinar/hush/tui/extension"
 )
 
 // FillMode controls background fills. FillAuto disables them in Rex.
@@ -37,16 +38,36 @@ func effectiveFills(mode FillMode) FillMode {
 	return FillOn
 }
 
+type surfaceMode string
+
+const (
+	surfaceTransparent surfaceMode = "transparent"
+	surfaceTinted      surfaceMode = "tinted"
+	surfaceSolid       surfaceMode = "solid"
+)
+
+type themeBase string
+
+const (
+	baseAuto  themeBase = "auto"
+	baseDark  themeBase = "dark"
+	baseLight themeBase = "light"
+)
+
 type palette struct {
-	background, foreground        color.Color
-	ansiColors                    [16]color.Color
-	overrides, lightOverrides     themeColors // a non-empty light set replaces overrides on a light background
-	requested                     themeColors // the set roles were last resolved from
-	noColor                       bool
-	roles                         [roleCount]resolvedRole
-	soft, key, selected           color.Color
-	added, removed                color.Color
-	softInk, activeTab, parkedTab string
+	surfaceMode                        surfaceMode
+	semanticTheme                      bool
+	panelInk                           string
+	contrastAdjusted, contrastNotified bool
+	background, foreground             color.Color
+	ansiColors                         [16]color.Color
+	overrides, lightOverrides          themeColors // a non-empty light set replaces overrides on a light background
+	requested                          themeColors // the set roles were last resolved from
+	noColor                            bool
+	roles                              [roleCount]resolvedRole
+	soft, key, selected                color.Color
+	added, removed                     color.Color
+	softInk, activeTab, parkedTab      string
 }
 
 func fill(s string, c color.Color) string {
@@ -139,7 +160,16 @@ func (m *Model) terminalMessage(msg tea.Msg) (bool, tea.Cmd) {
 	default:
 		return false, nil
 	}
-	return true, nil
+	return true, m.reportContrastAdjustment()
+}
+
+func (m *Model) reportContrastAdjustment() tea.Cmd {
+	p := &m.palette
+	if !m.started || !p.contrastAdjusted || p.contrastNotified || m.focusedDialog() != nil {
+		return nil
+	}
+	p.contrastNotified = true
+	return m.notify(m.active, "Raised interface contrast to at least 4.5:1", x.Muted)
 }
 
 func (m *Model) refreshTheme() {
@@ -147,13 +177,32 @@ func (m *Model) refreshTheme() {
 	p := &m.palette
 	bg := p.background
 	m.theme.BackgroundKnown = bg != nil
-	m.theme.Fills = bg != nil && m.theme.TrueColor && m.options.Fills != FillOff && !p.noColor
+	p.surfaceMode = m.themes.active.surface
+	if p.surfaceMode == "" {
+		p.surfaceMode = surfaceTinted
+	}
+	if bg == nil || !m.theme.TrueColor || m.options.Fills == FillOff || p.noColor {
+		p.surfaceMode = surfaceTransparent
+	}
+	m.theme.Fills = p.surfaceMode != surfaceTransparent
+	p.panelInk = ""
 	var l, a, b float64
 	if bg != nil {
 		l, a, b = oklab(bg)
-		m.theme.Light = l >= 0.6
 	}
-	p.resolveRoles(m.theme.TrueColor && !p.noColor, bg != nil && m.theme.Light)
+	m.theme.Light = bg != nil && l >= 0.6
+	switch m.themes.active.base {
+	case baseDark:
+		m.theme.Light = false
+	case baseLight:
+		m.theme.Light = true
+	}
+	p.semanticTheme = m.themes.active.base != ""
+	p.resolveRoles(m.theme.TrueColor && !p.noColor, m.theme.Light)
+	p.ensureContrast(m.theme.TrueColor && !p.noColor)
+	if p.surfaceMode == surfaceSolid {
+		p.panelInk = ansi.NewStyle().BackgroundColor(bg).String()
+	}
 	p.soft, p.key, p.selected = nil, nil, nil
 	p.added, p.removed = nil, nil
 	p.softInk, p.activeTab, p.parkedTab = "", "", ""
@@ -164,7 +213,7 @@ func (m *Model) refreshTheme() {
 	p.added = p.roleFill(roleSuccess, .20)
 	p.removed = p.roleFill(roleError, .20)
 	step := 0.045
-	if m.theme.Light {
+	if l >= 0.6 {
 		step = -0.03
 	}
 	soft := fromLab(l+step, a, b)
@@ -172,6 +221,9 @@ func (m *Model) refreshTheme() {
 	if math.Abs(next-l) >= 0.015 {
 		p.soft, p.key = soft, fromLab(l+1.8*step, a, b)
 		p.softInk = ansi.NewStyle().BackgroundColor(soft).String()
+		if m.themes.active.surface == surfaceTinted && p.surfaceMode == surfaceTinted {
+			p.panelInk = p.softInk // explicit v2 tinted panels use the derived surface
+		}
 	}
 	foreground := p.swatch(roleText)
 	stateFill := func(role colorRole, amount float64) string {
@@ -188,7 +240,9 @@ func (m *Model) refreshTheme() {
 		(p.key == nil || contrastRatio(controls.rgb, p.key) >= 4.5) {
 		return
 	}
-	p.roles[roleControl] = p.terminalRole(roleControl)
+	if fallback := p.terminalRole(roleControl); fallback.rgb == nil || contrastRatio(fallback.rgb, bg) >= 4.5 {
+		p.roles[roleControl] = fallback
+	}
 	if ink := blendPalette(bg, foreground, .78); ink != nil && contrastRatio(ink, bg) >= 4.5 &&
 		(p.selected == nil || contrastRatio(ink, p.selected) >= 4.5) {
 		p.roles[roleControl] = resolvedRole{rgb: ink, ink: roleInk{ansi.NewStyle().ForegroundColor(ink).String(), resetForeground}}
