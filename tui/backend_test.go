@@ -82,8 +82,10 @@ func TestBackendE2E(t *testing.T) {
 	}
 	m.Update(report)
 	body := ansi.Strip(assertFrame(t, m))
-	if row := ansi.Strip(m.frame.rows[m.height-1]); !strings.Contains(row, filepath.Base(root)) || !strings.Contains(row, "faux-1") || !strings.Contains(row, "ctx ") {
-		t.Fatalf("missing pinned metadata: %q", row)
+	meta := ansi.Strip(m.frame.rows[m.height-2])
+	rule := ansi.Strip(m.frame.rows[m.frame.ruleY])
+	if !strings.Contains(meta, filepath.Base(root)) || !strings.Contains(meta, "ctx ") || !strings.Contains(rule, "faux-1") {
+		t.Fatalf("missing pinned metadata: %q; %q", meta, rule)
 	}
 	for _, want := range []string{"● attached", " open · ", "context", "(estimate)"} {
 		if !strings.Contains(body, want) {
@@ -337,7 +339,7 @@ func TestBackendE2E(t *testing.T) {
 	waitDirectory(func() bool {
 		return state.info.Title == "Background title" && child.info.Title == "/skill:fixture-review" && child.info.Status == x.Idle
 	})
-	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Background title") || !strings.Contains(frame, "◌ /skill:fixture-review") {
+	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Background title") || !strings.Contains(frame, "○ /skill:fixture-review") {
 		t.Fatalf("missing directory tab state:\n%s", frame)
 	}
 	if !m.contextFor(m.active).Features.Has(x.Archive | x.Worktrees) {

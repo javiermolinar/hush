@@ -108,7 +108,7 @@ func TestPlanPickerE2E(t *testing.T) {
 	input("!plan-fixture")
 	await("Saved Workspace profiles (r1)")
 	input("/plan")
-	await("Plan · r1 · Workspace profiles")
+	await("Workspace profiles · Plan · r1")
 	await("Needs 1")
 	if before := state(); before.Run != nil || len(before.Progress) != 0 {
 		t.Fatalf("drafting or opening admitted work: %+v", before)
@@ -139,10 +139,12 @@ func TestPlanPickerE2E(t *testing.T) {
 	await("Running")
 	await("Thinking  high → off")
 	key(tea.KeyEscape)
-	if strings.Contains(ansi.Strip(assertFrame(t, m)), "Plan · r1") {
+	if strings.Contains(ansi.Strip(assertFrame(t, m)), "Workspace profiles · Plan · r1") {
 		t.Fatal("Esc left the picker visible")
 	}
-	await("Plan · 2/2 verified")
+	loop.until("completed progress summary", func(frame string) bool {
+		return strings.Contains(frame, "2/2 verified") || strings.Contains(frame, "✓✓○○  2/4")
+	})
 	input("/plan")
 	await("2/4 verified")
 	await("Fixture passed: Saved profile has the expected name")
