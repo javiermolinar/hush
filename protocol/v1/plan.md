@@ -51,14 +51,20 @@ shell, or general test-suite execution. Prose `checks` are not executed.
 
 ## Browse, close, and reopen
 
-`/plan` lists plans from the active thread's recorded working directory, not
-just the plan bound to that thread. At the local startup prompt, `/plan` creates
-an empty thread in the launch directory and opens the list without sending a
-message. The list shows status, numbered revision, and verified task count. Open
-plans precede closed plans. Enter opens the focused plan without attaching it or
-starting work. For a plan from another thread, `a` explicitly makes it the current
-plan for this thread; `p` in the list opens this thread's historical pin when it
-has one. Neither action authorizes Run.
+`/plan` lists plans across the connected store's workspaces, including other
+worktrees. Open plans precede closed plans; in each group, the active thread's
+workspace comes first. Plans from another workspace show their source and open
+read-only. Switch to a thread in that workspace to attach, run, review, or
+change the plan's status. Older backends list only the active thread's recorded
+working directory.
+
+At the local startup prompt, `/plan` creates an empty thread in the launch
+directory and opens the list without sending a message. The list shows status,
+numbered revision, and verified task count. Enter opens the focused plan without
+attaching it or starting work. For a plan from another thread in the same
+workspace, `a` explicitly makes it the current plan for this thread. `p` in the
+list opens this thread's historical pin when it has one. Neither action
+authorizes Run.
 
 `c` closes a plan or reopens an incomplete closed plan. Closing blocks new Run
 admissions immediately and lets the currently submitted task settle. It does
@@ -203,7 +209,8 @@ It cannot run or verify ordinary drafts.
 ### Workspace inventory (`planWorkspace:1`)
 
 Negotiate `planWorkspace:1` along with `plan:1`. Every operation checks the
-ownerless thread and scopes to its recorded working directory on the backend.
+ownerless thread and scopes to its recorded working directory on the backend,
+except for the read-only operations negotiated by `planCatalog:1`.
 
 - `ext.planWorkspace.wait {threadId, page, after?}` watches a page of up to 48
   `{id, title, revision, verified, total, status, closed}` rows and returns
@@ -233,6 +240,25 @@ verification records commit with the relevant run progress. The native core
 wire schema is unchanged. Scoped execution requires a matching private file
 helper; an old helper leaves the host draft-only. Older in-flight execution
 records settle as interrupted on upgrade and are not replayed.
+
+### All workspaces (`planCatalog:1`)
+
+Offer `planCatalog:1` with `plan:1` and `planWorkspace:1`. Send
+`ext.planCatalog.wait {threadId, page, after?}` for the same bounded page shape
+and wait semantics as `ext.planWorkspace.wait`. Open plans precede closed plans.
+Within each group the calling thread's workspace is first, followed by other
+workspaces in sorted path order; newest-created plans appear first within each
+workspace. Rows from other workspaces add `workspace`, their recorded backend
+working directory. The backend mirrors existing committed workspace summaries;
+creating or changing a plan can wake the page even in a different workspace.
+On reconnect, start without `after`. `ext.planWorkspace.wait` remains scoped.
+
+With `planCatalog:1`, `ext.planWorkspace.inspect` and
+`ext.planWorkspace.history` can read a plan from another workspace. An inspect
+from outside the workspace returns `runAvailability: "disabled"`. These
+operations do not change the binding or grant workspace access. Attach, Run,
+lifecycle changes, and independent review retain their original scope and trust
+checks.
 
 ### Save a preview (`planDraft:1`)
 

@@ -15,7 +15,7 @@ binary, socket, thread, mode, draft = sys.argv[1:]
 master, slave = os.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 26, 124, 0, 0))
 args = [binary, "--socket", socket, "--fills", "off"]
-args += ["--local"] if mode == "faux" else ["--thread", thread]
+args += ["--local"] if mode in ("faux", "catalog") else ["--thread", thread]
 child = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave)
 ansi = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*?(?:\x07|\x1b\\)|[()][A-Za-z0-9]|[=>])")
 pending = bytearray()
@@ -54,7 +54,16 @@ def open_plan(title, count):
 
 
 try:
-    if mode == "preview":
+    if mode == "catalog":
+        wait_for("ask anything")
+        os.write(master, b"/plan")
+        wait_for("/plan", "Open plan")
+        os.write(master, b"\r")
+        wait_for("all workspaces", "Workspace profiles", "source-checkout", "preview")
+        os.write(master, b"\r")
+        wait_for("Save a profile", "Read-only", "source-checkout")
+        os.write(master, b"a c\r")
+    elif mode == "preview":
         wait_for("ask anything")
         submit(draft)
         wait_for("Plan preview · Subagents and independent reviews", "Save to /plan")

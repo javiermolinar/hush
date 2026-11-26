@@ -21,6 +21,10 @@ type planWorkspaceBackend interface {
 	PlanHistory(context.Context, sdk.ID, string, sdk.ID) (sdk.PlanHistoryPage, error)
 }
 
+type planCatalogBackend interface {
+	WatchPlanCatalog(context.Context, sdk.ID, int) <-chan sdk.PlanWorkspaceUpdate
+}
+
 type planWorkspacePicker struct {
 	cancel                        context.CancelFunc
 	lease                         uint64
@@ -127,7 +131,11 @@ func (m *Model) watchPlanWorkspace(d *dialog, page int) tea.Cmd {
 	p.rows, p.ready, p.more, p.failed = nil, false, false, false
 	d.selected, d.token = 0, m.token()
 	lease, owner := p.lease, d.route.owner
-	return func() tea.Msg { return awaitPlanWorkspace(ctx, lease, b.WatchWorkspacePlans(ctx, owner, page))() }
+	watch := b.WatchWorkspacePlans
+	if catalog, ok := m.backend.(planCatalogBackend); ok && m.menuFeaturesFromBackend.Has(x.PlanCatalog) {
+		watch = catalog.WatchPlanCatalog
+	}
+	return func() tea.Msg { return awaitPlanWorkspace(ctx, lease, watch(ctx, owner, page))() }
 }
 
 func (m *Model) receivePlanWorkspace(msg planWorkspaceMsg) tea.Cmd {
@@ -193,15 +201,17 @@ func (m *Model) planWorkspaceKey(d *dialog, chord string) tea.Cmd {
 		row := p.rows[d.selected]
 		switch chord {
 		case "c":
-			if !row.Closed || row.Status != "complete" {
+			if row.Workspace == "" && (!row.Closed || row.Status != "complete") {
 				return m.changePlanClosed(d, row.ID, !row.Closed)
 			}
 		case "h":
 			return m.openPlanHistory(d.route, row.ID, row.Title)
 		case "v":
-			return m.openPlanReview(d.route, row.ID, row.Title, row.Revision)
+			if row.Workspace == "" {
+				return m.openPlanReview(d.route, row.ID, row.Title, row.Revision)
+			}
 		default:
-			return m.inspectPlan(d.route, row.ID)
+			return m.inspectPlan(d.route, row.ID, row.Workspace)
 		}
 	}
 	return nil
@@ -216,7 +226,9 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	}
 	t := m.threads[d.route.owner]
 	title := "Workspace plans"
-	if path := t.info.Workspace; path != "" {
+	if m.menuFeaturesFromBackend.Has(x.PlanCatalog) {
+		title += " · all workspaces"
+	} else if path := t.info.Workspace; path != "" {
 		title += " · " + oneLine(filepath.Base(path))
 	} else if d.route.owner == "" {
 		title += " · " + oneLine(filepath.Base(m.options.NewThread.CWD))
@@ -292,7 +304,12 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 			}
 			badge := m.paint(tone, status) + m.control(fmt.Sprintf("  %d/%d · r%d", r.Verified, r.Total, r.Revision))
 			left := max(4, w-stringWidth(badge)-2)
-			line := fit(ansi.Truncate(prefix+oneLine(r.Title), left, "…"), left) + "  " + badge
+			name := prefix + oneLine(r.Title)
+			if r.Workspace != "" {
+				source := ansi.Truncate(" · "+oneLine(filepath.Base(r.Workspace)), max(4, left/3), "…")
+				name = ansi.Truncate(name, left-stringWidth(source), "…") + m.control(source)
+			}
+			line := fit(ansi.Truncate(name, left, "…"), left) + "  " + badge
 			if d.selected == i && m.theme.Fills {
 				line = fill(fit(line, w), m.palette.selected)
 			}
@@ -306,16 +323,20 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	compact := "↵ open"
 	if p.ready && !p.failed && d.selected < len(p.rows) {
 		pick := p.rows[d.selected]
-		if m.menuFeaturesFromBackend.Has(x.PlanReview) {
-			keys += "  v review"
-			compact += "  v review"
-		}
-		if !pick.Closed {
-			keys += "  c close plan"
-			compact += "  c close plan"
-		} else if pick.Status != "complete" {
-			keys += "  c reopen"
-			compact += "  c reopen"
+		if pick.Workspace != "" {
+			keys, compact = "↵ preview  h history", "↵ preview"
+		} else {
+			if m.menuFeaturesFromBackend.Has(x.PlanReview) {
+				keys += "  v review"
+				compact += "  v review"
+			}
+			if !pick.Closed {
+				keys += "  c close plan"
+				compact += "  c close plan"
+			} else if pick.Status != "complete" {
+				keys += "  c reopen"
+				compact += "  c reopen"
+			}
 		}
 	}
 	if t.plan.snapshot.RunAvailability == sdk.PlanRunPinned {
@@ -346,12 +367,12 @@ func workspacePlanStatus(p sdk.PlanSummary) (string, x.Tone) {
 	}
 }
 
-func (m *Model) inspectPlan(r ownerRoute, id string) tea.Cmd {
+func (m *Model) inspectPlan(r ownerRoute, id, workspace string) tea.Cmd {
 	if !m.foreground(r) || len(m.overlays) >= maxDialogs {
 		return nil
 	}
 	v := &m.threads[r.owner].plan
-	if v.snapshot.Plan != nil && v.snapshot.Plan.ID == id && v.snapshot.RunAvailability != sdk.PlanRunPinned {
+	if workspace == "" && v.snapshot.Plan != nil && v.snapshot.Plan.ID == id && v.snapshot.RunAvailability != sdk.PlanRunPinned {
 		return m.openPlanSteps(r, id)
 	}
 	b, ok := m.backend.(planWorkspaceBackend)
@@ -359,7 +380,7 @@ func (m *Model) inspectPlan(r ownerRoute, id string) tea.Cmd {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	d := &dialog{route: r, token: m.token(), promptDock: true, plan: &planPicker{named: id, cancel: cancel}}
+	d := &dialog{route: r, token: m.token(), promptDock: true, plan: &planPicker{named: id, workspace: workspace, cancel: cancel}}
 	token := d.token
 	return tea.Batch(m.pushDialog(d), func() tea.Msg { return awaitNamedPlan(ctx, token, b.WatchNamedPlan(ctx, r.owner, id))() })
 }
@@ -390,7 +411,11 @@ func (m *Model) receiveNamedPlan(msg namedPlanMsg) tea.Cmd {
 				}
 				v.snapshot = msg.update.Snapshot
 				// Only the bound picker holds Run requests and retries across closes.
-				v.snapshot.RunAvailability = sdk.PlanRunUnbound
+				if p.workspace != "" {
+					v.snapshot.RunAvailability = sdk.PlanRunDisabled
+				} else {
+					v.snapshot.RunAvailability = sdk.PlanRunUnbound
+				}
 			}
 			return awaitNamedPlan(msg.ctx, msg.token, msg.source)
 		}

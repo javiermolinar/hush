@@ -163,6 +163,37 @@ async function terminalPlan(t, mode) {
 }
 
 test("terminal UI opens /plan at startup and runs the selected steps without a first message", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI opens plans from a different Git worktree at startup", { timeout: 45_000 }, async t => {
+  const home = await realpath(await mkdtemp("/tmp/hush-plan-catalog-"));
+  const cwd = join(home, "source-checkout"), worktree = join(home, "other-worktree");
+  const agentDir = join(home, ".hush"), dataDir = join(home, "data"), socket = join(dataDir, "hush.sock");
+  let host, peer;
+  t.after(async () => { peer?.close(); await host?.close(); await rm(home, { recursive: true, force: true }); });
+  await exec("git", ["init", "-q", cwd]);
+  await exec("git", ["-c", "user.name=Hush Fixture", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+    "commit", "--allow-empty", "-qm", "fixture"], { cwd });
+  await exec("git", ["worktree", "add", "--detach", worktree], { cwd });
+  await mkdir(agentDir, { mode: 0o700 });
+  await new WorkspaceTrust(agentDir).change(cwd, "grant", t.signal);
+  const binary = process.env.HUSH_TEST_CLI || join(home, "hush");
+  if (!process.env.HUSH_TEST_CLI) await exec("go", ["build", "-o", binary, "./app/cmd/hush"], { cwd: repo, timeout: 25_000 });
+  host = await startBackend({ faux: true, ephemeral: false, idleMs: 30_000, cwd, agentDir, dataDir, socket });
+  peer = await dial(socket);
+  const call = async (method, params) => okay(await peer.send(method, params));
+  await call("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], threadDirectory: [2] } });
+  const { id: threadId } = await call("thread.new", {});
+  const { submissionId } = await call("submit", { threadId, text: "!plan-fixture", requestId: "prepare-pty", whenBusy: "reject" });
+  assert.equal((await call("submission.wait", { threadId, submissionId })).status, "done");
+  await exec("python3", [script, binary, socket, threadId, "catalog", ""], { cwd: worktree, timeout: 16_000,
+    env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } });
+  const current = await call("ext.plan.wait", { threadId });
+  assert.equal(current.run, null);
+  const { threads } = await call("thread.list", { limit: 8 });
+  const { threads: rows } = await call("ext.threadDirectory.get", { threadIds: threads.map(row => row.id) });
+  const browser = rows.find(row => row.checkout.cwd === worktree);
+  assert.ok(browser, "startup picker stays scoped to its own worktree thread");
+  assert.equal((await call("ext.plan.wait", { threadId: browser.id })).plan, null);
+});
 test("terminal UI saves an unsaved plan preview with 'ok save it'", { timeout: 45_000 }, t => terminalPlan(t, "preview"));
 test("terminal UI saves and independently reviews a plan on a draft-only host", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
 test("one Enter visibly verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));

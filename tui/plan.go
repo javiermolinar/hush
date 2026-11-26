@@ -34,6 +34,7 @@ type planView struct {
 
 type planPicker struct {
 	named        string
+	workspace    string // nonempty for a read-only preview from another workspace
 	expected     string // a workspace row may not follow a different binding mid-inspection
 	view         planView
 	cancel       context.CancelFunc
@@ -291,10 +292,13 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 	if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
 		switch chord {
 		case "v":
+			if p.workspace != "" {
+				return nil
+			}
 			plan := v.snapshot.Plan
 			return m.openPlanReview(d.route, plan.ID, plan.Title, plan.Revision)
 		case "c":
-			if v.snapshot.RunAvailability != sdk.PlanRunPinned && !(v.snapshot.Closed && v.snapshot.Complete) {
+			if p.workspace == "" && v.snapshot.RunAvailability != sdk.PlanRunPinned && !(v.snapshot.Closed && v.snapshot.Complete) {
 				return m.changePlanClosed(d, v.snapshot.Plan.ID, !v.snapshot.Closed)
 			}
 			return nil
@@ -304,7 +308,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 			}
 			return nil
 		case "a":
-			if p.named != "" {
+			if p.named != "" && p.workspace == "" {
 				return m.usePlan(d, p.named)
 			}
 			return nil
@@ -629,15 +633,15 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 		} else if v.locked() || v.request != nil {
 			primary, compact = "tab details", "tab details"
 		}
-		if m.menuFeaturesFromBackend.Has(x.PlanReview) {
+		if p.workspace == "" && m.menuFeaturesFromBackend.Has(x.PlanReview) {
 			primary += "  v review"
 			compact += "  v review"
 		}
 		if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
 			primary += "  h history"
-			if !v.snapshot.Closed {
+			if p.workspace == "" && !v.snapshot.Closed {
 				primary += "  c close plan"
-			} else if !v.snapshot.Complete {
+			} else if p.workspace == "" && !v.snapshot.Complete {
 				primary += "  c reopen"
 			}
 		}
@@ -653,6 +657,9 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 }
 
 func (m *Model) planRunBar(v *planView, p *planPicker, width int) (bar, preview string, runnable bool) {
+	if p.workspace != "" {
+		return m.control("Read-only · " + oneLine(p.workspace)), "", false
+	}
 	switch {
 	case v.snapshot.Settling:
 		return m.control("Closing Run · current task is settling"), "", false

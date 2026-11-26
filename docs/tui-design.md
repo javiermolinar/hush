@@ -10,7 +10,7 @@
 - Wrap messages and detailed output. One-line summaries and chrome may ellipsize.
 - Dock command panels such as `/plan` to the input rule: the rule is the bottom edge, the panel grows upward, and the prompt stays put. Empty space belongs above the panel. Keep live state and the changes count on the rule. Inline completions and existing under-prompt sheets still open below the prompt. Floating dialogs cover the transcript, never the footer. The top overlay owns all keys and clicks; `esc` closes only it.
 
-- `/plan` opens a docked workspace list. Show status and verified counts, with closed plans grouped after open ones. Enter opens the focused plan; Enter in its task picker admits the run and returns to the initiating thread to show task progress and verification. `h` opens run history, `v` opens advisory review for the displayed revision, and `c` closes or reopens the focused plan. Esc backs out without changing lifecycle.
+- `/plan` opens a docked list of plans across the connected store. Show status and verified counts, with closed plans after open ones and the current workspace first in each group. Label plans from other workspaces and open them read-only. Enter opens the focused plan; Enter in its task picker admits the run and returns to the initiating thread to show task progress and verification. `h` opens run history, `v` opens advisory review for the displayed revision, and `c` closes or reopens the focused plan. Esc backs out without changing lifecycle.
 - An unsaved plan preview appears in the transcript. Click its title or use `ctrl+x i v` to inspect the draft. The current preview has a **Save to /plan** action (`ctrl+x i w`); `ok save it` confirms the same preview. Saving never selects or runs a task.
 
 ## Colors and contrast

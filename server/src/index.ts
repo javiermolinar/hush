@@ -9,7 +9,7 @@ import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, mode
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
 import { parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace,
-  planVersion, planDraftVersion, planWorkspaceVersion, type PlanDraftHost, type PlanHost } from "./plan.js";
+  planVersion, planCatalogVersion, planDraftVersion, planWorkspaceVersion, type PlanDraftHost, type PlanHost } from "./plan.js";
 import { parsePlanReview, planReviewVersion, type PlanReviewHost } from "./plan-review.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
@@ -174,6 +174,7 @@ class Peer {
   #plan?: PlanHost;
   #planDraft?: PlanDraftHost;
   #planWorkspace = false;
+  #planCatalog = false;
   #planReview?: PlanReviewHost;
   #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
@@ -328,6 +329,12 @@ class Peer {
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
         }
+        if (parts[1] === "planCatalog" && this.#planCatalog && this.#plan?.catalog) {
+          if (parts[2] !== "wait") throw new WireError("unknown_method");
+          const query = parsePlanWorkspace(req.params), host = this.#plan;
+          this.#metadata(req, parts[1], () => host.catalog!(query, this.#abort.signal));
+          return;
+        }
         if (parts[1] === "planWorkspace" && this.#plan && this.#planWorkspace) {
           const host = this.#plan, signal = this.#abort.signal;
           if (parts[2] === "wait") {
@@ -337,12 +344,12 @@ class Peer {
           }
           if (parts[2] === "inspect") {
             const { threadId, after, planId } = parsePlanWait(req.params, true);
-            this.#metadata(req, parts[1], () => host.wait(threadId, after, signal, planId));
+            this.#metadata(req, parts[1], () => host.wait(threadId, after, signal, planId, this.#planCatalog));
             return;
           }
           const result = parts[2] === "setClosed" ? await host.setClosed(parsePlanClosure(req.params), signal)
             : parts[2] === "use" ? await host.attach(parsePlanAttach(req.params), signal, true)
-            : parts[2] === "history" ? await host.history(parsePlanHistory(req.params), signal) : undefined;
+            : parts[2] === "history" ? await host.history(parsePlanHistory(req.params), signal, this.#planCatalog) : undefined;
           if (!result) throw new WireError("unknown_method");
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
@@ -585,6 +592,10 @@ class Peer {
           if (req.params.capabilities?.planWorkspace?.includes(planWorkspaceVersion)) {
             capabilities.planWorkspace = planWorkspaceVersion;
             this.#planWorkspace = true;
+            if (this.#plan.catalog && req.params.capabilities?.planCatalog?.includes(planCatalogVersion)) {
+              capabilities.planCatalog = planCatalogVersion;
+              this.#planCatalog = true;
+            }
             if (this.capabilities.planReview && req.params.capabilities?.planReview?.includes(planReviewVersion)) {
               capabilities.planReview = planReviewVersion;
               this.#planReview = this.capabilities.planReview;

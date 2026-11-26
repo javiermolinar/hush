@@ -2,6 +2,7 @@ import { durableID, token, WireError } from "./wire.js";
 
 export const planVersion = 1;
 export const planWorkspaceVersion = 1;
+export const planCatalogVersion = 1;
 export const planDraftVersion = 1;
 export const planPreviewKind = "hush.plan.preview";
 export const planPreviewSavedKind = "hush.plan.preview-saved";
@@ -35,7 +36,7 @@ export type PlanProgress = {
 export type PlanRunState = "running" | "verified" | "failed" | "closed";
 export type PlanRun = { id: string; stepIds: string[]; state: PlanRunState; ownerThreadId?: string; failure?: string; publicationUncertain?: true };
 export type PlanStatus = "pending" | "running" | "attention" | "complete";
-export type PlanSummary = { id: string; title: string; revision: number; verified: number; total: number; status: PlanStatus; closed: boolean };
+export type PlanSummary = { id: string; title: string; revision: number; verified: number; total: number; status: PlanStatus; closed: boolean; workspace?: string };
 export type PlanWorkspace = { revision: string; plans: PlanSummary[]; more: boolean };
 export type PlanRunRecord = { id: string; revision: number; threadId: string; stepIds: string[]; state: PlanRunState; failure?: string; publicationUncertain?: true;
   workers: { stepId: string; threadId: string; state: PlanProgress["state"] }[];
@@ -64,9 +65,10 @@ export function parsePlanDraftTarget(p: Record<string, unknown>): PlanDraftTarge
 }
 
 export interface PlanHost {
-  wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string): Promise<PlanSnapshot>;
+  wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string, browse?: boolean): Promise<PlanSnapshot>;
   workspace(query: PlanWorkspaceQuery, signal: AbortSignal): Promise<PlanWorkspace>;
-  history(query: PlanHistoryQuery, signal: AbortSignal): Promise<PlanHistory>;
+  catalog?(query: PlanWorkspaceQuery, signal: AbortSignal): Promise<PlanWorkspace>;
+  history(query: PlanHistoryQuery, signal: AbortSignal, browse?: boolean): Promise<PlanHistory>;
   setClosed(closure: PlanClosure, signal: AbortSignal): Promise<Record<string, never>>;
   attach(attachment: PlanAttachment, signal: AbortSignal, replace?: boolean): Promise<Record<string, never>>;
   run(selection: PlanSelection, signal: AbortSignal): Promise<{ runId: string }>;

@@ -10,6 +10,8 @@ import type { PlanReviewTarget } from "../../server/src/plan-review.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { PlanFileError, type PlanFiles, type FileProposal, type PlanFileTarget } from "./plan-files.js";
 import type { PlanAcceptance } from "./plan-acceptance.js";
+import { PlanCatalog, type WorkspacePlans } from "./plan-catalog.js";
+import { observe } from "./workspace-changes.js";
 import { copyTurnWork, foregroundPlan, PlanForeground, scopedPlanTask, type PlanRunModel, type ScopedRun, type TaskTurn } from "./plan-turn.js";
 
 const cursor = () => randomBytes(32).toString("hex");
@@ -53,8 +55,7 @@ const Work = defineDoc<Assignment>({
   kind: "hush.faux-plan-assignment", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({}), checkpointWhen: () => true,
 });
-type Catalog = { cursor: string; rows: PlanSummary[] };
-const WorkspaceCatalog = defineDocFamily<Catalog, null>({
+const WorkspaceCatalog = defineDocFamily<WorkspacePlans, null>({
   kind: "hush.plan-workspace", version: 1, family: true, scope: "session",
   initial: () => ({ cursor: cursor(), rows: [] }), checkpointWhen: () => true,
 });
@@ -574,6 +575,7 @@ function checkFileClaims<T extends { writable: boolean }>(claims: readonly T[], 
 
 export class Plans implements PlanHost {
   #catalog?: Promise<void>;
+  #allWorkspaces?: PlanCatalog;
   constructor(private readonly harness: Harness, private readonly storage: Storage,
     private readonly directory: (cwd?: string) => string, private readonly fixture: boolean, private readonly scoped?: ScopedExecution) {}
 
@@ -588,12 +590,15 @@ export class Plans implements PlanHost {
     return this.directory((await tx.doc(AgentDoc, owner)).cwd);
   }
 
-  async #inWorkspace(tx: Tx, q: PlanAttachment) {
+  async #locate(tx: Tx, q: PlanAttachment, browse: boolean) {
     const cwd = await this.#threadWorkspace(tx, thread(q.threadId));
     const state = await tx.doc(State, q.planId, null);
-    if (!state.revision || state.workspace !== cwd) throw new WireError("not_found");
-    return state;
+    const foreign = state.workspace !== cwd;
+    if (!state.revision || foreign && !browse) throw new WireError("not_found");
+    return { state, foreign };
   }
+
+  async #inWorkspace(tx: Tx, q: PlanAttachment) { return (await this.#locate(tx, q, false)).state; }
 
   async reviewTarget(tx: Tx, q: PlanReviewTarget) {
     const state = await this.#inWorkspace(tx, q);
@@ -627,20 +632,33 @@ export class Plans implements PlanHost {
   async workspace(q: PlanWorkspaceQuery, signal: AbortSignal) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const owner = thread(q.threadId), cwd = await h.commit(tx => this.#threadWorkspace(tx, owner), ctx);
-    await (this.#catalog ??= this.#indexExistingPlans().catch(error => { this.#catalog = undefined; throw error; }));
+    await this.#ensureCatalog(signal);
     if (!(await h.snapshot(WorkspaceCatalog, cwd, ctx))) await h.commit(tx => tx.doc(WorkspaceCatalog, cwd, null), ctx);
-    const token = (catalog: Readonly<Catalog>) => createHash("sha256").update(`${catalog.cursor}:${q.page}`).digest("hex");
+    const token = (catalog: Readonly<WorkspacePlans>) => createHash("sha256").update(`${catalog.cursor}:${q.page}`).digest("hex");
     const catalog = await observed(observer => h.observeDoc(WorkspaceCatalog, cwd, observer, ctx), token, q.after, signal);
     const ordered = catalog.rows.slice().reverse().sort((a, b) => Number(a.closed) - Number(b.closed));
     const first = q.page * planWorkspacePageSize;
     return { revision: token(catalog), plans: ordered.slice(first, first + planWorkspacePageSize), more: ordered.length > first + planWorkspacePageSize };
   }
 
-  async history(q: PlanHistoryQuery, signal: AbortSignal) {
+  #ensureCatalog(signal: AbortSignal) {
+    return observe(this.#catalog ??= this.#indexExistingPlans().catch(error => { this.#catalog = undefined; throw error; }), signal);
+  }
+
+  async catalog(q: PlanWorkspaceQuery, signal: AbortSignal) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const cwd = await this.harness.commit(tx => this.#threadWorkspace(tx, thread(q.threadId)), ctx);
+    await this.#ensureCatalog(signal);
+    const { kind, version } = WorkspaceCatalog.definition;
+    const index = this.#allWorkspaces ??= new PlanCatalog(this.harness, this.storage, kind, version);
+    return index.page(cwd, q.page, q.after, signal);
+  }
+
+  async history(q: PlanHistoryQuery, signal: AbortSignal, browse = false) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     // Scope and the page are observed in the same transaction.
     return h.commit(async tx => {
-      await this.#inWorkspace(tx, q);
+      await this.#locate(tx, q, browse);
       const log = await tx.doc(RunLog, q.planId, null);
       const end = q.before === undefined ? log.runs.length : log.runs.findIndex(r => r.id === q.before);
       if (end < 0) throw new WireError("invalid_request");
@@ -671,11 +689,12 @@ export class Plans implements PlanHost {
     return {};
   }
 
-  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string): Promise<PlanSnapshot> {
+  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string, browse = false): Promise<PlanSnapshot> {
     const owner = thread(id), h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     let binding = await h.snapshot(Binding, owner, ctx);
+    let foreign = false;
     if (named) {
-      await h.commit(tx => this.#inWorkspace(tx, { threadId: id, planId: named }), ctx);
+      foreign = await h.commit(async tx => (await this.#locate(tx, { threadId: id, planId: named }, browse)).foreign, ctx);
     } else {
       if (!binding || binding.pin?.liveThread !== owner) {
         if (!binding) await h.commit(async tx => { await checkThread(tx, owner); await tx.doc(Binding, owner); }, ctx);
@@ -688,13 +707,13 @@ export class Plans implements PlanHost {
     }
     const planId = named ?? binding!.pin!.planId;
     const compatible = (state: Readonly<PlanState>) => state.fixture === this.fixture;
-    const availability = (state: Readonly<PlanState>) => !compatible(state) ? "disabled"
+    const availability = (state: Readonly<PlanState>) => foreign || !compatible(state) ? "disabled"
       : !state.members.includes(owner) ? "unbound" : state.fixture ? "fixture" : this.scoped ? "scoped" : "disabled";
     const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}`).digest("hex");
     // An unexpected task fault may settle without running its abort callback.
     // Race its receipt against the head update; neither wait survives detach.
     const settle = (state: Readonly<PlanState>, abort: AbortSignal) => {
-      if (state.run?.state !== "running" || !compatible(state)) return;
+      if (foreign || state.run?.state !== "running" || !compatible(state)) return;
       const task = Number(state.run.id) as TaskId, context = withAbortSignal(abort, BACKGROUND_CONTEXT);
       return h.waitForTask(task, context).then(async () => {
         await h.commit(async tx => {

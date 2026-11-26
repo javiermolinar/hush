@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -397,5 +398,43 @@ func TestPlanWorkspaceDockAndStatuses(t *testing.T) {
 		t.Fatal("workspace update did not preserve focus and invalidate stale mouse targets")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	assertFrame(t, m)
+}
+
+func TestPlanCatalogShowsForeignReadOnlyPlans(t *testing.T) {
+	m, _ := demo(t, Options{ReducedMotion: true, Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 104, Height: 24})
+	m.menuFeaturesFromBackend |= x.Plans | x.PlanWorkspace | x.PlanCatalog | x.PlanReview
+	r := m.route(m.active, menusID)
+	workspace := "/projects/source-checkout"
+	rows := []sdk.PlanSummary{{ID: "foreign", Title: "Other plan", Revision: 1, Total: 1, Status: "pending", Workspace: workspace}}
+	list := &dialog{route: r, token: m.token(), planWorkspace: &planWorkspacePicker{ready: true, rows: rows}, promptDock: true}
+	m.pushDialog(list)
+	frame := ansi.Strip(assertFrame(t, m))
+	for _, want := range []string{"all workspaces", "Other plan", "source-checkout", "↵ preview", "h history"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("missing %q:\n%s", want, frame)
+		}
+	}
+	for _, forbid := range []string{"v review", "c close plan"} {
+		if strings.Contains(frame, forbid) {
+			t.Fatalf("foreign plan offered %q", forbid)
+		}
+	}
+	p := &planPicker{named: "foreign", workspace: workspace}
+	detail := &dialog{route: r, token: m.token(), plan: p, promptDock: true}
+	m.pushDialog(detail)
+	m.receiveNamedPlan(namedPlanMsg{token: detail.token, ok: true, update: sdk.PlanUpdate{Snapshot: sdk.PlanSnapshot{
+		Plan:            &sdk.PlanDefinition{ID: "foreign", Revision: 1, Title: "Other plan", Steps: []sdk.PlanStep{{ID: "read", Title: "Read it"}}},
+		RunAvailability: sdk.PlanRunDisabled,
+	}}})
+	frame = ansi.Strip(assertFrame(t, m))
+	if !strings.Contains(frame, "Read-only · "+workspace) || strings.Contains(frame, "Use in this thread") {
+		t.Fatalf("wrong preview controls:\n%s", frame)
+	}
+	if p.view.snapshot.RunAvailability != sdk.PlanRunDisabled || slices.Contains(m.frame.dialogChoices, planRunTarget) {
+		t.Fatal("cross-workspace preview was made runnable")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 39, Height: 11})
 	assertFrame(t, m)
 }
