@@ -3,6 +3,7 @@ import { durableID, token, WireError } from "./wire.js";
 
 export const planVersion = 1;
 export const planWorkspaceVersion = 1;
+export const planCatalogVersion = 1;
 export const planDraftVersion = 1;
 export const planChatVersion = 1;
 export const planPreviewKind = "hush.plan.preview";
@@ -40,7 +41,7 @@ export type PlanRunState = "running" | "verified" | "failed" | "closed" | "done"
 export type PlanRun = { id: string; stepIds: string[]; state: PlanRunState; ownerThreadId?: string; failure?: string; publicationUncertain?: true;
   chat?: true; submissionId?: string };
 export type PlanStatus = "pending" | "running" | "attention" | "complete";
-export type PlanSummary = { id: string; title: string; revision: number; verified: number; reportedDone?: number; total: number; status: PlanStatus; closed: boolean };
+export type PlanSummary = { id: string; title: string; revision: number; verified: number; reportedDone?: number; total: number; status: PlanStatus; closed: boolean; workspace?: string };
 export type PlanWorkspace = { revision: string; plans: PlanSummary[]; more: boolean };
 export type PlanRunRecord = { id: string; revision: number; threadId: string; stepIds: string[]; state: PlanRunState; failure?: string; publicationUncertain?: true;
   workers: { stepId: string; threadId: string; state: PlanProgress["state"] }[];
@@ -51,7 +52,7 @@ export type PlanSnapshot = {
   revision: string; plan: PlanDefinition | null; progress: PlanProgress[]; run: PlanRun | null;
   runAvailability: "disabled" | "fixture" | "scoped" | "pinned" | "unbound";
   closed?: true; complete?: true; settling?: true;
-  chat?: true; reports?: PlanTaskReport[];
+  chat?: true; reports?: PlanTaskReport[]; workspace?: string;
 };
 export type PlanAttachment = { threadId: string; planId: string };
 export type PlanClosure = PlanAttachment & { closed: boolean };
@@ -71,9 +72,10 @@ export function parsePlanDraftTarget(p: Record<string, unknown>): PlanDraftTarge
 }
 
 export interface PlanHost {
-  wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string, chat?: boolean): Promise<PlanSnapshot>;
+  wait(threadId: string, after: string | undefined, signal: AbortSignal, planId?: string, chat?: boolean, browse?: boolean): Promise<PlanSnapshot>;
   workspace(query: PlanWorkspaceQuery, signal: AbortSignal, chat?: boolean): Promise<PlanWorkspace>;
-  history(query: PlanHistoryQuery, signal: AbortSignal, chat?: boolean): Promise<PlanHistory>;
+  catalog?(query: PlanWorkspaceQuery, signal: AbortSignal, chat?: boolean): Promise<PlanWorkspace>;
+  history(query: PlanHistoryQuery, signal: AbortSignal, chat?: boolean, browse?: boolean): Promise<PlanHistory>;
   setClosed(closure: PlanClosure, signal: AbortSignal): Promise<Record<string, never>>;
   attach(attachment: PlanAttachment, signal: AbortSignal, replace?: boolean): Promise<Record<string, never>>;
   run(selection: PlanSelection, signal: AbortSignal): Promise<{ runId: string }>;
@@ -83,8 +85,8 @@ export type PlanWorkspaceAt = Omit<PlanWorkspaceQuery, "threadId"> & { cwd: stri
 export type PlanInspectAt = { cwd: string; planId: string; after?: string };
 export interface PlanChatHost {
   runInChat(selection: PlanSelection, signal: AbortSignal): Promise<{ runId: string }>;
-  workspaceAt(query: PlanWorkspaceAt, signal: AbortSignal): Promise<PlanWorkspace>;
-  inspectAt(query: PlanInspectAt, signal: AbortSignal): Promise<PlanSnapshot>;
+  workspaceAt(query: PlanWorkspaceAt, signal: AbortSignal, browse?: boolean): Promise<PlanWorkspace>;
+  inspectAt(query: PlanInspectAt, signal: AbortSignal, browse?: boolean): Promise<PlanSnapshot>;
 }
 
 export const planStepID = (v: unknown): v is string => typeof v === "string" && v.length <= 64 && token(v);

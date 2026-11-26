@@ -252,6 +252,13 @@ func (s *session) receive(f map[string]any) error {
 		if err := optionalEnvelope(f, version, PlanVersion); err != nil {
 			return err
 		}
+	} else if ok && method == planCatalogWait {
+		s.mu.Lock()
+		version := s.hello.Capabilities[planCatalog]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, PlanCatalogVersion); err != nil {
+			return err
+		}
 	} else if ok && (method == planWorkspaceWait || method == planWorkspaceInspect || method == planWorkspaceHistory || method == planWorkspaceClose || method == planWorkspaceUse) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[planWorkspace]

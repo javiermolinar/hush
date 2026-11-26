@@ -12,6 +12,8 @@ import type { PlanReviewTarget } from "../../server/src/plan-review.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { PlanFileError, type PlanFiles, type FileProposal, type PlanFileTarget } from "./plan-files.js";
 import type { PlanAcceptance } from "./plan-acceptance.js";
+import { PlanCatalog, type WorkspacePlans } from "./plan-catalog.js";
+import { observe } from "./workspace-changes.js";
 import { copyTurnWork, foregroundPlan, PlanForeground, scopedPlanTask, type PlanRunModel, type ScopedRun, type TaskTurn } from "./plan-turn.js";
 
 const cursor = () => randomBytes(32).toString("hex");
@@ -55,8 +57,7 @@ const Work = defineDoc<Assignment>({
   kind: "hush.faux-plan-assignment", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({}), checkpointWhen: () => true,
 });
-type Catalog = { cursor: string; rows: PlanSummary[] };
-const WorkspaceCatalog = defineDocFamily<Catalog, null>({
+const WorkspaceCatalog = defineDocFamily<WorkspacePlans, null>({
   kind: "hush.plan-workspace", version: 1, family: true, scope: "session",
   initial: () => ({ cursor: cursor(), rows: [] }), checkpointWhen: () => true,
 });
@@ -679,6 +680,7 @@ function checkFileClaims<T extends { writable: boolean }>(claims: readonly T[], 
 
 export class Plans implements PlanHost, PlanChatHost {
   #catalog?: Promise<void>;
+  #allWorkspaces?: PlanCatalog;
   constructor(private readonly harness: Harness, private readonly storage: Storage,
     private readonly directory: (cwd?: string) => string, private readonly fixture: boolean, private readonly scoped?: ScopedExecution,
     private readonly chat?: ChatExecution) {}
@@ -694,15 +696,18 @@ export class Plans implements PlanHost, PlanChatHost {
     return this.directory((await tx.doc(AgentDoc, owner)).cwd);
   }
 
-  async #workspacePlan(tx: Tx, cwd: string, planId: string) {
+  async #workspacePlan(tx: Tx, cwd: string, planId: string, browse = false) {
     const state = await tx.doc(State, planId, null);
-    if (!state.revision || state.workspace !== cwd) throw new WireError("not_found");
-    return state;
+    const foreign = state.workspace !== cwd;
+    if (!state.revision || foreign && !browse) throw new WireError("not_found");
+    return { state, workspace: foreign ? state.workspace : undefined };
   }
 
-  async #inWorkspace(tx: Tx, q: PlanAttachment) {
-    return this.#workspacePlan(tx, await this.#threadWorkspace(tx, thread(q.threadId)), q.planId);
+  async #locate(tx: Tx, q: PlanAttachment, browse: boolean) {
+    return this.#workspacePlan(tx, await this.#threadWorkspace(tx, thread(q.threadId)), q.planId, browse);
   }
+
+  async #inWorkspace(tx: Tx, q: PlanAttachment) { return (await this.#locate(tx, q, false)).state; }
 
   async reviewTarget(tx: Tx, q: PlanReviewTarget) {
     const state = await this.#inWorkspace(tx, q);
@@ -739,18 +744,18 @@ export class Plans implements PlanHost, PlanChatHost {
     return this.#workspacePage(cwd, q, signal, chat);
   }
 
-  async workspaceAt(q: PlanWorkspaceAt, signal: AbortSignal) {
+  async workspaceAt(q: PlanWorkspaceAt, signal: AbortSignal, browse = false) {
     const cwd = await this.#launchDirectory(q.cwd, signal);
-    const page = await this.#workspacePage(cwd, q, signal, true);
+    const page = await (browse ? this.#catalogPage(cwd, q, signal, true) : this.#workspacePage(cwd, q, signal, true));
     await this.#launchDirectory(cwd, signal); // A wait may outlive the grant.
     return page;
   }
 
-  async inspectAt(q: PlanInspectAt, signal: AbortSignal) {
+  async inspectAt(q: PlanInspectAt, signal: AbortSignal, browse = false) {
     const cwd = await this.#launchDirectory(q.cwd, signal);
     const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    await this.harness.commit(tx => this.#workspacePlan(tx, cwd, q.planId), ctx);
-    const snapshot = await this.#watchPlan(q.planId, undefined, q.after, signal, true, true);
+    const workspace = await this.harness.commit(async tx => (await this.#workspacePlan(tx, cwd, q.planId, browse)).workspace, ctx);
+    const snapshot = await this.#watchPlan(q.planId, undefined, q.after, signal, true, true, workspace);
     await this.#launchDirectory(cwd, signal);
     return snapshot;
   }
@@ -764,9 +769,9 @@ export class Plans implements PlanHost, PlanChatHost {
 
   async #workspacePage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    await (this.#catalog ??= this.#indexExistingPlans().catch(error => { this.#catalog = undefined; throw error; }));
+    await this.#ensureCatalog(signal);
     if (!(await h.snapshot(WorkspaceCatalog, cwd, ctx))) await h.commit(tx => tx.doc(WorkspaceCatalog, cwd, null), ctx);
-    const token = (catalog: Readonly<Catalog>) => createHash("sha256").update(`${catalog.cursor}:${q.page}:${chat}`).digest("hex");
+    const token = (catalog: Readonly<WorkspacePlans>) => createHash("sha256").update(`${catalog.cursor}:${q.page}:${chat}`).digest("hex");
     const catalog = await observed(observer => h.observeDoc(WorkspaceCatalog, cwd, observer, ctx), token, q.after, signal);
     const ordered = catalog.rows.slice().reverse().sort((a, b) => Number(a.closed) - Number(b.closed));
     const first = q.page * planWorkspacePageSize;
@@ -774,11 +779,28 @@ export class Plans implements PlanHost, PlanChatHost {
     return { revision: token(catalog), plans: chat ? plans : plans.map(({ reportedDone: _, ...plan }) => plan), more: ordered.length > first + planWorkspacePageSize };
   }
 
-  async history(q: PlanHistoryQuery, signal: AbortSignal, chat = false) {
+  #ensureCatalog(signal: AbortSignal) {
+    return observe(this.#catalog ??= this.#indexExistingPlans().catch(error => { this.#catalog = undefined; throw error; }), signal);
+  }
+
+  async catalog(q: PlanWorkspaceQuery, signal: AbortSignal, chat = false) {
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
+    const cwd = await this.harness.commit(tx => this.#threadWorkspace(tx, thread(q.threadId)), ctx);
+    return this.#catalogPage(cwd, q, signal, chat);
+  }
+
+  async #catalogPage(cwd: string, q: Omit<PlanWorkspaceQuery, "threadId">, signal: AbortSignal, chat: boolean) {
+    await this.#ensureCatalog(signal);
+    const { kind, version } = WorkspaceCatalog.definition;
+    const index = this.#allWorkspaces ??= new PlanCatalog(this.harness, this.storage, kind, version);
+    return index.page(cwd, q.page, q.after, signal, chat);
+  }
+
+  async history(q: PlanHistoryQuery, signal: AbortSignal, chat = false, browse = false) {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     // Scope and the page are observed in the same transaction.
     return h.commit(async tx => {
-      await this.#inWorkspace(tx, q);
+      await this.#locate(tx, q, browse);
       const log = await tx.doc(RunLog, q.planId, null);
       const visible = chat ? log.runs : log.runs.filter(r => !r.chat);
       const end = q.before === undefined ? visible.length : visible.findIndex(r => r.id === q.before);
@@ -826,11 +848,12 @@ export class Plans implements PlanHost, PlanChatHost {
     return {};
   }
 
-  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string, chat = false): Promise<PlanSnapshot> {
+  async wait(id: string, after: string | undefined, signal: AbortSignal, named?: string, chat = false, browse = false): Promise<PlanSnapshot> {
     const owner = thread(id), h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     let binding = await h.snapshot(Binding, owner, ctx);
+    let workspace: string | undefined;
     if (named) {
-      await h.commit(tx => this.#inWorkspace(tx, { threadId: id, planId: named }), ctx);
+      workspace = await h.commit(async tx => (await this.#locate(tx, { threadId: id, planId: named }, browse)).workspace, ctx);
     } else {
       if (!binding || binding.pin?.liveThread !== owner) {
         if (!binding) await h.commit(async tx => { await checkThread(tx, owner); await tx.doc(Binding, owner); }, ctx);
@@ -841,20 +864,20 @@ export class Plans implements PlanHost, PlanChatHost {
         plan: pin ? await this.#definition(pin, ctx) : null, runAvailability: pin ? "pinned" : this.fixture ? "fixture" : "disabled",
         progress: [], run: null };
     }
-    return this.#watchPlan(named ?? binding!.pin!.planId, owner, after, signal, !!named, chat);
+    return this.#watchPlan(named ?? binding!.pin!.planId, owner, after, signal, !!named, chat, workspace);
   }
 
-  async #watchPlan(planId: string, owner: ConversationId | undefined, after: string | undefined, signal: AbortSignal, named: boolean, chat: boolean): Promise<PlanSnapshot> {
+  async #watchPlan(planId: string, owner: ConversationId | undefined, after: string | undefined, signal: AbortSignal, named: boolean, chat: boolean, workspace?: string): Promise<PlanSnapshot> {
     const h = this.harness, ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const compatible = (state: Readonly<PlanState>) => state.fixture === this.fixture;
-    const chatAvailable = (state: Readonly<PlanState>) => chat && !!this.chat && compatible(state) && !state.fixture;
-    const availability = (state: Readonly<PlanState>) => !compatible(state) ? "disabled"
+    const showChatFields = (state: Readonly<PlanState>) => chat && !!this.chat && compatible(state) && !state.fixture;
+    const availability = (state: Readonly<PlanState>) => workspace !== undefined || !compatible(state) ? "disabled"
       : owner === undefined || !state.members.includes(owner) ? "unbound" : state.fixture ? "fixture" : this.scoped ? "scoped" : "disabled";
-    const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}:${chatAvailable(state)}`).digest("hex");
+    const token = (state: Readonly<PlanState>) => createHash("sha256").update(`${state.cursor}:${availability(state)}:${showChatFields(state)}:${workspace ?? ""}`).digest("hex");
     // An unexpected task fault may settle without running its abort callback.
     // Race its receipt against the head update; neither wait survives detach.
     const settle = (state: Readonly<PlanState>, abort: AbortSignal) => {
-      if (state.run?.state !== "running" || !compatible(state)) return;
+      if (workspace !== undefined || state.run?.state !== "running" || !compatible(state)) return;
       const task = Number(state.run.id) as TaskId, context = withAbortSignal(abort, BACKGROUND_CONTEXT);
       return h.waitForTask(task, context).then(async () => {
         await h.commit(async tx => {
@@ -870,12 +893,13 @@ export class Plans implements PlanHost, PlanChatHost {
     if (!named && owner !== undefined && !state.members.includes(owner)) return this.wait(String(owner), undefined, signal, undefined, chat);
     const runAvailability = availability(state);
     const plan = await this.#definition({ planId, revision: state.revision }, ctx);
-    const showChat = chatAvailable(state);
+    const showChat = showChatFields(state);
     const showProgress = showChat || compatible(state) && (state.fixture || !!this.scoped);
     const run = showProgress && (!state.run?.chat || showChat) ? state.run ?? null : null;
     return { revision: token(state), plan, runAvailability, progress: showProgress ? state.progress : [], run,
       ...(state.closed && { closed: true as const }), ...(run && state.halt && { settling: true as const }),
-      ...(showChat && { chat: true as const, reports: state.reports ?? [] }),
+      ...(workspace !== undefined && { workspace }), ...(showChat && { reports: state.reports ?? [] }),
+      ...(showChat && workspace === undefined && { chat: true as const }),
       ...(verifiedCount(state) === plan.steps.length && { complete: true as const }) };
   }
 

@@ -140,6 +140,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, skillDraft := m.backend.(workspaceSkillDraftBackend)
 	_, plans := m.backend.(planBackend)
 	_, planWorkspace := m.backend.(planWorkspaceBackend)
+	_, planCatalog := m.backend.(planCatalogBackend)
 	_, planReview := m.backend.(planReviewBackend)
 	_, planDraft := m.backend.(planDraftBackend)
 	_, planChat := m.backend.(planChatBackend)
@@ -186,6 +187,9 @@ func (m *Model) menuProbe() tea.Cmd {
 				f |= x.PlanWorkspace
 				if planChat && hello.Capabilities["planChat"] == sdk.PlanChatVersion {
 					f |= x.PlanChat
+				}
+				if planCatalog && hello.Capabilities["planCatalog"] == sdk.PlanCatalogVersion {
+					f |= x.PlanCatalog
 				}
 				if planReview && hello.Capabilities["planReview"] == sdk.PlanReviewVersion {
 					f |= x.PlanReview

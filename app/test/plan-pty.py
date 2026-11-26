@@ -15,7 +15,7 @@ binary, socket, thread, mode, draft = sys.argv[1:]
 master, slave = os.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 26, 124, 0, 0))
 args = [binary, "--socket", socket, "--fills", "off"]
-args += ["--local"] if mode == "startup" else ["--thread", thread]
+args += ["--local"] if mode in ("startup", "catalog") else ["--thread", thread]
 child = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave)
 ansi = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*?(?:\x07|\x1b\\)|[()][A-Za-z0-9]|[=>])")
 pending = bytearray()
@@ -70,6 +70,17 @@ try:
         else:
             os.write(master, b"\x1b")
             wait_for("Workspace plans")
+    elif mode == "catalog":
+        wait_for("ask anything")
+        os.write(master, b"keep this draft")
+        wait_for("keep this draft")
+        os.write(master, b"\x18in")
+        wait_for("all workspaces", "Interface preferences", "source-checkout", "preview")
+        os.write(master, b"\r")
+        wait_for("Save preferences", "Read-only", "source-checkout")
+        os.write(master, b"ac s\r\x1b")
+        wait_for("all workspaces")
+        os.write(master, b"\x1b")
     elif mode == "preview":
         wait_for("ask anything")
         submit(draft)

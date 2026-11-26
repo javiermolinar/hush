@@ -21,6 +21,10 @@ type planWorkspaceBackend interface {
 	PlanHistory(context.Context, sdk.ID, string, sdk.ID) (sdk.PlanHistoryPage, error)
 }
 
+type planCatalogBackend interface {
+	WatchPlanCatalog(context.Context, sdk.ID, int) <-chan sdk.PlanWorkspaceUpdate
+}
+
 type planWorkspacePicker struct {
 	cancel                        context.CancelFunc
 	lease                         uint64
@@ -75,7 +79,11 @@ func awaitPlanWorkspace(ctx context.Context, lease uint64, source <-chan sdk.Pla
 func (m *Model) watchPlanWorkspace(d *dialog, page int) tea.Cmd {
 	var watch func(context.Context) <-chan sdk.PlanWorkspaceUpdate
 	if owner := d.route.owner; owner.Valid() {
-		if b, ok := m.backend.(planWorkspaceBackend); ok {
+		if b, ok := m.backend.(planCatalogBackend); ok && m.menuFeaturesFromBackend.Has(x.PlanCatalog) {
+			watch = func(ctx context.Context) <-chan sdk.PlanWorkspaceUpdate {
+				return b.WatchPlanCatalog(ctx, owner, page)
+			}
+		} else if b, ok := m.backend.(planWorkspaceBackend); ok {
 			watch = func(ctx context.Context) <-chan sdk.PlanWorkspaceUpdate {
 				return b.WatchWorkspacePlans(ctx, owner, page)
 			}
@@ -167,15 +175,17 @@ func (m *Model) planWorkspaceKey(d *dialog, chord string) tea.Cmd {
 		}
 		switch chord {
 		case "c":
-			if !row.Closed || row.Status != "complete" {
+			if row.Workspace == "" && (!row.Closed || row.Status != "complete") {
 				return m.changePlanClosed(d, row.ID, !row.Closed)
 			}
 		case "h":
 			return m.openPlanHistory(d.route, row.ID, row.Title)
 		case "v":
-			return m.openPlanReview(d.route, row.ID, row.Title, row.Revision)
+			if row.Workspace == "" {
+				return m.openPlanReview(d.route, row.ID, row.Title, row.Revision)
+			}
 		default:
-			return m.inspectPlan(d.route, row.ID)
+			return m.inspectPlan(d.route, row.ID, row.Workspace)
 		}
 	}
 	return nil
@@ -190,7 +200,9 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	}
 	t := m.threads[d.route.owner]
 	title := "Workspace plans"
-	if path := t.info.Workspace; path != "" {
+	if m.menuFeaturesFromBackend.Has(x.PlanCatalog) {
+		title += " · all workspaces"
+	} else if path := t.info.Workspace; path != "" {
 		title += " · " + oneLine(filepath.Base(path))
 	} else if d.route.owner == "" {
 		title += " · " + oneLine(filepath.Base(m.options.NewThread.CWD))
@@ -270,7 +282,12 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 			}
 			badge := m.paint(tone, status) + m.control(count)
 			left := max(4, w-stringWidth(badge)-2)
-			line := fit(ansi.Truncate(prefix+oneLine(r.Title), left, "…"), left) + "  " + badge
+			name := prefix + oneLine(r.Title)
+			if r.Workspace != "" {
+				source := ansi.Truncate(" · "+oneLine(filepath.Base(r.Workspace)), max(4, left/3), "…")
+				name = ansi.Truncate(name, left-stringWidth(source), "…") + m.control(source)
+			}
+			line := fit(ansi.Truncate(name, left, "…"), left) + "  " + badge
 			if d.selected == i && m.theme.Fills {
 				line = fill(fit(line, w), m.palette.selected)
 			}
@@ -284,18 +301,25 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	if d.route.owner.Valid() {
 		keys += "  h history"
 	}
-	if d.route.owner.Valid() && p.ready && !p.failed && d.selected < len(p.rows) {
+	if p.ready && !p.failed && d.selected < len(p.rows) {
 		pick := p.rows[d.selected]
-		if m.menuFeaturesFromBackend.Has(x.PlanReview) {
-			keys += "  v review"
-			compact += "  v review"
-		}
-		if !pick.Closed {
-			keys += "  c close plan"
-			compact += "  c close plan"
-		} else if pick.Status != "complete" {
-			keys += "  c reopen"
-			compact += "  c reopen"
+		if pick.Workspace != "" {
+			keys, compact = "↵ preview", "↵ preview"
+			if d.route.owner.Valid() {
+				keys += "  h history"
+			}
+		} else if d.route.owner.Valid() {
+			if m.menuFeaturesFromBackend.Has(x.PlanReview) {
+				keys += "  v review"
+				compact += "  v review"
+			}
+			if !pick.Closed {
+				keys += "  c close plan"
+				compact += "  c close plan"
+			} else if pick.Status != "complete" {
+				keys += "  c reopen"
+				compact += "  c reopen"
+			}
 		}
 	}
 	if t.plan.snapshot.RunAvailability == sdk.PlanRunPinned {
@@ -328,12 +352,12 @@ func workspacePlanStatus(p sdk.PlanSummary) (string, x.Tone) {
 	}
 }
 
-func (m *Model) inspectPlan(r ownerRoute, id string) tea.Cmd {
+func (m *Model) inspectPlan(r ownerRoute, id, workspace string) tea.Cmd {
 	if !m.foreground(r) || len(m.overlays) >= maxDialogs {
 		return nil
 	}
 	v := &m.threads[r.owner].plan
-	if v.snapshot.Plan != nil && v.snapshot.Plan.ID == id && v.snapshot.RunAvailability != sdk.PlanRunPinned {
+	if workspace == "" && v.snapshot.Plan != nil && v.snapshot.Plan.ID == id && v.snapshot.RunAvailability != sdk.PlanRunPinned {
 		return m.openPlanSteps(r, id)
 	}
 	var watch func(context.Context) <-chan sdk.PlanUpdate
@@ -349,7 +373,7 @@ func (m *Model) inspectPlan(r ownerRoute, id string) tea.Cmd {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	d := &dialog{route: r, token: m.token(), promptDock: true, plan: &planPicker{named: id, cancel: cancel}}
+	d := &dialog{route: r, token: m.token(), promptDock: true, plan: &planPicker{named: id, workspace: workspace, cancel: cancel}}
 	token := d.token
 	return tea.Batch(m.pushDialog(d), func() tea.Msg { return awaitNamedPlan(ctx, token, watch(ctx))() })
 }
@@ -387,7 +411,12 @@ func (m *Model) receiveNamedPlan(msg namedPlanMsg) tea.Cmd {
 				v.snapshot = next
 				// Scoped execution still requires the bound picker. Run here can
 				// target this named live plan without changing that binding.
-				v.snapshot.RunAvailability = sdk.PlanRunUnbound
+				p.workspace = next.Workspace
+				if p.workspace == "" {
+					v.snapshot.RunAvailability = sdk.PlanRunUnbound
+				} else {
+					p.selected = nil
+				}
 				if v.awaiting != "" && next.Run != nil && !lessID(next.Run.ID, v.awaiting) {
 					v.awaiting = ""
 				}
@@ -397,7 +426,7 @@ func (m *Model) receiveNamedPlan(msg namedPlanMsg) tea.Cmd {
 						p.selectionRev++
 					}
 				}
-				if changed {
+				if changed && p.workspace == "" {
 					m.showChatSelection(d, v)
 				}
 			}

@@ -53,14 +53,18 @@ shell, or general test-suite execution. Prose `checks` are not executed.
 
 ## Browse, close, and reopen
 
-`/plan` lists plans from the active thread's recorded working directory, not
-just the plan bound to that thread. With `planChat:1`, `/plan` at the local
-startup prompt can browse the trusted launch directory without creating a
-thread or changing the draft. The list shows status, numbered revision, and task
-counts. Open plans precede closed plans. Enter opens the focused plan without
-attaching it or starting work. `a` explicitly makes a named live plan current
-for this thread; it isn't needed to Run here. `p` opens this thread's historical
-pin when it has one. Neither action authorizes Run.
+`/plan` lists plans across the connected store's workspaces, including other
+worktrees. Open plans precede closed plans; in each group, the current workspace
+comes first. Plans from another workspace show their source and open read-only.
+Switch to a thread in that workspace to attach, run, review, or change the plan's
+status. Without `planCatalog:1`, the picker lists only the current workspace.
+
+With `planChat:1`, `/plan` at the local startup prompt browses from the trusted
+launch directory without creating a thread or changing the draft. The list
+shows status, numbered revision, and task counts. Enter opens the focused plan
+without attaching it or starting work. `a` explicitly makes a same-workspace
+plan current for this thread; it isn't needed to Run here. `p` opens this
+thread's historical pin when it has one. Neither action authorizes Run.
 
 `c` closes a plan or reopens an incomplete closed plan. Closing blocks new Run
 admissions immediately, withdraws a still-queued chat run, and lets a placed
@@ -236,8 +240,8 @@ widens the permissions of `ext.plan.run`.
 - `ext.planChat.workspace {cwd, page, after?}` and
   `ext.planChat.inspect {cwd, planId, after?}` watch a launch directory without
   creating a thread. `cwd` must name an absolute, trusted backend directory;
-  only plans in that workspace are visible. The reply shapes are the same as
-  the thread-scoped inventory and inspection operations.
+  without `planCatalog:1` only plans in that workspace are visible. The reply
+  shapes are the same as the thread-scoped inventory and inspection operations.
 - Plan snapshots for eligible live plans add `chat: true` and `reports` with
   zero or more `{stepId, state, detail}` records. Task report states are `done`,
   `blocked`, and `incomplete`. They do not populate `progress` or count toward
@@ -257,7 +261,8 @@ read-only reviewer conversation.
 ### Workspace inventory (`planWorkspace:1`)
 
 Negotiate `planWorkspace:1` along with `plan:1`. Every operation checks the
-ownerless thread and scopes to its recorded working directory on the backend.
+ownerless thread and scopes to its recorded working directory on the backend,
+except for the read-only operations negotiated by `planCatalog:1`.
 
 - `ext.planWorkspace.wait {threadId, page, after?}` watches a page of up to 48
   `{id, title, revision, verified, total, status, closed}` rows and returns
@@ -287,6 +292,29 @@ verification records commit with the relevant run progress. The native core
 wire schema is unchanged. Scoped execution requires a matching private file
 helper; an old helper leaves the host draft-only. Older in-flight execution
 records settle as interrupted on upgrade and are not replayed.
+
+### All workspaces (`planCatalog:1`)
+
+Offer `planCatalog:1` with `plan:1` and `planWorkspace:1`. Send
+`ext.planCatalog.wait {threadId, page, after?}` for the same bounded page shape
+and wait semantics as `ext.planWorkspace.wait`. Open plans precede closed plans.
+Within each group the calling thread's workspace is first, followed by other
+workspaces in sorted path order; newest-created plans appear first within each
+workspace. Rows from other workspaces add `workspace`, their recorded backend
+working directory. The backend mirrors existing committed workspace summaries;
+creating or changing a plan can wake the page even in a different workspace.
+On reconnect, start without `after`. `ext.planWorkspace.wait` remains scoped.
+
+With `planCatalog:1`, `ext.planWorkspace.inspect` and
+`ext.planWorkspace.history` can read a plan from another workspace. If
+`planChat:1` is also selected, `ext.planChat.workspace` and `ext.planChat.inspect`
+offer that same view from a trusted launch directory without a thread. Inspect
+from outside a plan's workspace returns `workspace` and
+`runAvailability: "disabled"`, and omits the `chat` Run affordance. It may
+include committed progress and, with `planChat:1`, model reports and a chat run
+record. This does not change the binding or grant workspace access. Attach,
+both Run modes, lifecycle changes, and independent review retain their original
+scope and trust checks.
 
 ### Save a preview (`planDraft:1`)
 

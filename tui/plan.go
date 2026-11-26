@@ -36,6 +36,7 @@ type planView struct {
 
 type planPicker struct {
 	named        string
+	workspace    string // nonempty for a read-only preview from another workspace
 	expected     string // a workspace row may not follow a different binding mid-inspection
 	view         planView
 	cancel       context.CancelFunc
@@ -298,10 +299,13 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 	if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
 		switch chord {
 		case "v":
+			if p.workspace != "" {
+				return nil
+			}
 			plan := v.snapshot.Plan
 			return m.openPlanReview(d.route, plan.ID, plan.Title, plan.Revision)
 		case "c":
-			if v.snapshot.RunAvailability != sdk.PlanRunPinned && !(v.snapshot.Closed && v.snapshot.Complete) {
+			if p.workspace == "" && v.snapshot.RunAvailability != sdk.PlanRunPinned && !(v.snapshot.Closed && v.snapshot.Complete) {
 				return m.changePlanClosed(d, v.snapshot.Plan.ID, !v.snapshot.Closed)
 			}
 			return nil
@@ -311,7 +315,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 			}
 			return nil
 		case "a":
-			if p.named != "" {
+			if p.named != "" && p.workspace == "" {
 				return m.usePlan(d, p.named)
 			}
 			return nil
@@ -367,7 +371,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 }
 
 func (m *Model) togglePlanStep(v *planView, p *planPicker) {
-	if !v.ready || v.snapshot.Plan == nil || !p.matches(v) || v.locked() || v.request != nil ||
+	if p.workspace != "" || !v.ready || v.snapshot.Plan == nil || !p.matches(v) || v.locked() || v.request != nil ||
 		m.threads[m.active].plan.chatRequest != nil || !(m.planAvailable() || m.planChatAvailable(v)) {
 		return
 	}
@@ -392,7 +396,7 @@ func (m *Model) planActionDrawn(d *dialog, v *planView, target int) bool {
 }
 
 func (m *Model) runPlan(d *dialog, v *planView, target int) tea.Cmd {
-	if !m.planActionDrawn(d, v, target) || m.threads[d.route.owner].plan.chatRequest != nil {
+	if d.plan.workspace != "" || !m.planActionDrawn(d, v, target) || m.threads[d.route.owner].plan.chatRequest != nil {
 		return nil // Enter is only a Run when the current scope's action was drawn.
 	}
 	b, ok := m.backend.(planBackend)
@@ -566,7 +570,7 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 		}
 	}
 	count := fmt.Sprintf("%d/%d verified", verified, len(plan.Steps))
-	if v.snapshot.Chat {
+	if len(v.snapshot.Reports) > 0 {
 		done := 0
 		for _, step := range plan.Steps {
 			if v.done(step.ID) {
@@ -679,7 +683,7 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 		primary, compact, move := "space select  tab details", "space pick  tab info", "↑↓ move"
 		if p.details {
 			primary, compact, move = "tab steps", "tab steps", "↑↓ scroll"
-		} else if v.locked() || v.request != nil || m.threads[d.route.owner].plan.chatRequest != nil {
+		} else if p.workspace != "" || v.locked() || v.request != nil || m.threads[d.route.owner].plan.chatRequest != nil {
 			primary, compact = "tab details", "tab details"
 		}
 		scoped := false
@@ -692,15 +696,15 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 				scoped = true
 			}
 		}
-		if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanReview) {
+		if p.workspace == "" && d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanReview) {
 			primary += "  v review"
 			compact += "  v review"
 		}
 		if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
 			primary += "  h history"
-			if !v.snapshot.Closed {
+			if p.workspace == "" && !v.snapshot.Closed {
 				primary += "  c close plan"
-			} else if !v.snapshot.Complete {
+			} else if p.workspace == "" && !v.snapshot.Complete {
 				primary += "  c reopen"
 			}
 		}
@@ -721,6 +725,9 @@ func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
 
 func (m *Model) planRunBar(d *dialog, v *planView, width int) (bar, preview string, runnable bool) {
 	p := d.plan
+	if p.workspace != "" {
+		return m.control("Read-only · " + oneLine(p.workspace)), "", false
+	}
 	chat := v.request == nil && m.planChatAvailable(v)
 	if chat && m.threads[d.route.owner].plan.chatRequest != nil {
 		return m.chatRunBar(d, v, width) // a receipt is valid even if the original revision changed

@@ -27,7 +27,7 @@ type planChatAdmission struct {
 type planChatReply struct{ thread, run sdk.ID }
 
 func (m *Model) planChatAvailable(v *planView) bool {
-	return v.snapshot.Chat && m.menuFeaturesFromBackend.Has(x.PlanChat) && (m.planAvailable() || m.draftPlanAvailable())
+	return v.snapshot.Workspace == "" && v.snapshot.Chat && m.menuFeaturesFromBackend.Has(x.PlanChat) && (m.planAvailable() || m.draftPlanAvailable())
 }
 
 func (v *planView) taskReport(id string) sdk.PlanTaskReport {
@@ -65,7 +65,7 @@ func (m *Model) showChatSelection(d *dialog, v *planView) {
 
 func (m *Model) runChatPlan(d *dialog, v *planView) tea.Cmd {
 	b, ok := m.backend.(planChatBackend)
-	if !ok || !m.planChatAvailable(v) || !m.planActionDrawn(d, v, planRunTarget) || !v.ready || v.snapshot.Plan == nil || !d.plan.matches(v) {
+	if !ok || d.plan.workspace != "" || !m.planChatAvailable(v) || !m.planActionDrawn(d, v, planRunTarget) || !v.ready || v.snapshot.Plan == nil || !d.plan.matches(v) {
 		return nil
 	}
 	r := d.route

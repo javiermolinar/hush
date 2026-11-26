@@ -198,6 +198,43 @@ async function terminalPlan(t, mode) {
 test("terminal UI browses plans at startup without creating a thread or submitting the draft", { timeout: 45_000 }, t => terminalPlan(t, "startup"));
 test("terminal UI runs an unbound dependent task here without touching the composer", { timeout: 45_000 }, t => terminalPlan(t, "chat"));
 test("terminal UI runs the scoped fixture selection", { timeout: 45_000 }, t => terminalPlan(t, "faux"));
+test("terminal UI opens plans from a different Git worktree at startup", { timeout: 45_000 }, async t => {
+  const home = await realpath(await mkdtemp("/tmp/hush-plan-catalog-"));
+  const cwd = join(home, "source-checkout"), worktree = join(home, "other-worktree");
+  const agentDir = join(home, ".hush"), dataDir = join(home, "data"), socket = join(dataDir, "hush.sock");
+  let host, peer;
+  t.after(async () => { peer?.close(); await host?.close(); await rm(home, { recursive: true, force: true }); });
+  await exec("git", ["init", "-q", cwd]);
+  await exec("git", ["-c", "user.name=Hush Fixture", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+    "commit", "--allow-empty", "-qm", "fixture"], { cwd });
+  await exec("git", ["worktree", "add", "--detach", worktree], { cwd });
+  await mkdir(agentDir, { mode: 0o700 });
+  const trust = new WorkspaceTrust(agentDir);
+  await trust.change(cwd, "grant", t.signal);
+  await trust.change(worktree, "grant", t.signal);
+  const provider = await planProvider(t, agentDir, async turn => {
+    assert.equal(turn.text, createRequest);
+    return turn.results.length ? "Plan saved." : [call("hush_plan_propose", draftArgs())];
+  });
+  const binary = process.env.HUSH_TEST_CLI || join(home, "hush");
+  if (!process.env.HUSH_TEST_CLI) await exec("go", ["build", "-o", binary, "./app/cmd/hush"], { cwd: repo, timeout: 25_000 });
+  host = await startBackend({ model: provider.model, ephemeral: false, idleMs: 30_000, cwd, agentDir, dataDir, socket });
+  peer = await dial(socket);
+  const rpc = async (method, params) => okay(await peer.send(method, params));
+  await rpc("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planChat: [1], planCatalog: [1] } });
+  const { id: threadId } = await rpc("thread.new", {});
+  const { submissionId } = await rpc("submit", { threadId, text: createRequest, requestId: "prepare-pty", whenBusy: "reject" });
+  assert.equal((await rpc("submission.wait", { threadId, submissionId })).status, "done");
+  const before = await rpc("thread.list", { limit: 32 });
+  const requests = provider.requests.length;
+  await exec("python3", [script, binary, socket, threadId, "catalog", ""], { cwd: worktree, timeout: 16_000,
+    env: { HOME: home, PATH: process.env.PATH, TERM: "xterm-256color", LANG: "C.UTF-8" } });
+  const current = await rpc("ext.plan.wait", { threadId });
+  assert.equal(current.run, null);
+  assert.equal(current.closed, undefined);
+  assert.deepEqual(await rpc("thread.list", { limit: 32 }), before, "browsing and opening a foreign plan do not create a thread");
+  assert.equal(provider.requests.length, requests, "read-only keys neither run the plan nor send the draft");
+});
 test("terminal UI saves an unsaved plan preview with 'ok save it'", { timeout: 45_000 }, t => terminalPlan(t, "preview"));
 test("terminal UI saves and independently reviews a plan without the scoped file helper", { timeout: 45_000 }, t => terminalPlan(t, "draft"));
 test("explicit scoped Run verifies exactly two real edits in the initiating thread", { timeout: 45_000 }, t => terminalPlan(t, "scoped"));

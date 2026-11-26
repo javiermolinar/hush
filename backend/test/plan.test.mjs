@@ -190,6 +190,38 @@ test("Run here queues one native turn in the initiating thread without scoped ed
   assert.deepEqual(firstLog.runs[0].workers, []);
   assert.deepEqual(okay(await old.send("ext.planWorkspace.history", { threadId, planId: plan.id })).runs, []);
   assert.equal((await snapshot(old, source)).run, null);
+
+  const catalog = await dial(config.socket), catalogOnly = await dial(config.socket);
+  t.after(() => { catalog.close(); catalogOnly.close(); });
+  const browse = { plan: [1], planWorkspace: [1], planCatalog: [1] };
+  assert.deepEqual(okay(await catalog.send("hello", { versions: [1], capabilities: { ...browse, planChat: [1] } })).capabilities,
+    { plan: 1, planWorkspace: 1, planCatalog: 1, planChat: 1 });
+  const query = { cwd: foreign, page: 0 };
+  assert.equal((await catalog.send("ext.planChat.workspace", query)).ok, false, "a catalog does not grant launch-directory trust");
+  await new WorkspaceTrust(config.agentDir).change(foreign, "grant", t.signal);
+  const at = okay(await catalog.send("ext.planChat.workspace", query));
+  assert.deepEqual(at.plans.map(p => [p.id, p.workspace, p.verified, p.reportedDone]), [[plan.id, config.cwd, 0, 1]]);
+  const readonly = okay(await catalog.send("ext.planChat.inspect", { cwd: foreign, planId: plan.id }));
+  assert.equal(readonly.workspace, config.cwd);
+  assert.equal(readonly.runAvailability, "disabled");
+  assert.equal(readonly.chat, undefined);
+  assert.deepEqual(readonly.reports, reports);
+  assert.deepEqual(readonly.progress, []);
+  assert.deepEqual(readonly.run, settled.run);
+  assert.deepEqual(await listThreads(), threads, "threadless catalog does not materialize a thread");
+  const outsider = okay(await a.send("thread.new", { cwd: foreign })).id;
+  const foreignTarget = { threadId: outsider, planId: plan.id };
+  const visible = okay(await catalog.send("ext.planWorkspace.inspect", foreignTarget));
+  assert.deepEqual(visible, readonly);
+  assert.deepEqual(okay(await catalog.send("ext.planWorkspace.history", foreignTarget)), firstLog);
+  denied(await catalog.send("ext.planChat.run", { ...selection, threadId: outsider }), "not_found");
+  await catalogOnly.send("hello", { versions: [1], capabilities: browse });
+  const limited = okay(await catalogOnly.send("ext.planCatalog.wait", { threadId: outsider, page: 0 }));
+  assert.equal(limited.plans[0].reportedDone, undefined);
+  assert.equal(okay(await catalogOnly.send("ext.planWorkspace.inspect", foreignTarget)).run, null);
+  assert.deepEqual(okay(await catalogOnly.send("ext.planWorkspace.history", foreignTarget)).runs, []);
+  catalog.close();
+  catalogOnly.close();
   await stop();
   connect = await boot({ faux: false, model: provider.model });
   a = await connect([1], true, [1], [1]);
@@ -670,6 +702,68 @@ for (const action of ["change file", "revoke trust", "stop", "restart"]) {
     }
   });
 }
+
+test("plan catalog browses other workspaces without carrying action authority", { timeout: 15_000 }, async t => {
+  const { boot, stop, config } = await layout(t);
+  const connect = await boot();
+  const legacy = await connect();
+  const workspace = join(dirname(config.cwd), "other-worktree");
+  await mkdir(workspace, { mode: 0o700 });
+  const owner = okay(await legacy.send("thread.new", {})).id;
+  const other = okay(await legacy.send("thread.new", { cwd: workspace })).id;
+  await draft(legacy, owner);
+  const { plan: original } = await snapshot(legacy, owner);
+  const target = { threadId: other, planId: original.id }, query = { threadId: other, page: 0 };
+  const wait = "ext.planCatalog.wait", inspect = "ext.planWorkspace.inspect";
+  denied(await legacy.send(wait, query), "unsupported_capability");
+  denied(await legacy.send(inspect, target), "not_found");
+  assert.deepEqual(okay(await legacy.send("ext.planWorkspace.wait", query)).plans, []);
+
+  const attach = async () => {
+    const peer = await dial(config.socket);
+    t.after(() => peer.close());
+    const hello = okay(await peer.send("hello", { versions: [1], capabilities: { plan: [1], planWorkspace: [1], planCatalog: [1] } }));
+    assert.equal(hello.capabilities.planCatalog, 1);
+    return peer;
+  };
+  let peer = await attach();
+  const first = okay(await peer.send(wait, query));
+  assert.deepEqual(first.plans.map(p => [p.id, p.workspace]), [[original.id, config.cwd]]);
+  assert.equal(first.more, false);
+  const laterPage = okay(await peer.send(wait, { ...query, page: 1, after: first.revision }));
+  assert.notEqual(laterPage.revision, first.revision);
+  assert.deepEqual(laterPage.plans, []);
+  const view = okay(await peer.send(inspect, target));
+  assert.deepEqual(view.plan, original);
+  assert.equal(view.runAvailability, "disabled");
+  assert.deepEqual(okay(await peer.send("ext.planWorkspace.history", target)), { runs: [], next: null });
+  denied(await peer.send("ext.planWorkspace.use", target), "not_found");
+  denied(await peer.send("ext.planWorkspace.setClosed", { ...target, closed: true }), "not_found");
+  denied(await peer.send("ext.plan.run", { ...target, revision: original.revision, stepIds: [original.steps[0].id], requestId: "foreign" }),
+    "invalid_request");
+  assert.equal((await snapshot(peer, other)).plan, null, "browsing did not bind a plan");
+
+  await new WorkspaceTrust(config.agentDir).change(workspace, "grant", t.signal);
+  const update = peer.send(wait, { ...query, after: first.revision });
+  await draft(legacy, other);
+  assert.notEqual(okay(await update).revision, first.revision);
+  const local = (await snapshot(peer, other)).plan;
+  assert.ok(local);
+  const all = okay(await peer.send(wait, query));
+  assert.deepEqual(all.plans.map(p => [p.id, p.workspace]), [[local.id, undefined], [original.id, config.cwd]]);
+  assert.deepEqual(okay(await legacy.send("ext.planWorkspace.wait", query)).plans.map(p => p.id), [local.id]);
+  const closed = peer.send(wait, { ...query, after: all.revision });
+  okay(await legacy.send("ext.planWorkspace.setClosed", { threadId: owner, planId: original.id, closed: true }));
+  assert.equal(okay(await closed).plans.find(p => p.id === original.id)?.closed, true);
+  peer.close();
+  await stop();
+  await boot();
+  peer = await attach();
+  const reopened = okay(await peer.send(wait, { ...query, after: all.revision }));
+  assert.notEqual(reopened.revision, all.revision);
+  assert.deepEqual(reopened.plans.map(p => [p.id, p.closed, p.workspace]),
+    [[local.id, false, undefined], [original.id, true, config.cwd]]);
+});
 
 test("workspace plans stay visible with a durable run log through close, reopen and completion", { timeout: 16_000 }, async t => {
   const staged = Promise.withResolvers(), release = Promise.withResolvers();

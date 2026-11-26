@@ -9,7 +9,7 @@ import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, mode
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
 import { parsePlanAt, parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace,
-  planVersion, planChatVersion, planDraftVersion, planWorkspaceVersion, type PlanChatHost, type PlanDraftHost, type PlanHost } from "./plan.js";
+  planVersion, planCatalogVersion, planChatVersion, planDraftVersion, planWorkspaceVersion, type PlanChatHost, type PlanDraftHost, type PlanHost } from "./plan.js";
 import { parsePlanReview, planReviewVersion, type PlanReviewHost } from "./plan-review.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
@@ -176,6 +176,7 @@ class Peer {
   #planChat?: PlanChatHost;
   #planDraft?: PlanDraftHost;
   #planWorkspace = false;
+  #planCatalog = false;
   #planReview?: PlanReviewHost;
   #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
@@ -328,12 +329,12 @@ class Peer {
           const host = this.#planChat, signal = this.#abort.signal;
           if (parts[2] === "workspace") {
             const query = parsePlanAt(req.params, false);
-            this.#metadata(req, parts[1], () => host.workspaceAt(query, signal));
+            this.#metadata(req, parts[1], () => host.workspaceAt(query, signal, this.#planCatalog));
             return;
           }
           if (parts[2] === "inspect") {
             const query = parsePlanAt(req.params, true);
-            this.#metadata(req, parts[1], () => host.inspectAt(query, signal));
+            this.#metadata(req, parts[1], () => host.inspectAt(query, signal, this.#planCatalog));
             return;
           }
           if (parts[2] !== "run") throw new WireError("unknown_method");
@@ -347,6 +348,12 @@ class Peer {
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
         }
+        if (parts[1] === "planCatalog" && this.#planCatalog && this.#plan?.catalog) {
+          if (parts[2] !== "wait") throw new WireError("unknown_method");
+          const query = parsePlanWorkspace(req.params), host = this.#plan;
+          this.#metadata(req, parts[1], () => host.catalog!(query, this.#abort.signal, !!this.#planChat));
+          return;
+        }
         if (parts[1] === "planWorkspace" && this.#plan && this.#planWorkspace) {
           const host = this.#plan, signal = this.#abort.signal;
           if (parts[2] === "wait") {
@@ -356,12 +363,12 @@ class Peer {
           }
           if (parts[2] === "inspect") {
             const { threadId, after, planId } = parsePlanWait(req.params, true);
-            this.#metadata(req, parts[1], () => host.wait(threadId, after, signal, planId, !!this.#planChat));
+            this.#metadata(req, parts[1], () => host.wait(threadId, after, signal, planId, !!this.#planChat, this.#planCatalog));
             return;
           }
           const result = parts[2] === "setClosed" ? await host.setClosed(parsePlanClosure(req.params), signal)
             : parts[2] === "use" ? await host.attach(parsePlanAttach(req.params), signal, true)
-            : parts[2] === "history" ? await host.history(parsePlanHistory(req.params), signal, !!this.#planChat) : undefined;
+            : parts[2] === "history" ? await host.history(parsePlanHistory(req.params), signal, !!this.#planChat, this.#planCatalog) : undefined;
           if (!result) throw new WireError("unknown_method");
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
@@ -607,6 +614,10 @@ class Peer {
             if (this.capabilities.planChat && req.params.capabilities?.planChat?.includes(planChatVersion)) {
               capabilities.planChat = planChatVersion;
               this.#planChat = this.capabilities.planChat;
+            }
+            if (this.#plan.catalog && req.params.capabilities?.planCatalog?.includes(planCatalogVersion)) {
+              capabilities.planCatalog = planCatalogVersion;
+              this.#planCatalog = true;
             }
             if (this.capabilities.planReview && req.params.capabilities?.planReview?.includes(planReviewVersion)) {
               capabilities.planReview = planReviewVersion;

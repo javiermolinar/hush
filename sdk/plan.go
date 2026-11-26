@@ -103,6 +103,7 @@ type PlanSnapshot struct {
 	Settling        bool                `json:"settling,omitempty"`
 	Chat            bool                `json:"chat,omitempty"`
 	Reports         []PlanTaskReport    `json:"reports,omitempty"`
+	Workspace       string              `json:"workspace,omitempty"` // nonempty for a read-only foreign plan
 }
 
 type PlanSelection struct {
@@ -158,16 +159,20 @@ func (s PlanSnapshot) valid() bool {
 		return false
 	}
 	p := s.Plan
+	foreign := s.Workspace != ""
+	if foreign && (!validPlanWorkspace(s.Workspace) || p == nil || s.Chat || s.RunAvailability != PlanRunDisabled) {
+		return false
+	}
 	switch s.RunAvailability {
 	case PlanRunDisabled, PlanRunPinned:
-		if !s.Chat && (s.Run != nil || len(s.Progress) != 0) || s.RunAvailability == PlanRunPinned && (p == nil || s.Chat) {
+		if !s.Chat && !foreign && (s.Run != nil || len(s.Progress) != 0) || s.RunAvailability == PlanRunPinned && (p == nil || s.Chat) {
 			return false
 		}
 	case PlanRunFixture, PlanRunScoped, PlanRunUnbound:
 	default:
 		return false
 	}
-	if s.Chat != (s.Reports != nil) || s.Chat && s.RunAvailability == PlanRunFixture {
+	if !foreign && s.Chat != (s.Reports != nil) || s.Chat && s.RunAvailability == PlanRunFixture {
 		return false
 	}
 	if p == nil {
@@ -234,7 +239,7 @@ func (s PlanSnapshot) valid() bool {
 	}
 	if r := s.Run; r != nil {
 		if !r.ID.Valid() || !planRunState(r.State, r.Chat) || !validPlanIDs(r.StepIDs) ||
-			r.Chat && (!s.Chat || !r.SubmissionID.Valid() || r.PublicationUncertain) || !r.Chat && r.SubmissionID != "" ||
+			r.Chat && (!s.Chat && !(foreign && s.Reports != nil) || !r.SubmissionID.Valid() || r.PublicationUncertain) || !r.Chat && r.SubmissionID != "" ||
 			(r.Chat || s.RunAvailability == PlanRunScoped) && !r.OwnerThreadID.Valid() ||
 			r.PublicationUncertain && (r.State != "failed" || r.Failure == "") ||
 			r.Failure != "" && (r.State != "failed" || !goodPlanText(r.Failure, 240)) {
