@@ -920,12 +920,43 @@ func (v *planView) activity() string {
 }
 
 func (m *Model) planActivity(t *threadState, width int) displayRow {
-	if width < 10 || !t.plan.ready || !m.planAvailable() {
+	v := &t.plan
+	run := v.snapshot.Run
+	if width < 10 || !v.ready || !m.planAvailable() || run == nil {
 		return displayRow{}
 	}
-	text := ansi.Truncate(t.plan.activity(), width, "…")
-	if text == "" {
-		return displayRow{}
+	var marks strings.Builder
+	if len(run.StepIDs) <= 20 {
+		for _, id := range run.StepIDs {
+			switch v.progress(id).State {
+			case "verified":
+				marks.WriteString(m.paint(x.Good, "✓"))
+			case "running":
+				marks.WriteString(m.paint(x.Warning, "◐"))
+			case "failed":
+				marks.WriteString(m.paint(x.Danger, "✗"))
+			default:
+				mark, tone := "○", x.Muted
+				if run.Chat {
+					switch v.taskReport(id).State {
+					case "blocked", "incomplete":
+						mark, tone = "⏸", x.Warning
+					default:
+						if run.State == "running" {
+							mark, tone = "◐", x.Warning
+						}
+					}
+				}
+				marks.WriteString(m.paint(tone, mark))
+			}
+		}
 	}
-	return displayRow{text: m.control(text), hits: []spanHit{{0, stringWidth(text), x.ActionRef{ID: planID}, "Open plan"}}}
+	label := v.activity()
+	if marks.Len() != 0 && stringWidth(marks.String())+12 < width {
+		label = marks.String() + "  " + m.quiet(label)
+	} else {
+		label = m.quiet(label)
+	}
+	text := ansi.Truncate(label, width, "…")
+	return displayRow{text: text, hits: []spanHit{{0, stringWidth(text), x.ActionRef{ID: planID}, "Open plan"}}}
 }

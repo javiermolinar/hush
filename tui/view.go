@@ -126,6 +126,13 @@ func (m *Model) View() tea.View {
 	const fixedRows = 1 // live rule
 	var notice displayRow
 	free := m.height - fixedRows - len(editorRows) - len(below) - len(completions)
+	var planProgress displayRow
+	if d == nil && len(completions) == 0 && free > 1 {
+		planProgress = m.planActivity(t, w)
+		if planProgress.text != "" {
+			free--
+		}
+	}
 	var attachments []displayRow
 	if free > 1 && (t.attaching || len(t.attachments) != 0) {
 		attachments = []displayRow{m.attachmentRow(t, w)}
@@ -148,6 +155,9 @@ func (m *Model) View() tea.View {
 		below = append(widgetBelow, below...)
 	}
 	f.transcriptHeight = max(0, m.height-fixedRows-len(editorRows)-len(below)-len(completions)-len(widgetAbove)-len(queued)-noticeRows-len(attachments))
+	if planProgress.text != "" {
+		f.transcriptHeight = max(0, f.transcriptHeight-1)
+	}
 	rows := m.transcript(t, w, f.transcriptHeight)
 	origin := 0
 	// Keep short transcripts under their intro. Once the viewport fills,
@@ -305,6 +315,10 @@ func (m *Model) View() tea.View {
 	}
 	for _, row := range completions {
 		add(y, row)
+		y++
+	}
+	if planProgress.text != "" {
+		add(y, planProgress)
 		y++
 	}
 	f.ruleY = y
@@ -499,8 +513,7 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	}
 	out := m.liveActivity(t, liveWidth, phase, tool, count)
 	if phase == liveIdle {
-		out = m.planActivity(t, liveWidth)
-		if d := m.focusedDialog(); out.text == "" && d != nil && d.plan != nil && liveWidth >= 6 {
+		if d := m.focusedDialog(); d != nil && d.plan != nil && liveWidth >= 6 {
 			out.text = m.control("○ idle")
 		}
 	}

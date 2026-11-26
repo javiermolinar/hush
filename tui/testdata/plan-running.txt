@@ -18,7 +18,7 @@
   Plan · 1/2 verified · Restore saved profiles
   tab details  ↑↓ move  f full  esc back
 
-  Plan · 1/2 verified · Restore saved profiles ───────────────────────────────────────────────────────────────────
+  ○ idle ─────────────────────────────────────────────────────────────────────────────────────────────────────────
   you ›
   Workspace workspace
   › ○ workspace

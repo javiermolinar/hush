@@ -6,7 +6,7 @@
   Read the saved profile and restore
   Plan · 1/2 verified · Restore saved…
   tab details  ↑↓ move  esc back
-  Plan · 1/2 verified · Restore sa… ──
+  ○ idle ─────────────────────────────
   you ›
   workspace
   › ○ workspace

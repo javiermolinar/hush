@@ -46,6 +46,9 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 	var cards []blockRange
 	gap := x.Block{Lines: []x.Line{nil}}
 	e := r.entry
+	if (e.Record.Kind == "hush.plan.chat" || e.Record.Kind == "hush.plan.run") && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
+		return x.Content{planRunTranscript(e.Record.Messages[0].Blocks[0].Text, ctx.Width)}, nil
+	}
 	if e.Record.Kind == planPreviewEntry && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
 		return m.planPreviewContent(ctx, t, e.Record.ID, e.Record.Messages[0].Blocks[0].Text), nil
 	}
