@@ -46,7 +46,7 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	case d.palette:
 		frame = m.paletteRows(d, w, n)
 	case d.themePicker != nil:
-		frame.rows, frame.targets = m.themeRows(d, w, n)
+		frame = m.themeRows(d, w, n)
 	case d.output != nil:
 		frame = m.outputRows(d, w, n)
 	default:

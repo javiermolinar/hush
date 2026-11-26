@@ -240,20 +240,3 @@ func (m *Model) paletteRows(d *dialog, w, h int) menuFrame {
 		return out
 	})
 }
-
-func (m *Model) hintRow(w int, full, compact, right string) string {
-	room := w
-	if right != "" && stringWidth(right)+2 < w {
-		room -= stringWidth(right) + 2
-	} else {
-		right = ""
-	}
-	if stringWidth(full) > room {
-		full = compact
-	}
-	left := ansi.Truncate(full, room, "…")
-	if right != "" {
-		left = fit(left, w-stringWidth(right)) + m.control(right)
-	}
-	return left
-}

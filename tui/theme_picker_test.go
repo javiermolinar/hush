@@ -187,7 +187,7 @@ func TestThemeSlashPreviewsAndAppliesPreset(t *testing.T) {
 	chooseThemeForTest(t, m, d, "gruvbox")
 	body := assertFrame(t, m)
 	if m.themes.active.name != "gruvbox" || !strings.Contains(body, "\x1b[38;2;250;189;47mAccent") ||
-		!strings.Contains(ansi.Strip(body), "enter apply") {
+		!strings.Contains(ansi.Strip(body), "↵ apply") {
 		t.Fatalf("missing live preset preview or apply hint:\n%s", ansi.Strip(body))
 	}
 	assertNotSaved()
@@ -548,4 +548,14 @@ func testThemeFrameGeometry(t *testing.T) {
 		press(m, tea.KeyEscape, 0)
 		assertFrame(t, m)
 	}
+}
+
+func TestGoldenThemePicker(t *testing.T) {
+	themeFixture(t)
+	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	darkThemeTerminal(m)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	d := openTestThemes(t, m)
+	chooseThemeForTest(t, m, d, "violet")
+	golden(t, "menu-themes", m)
 }

@@ -1,0 +1,24 @@
+
+
+
+
+
+  Themes ──────────────────────────────────────────────────────────── 9 themes
+    terminal                     Current │ violet
+    gruvbox                              │ Preview the theme and fills before
+    ink                                  │ saving
+    keanu                                │
+    kitt                                 │
+    panther                              │
+    rose-pine                            │
+    rose-pine-moon                       │
+  › violet                               │
+  Accent  Link  OK  Warn  Error  if  "text"  // note
+  fills  auto  on  off
+
+  ↵ Save theme  violet · keep the previewed fills
+  ↑↓ move  ←→ fills  ↵ apply  f full  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

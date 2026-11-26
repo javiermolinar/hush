@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	x "github.com/javiermolinar/hush/tui/extension"
 )
 
@@ -313,83 +312,74 @@ func (m *Model) moveTheme(d *dialog, delta int) {
 	}
 }
 
-func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
+func (m *Model) themeRows(d *dialog, w, n int) menuFrame {
 	p := d.themePicker
-	var rows []string
-	var hits []int
-	add := func(s string, pick int) {
-		rows = append(rows, ansi.Truncate(s, w, "…"))
-		hits = append(hits, pick)
-	}
-	if n < 1 {
-		return nil, nil
-	}
-	if n >= 3 {
-		// The title row always exists, so a note never moves the choices.
-		title := m.paint(x.Accent, d.title)
-		if note := m.themeNote(); note != "" && !p.loading && !p.saving {
-			title += m.control(" · " + note)
-		}
-		add(title, -1)
-	}
+	c := menuChrome{title: d.title, count: menuCount(len(p.themes), "theme", "themes")}
 	if p.loading || p.saving {
 		status := "Loading client themes…"
 		if p.saving {
 			status = "Saving theme…"
 		}
-		add(m.control(status), -1)
-		return rows, hits
+		return m.menuShell(w, n, c, func(int) menuFrame {
+			return menuFrame{rows: []string{m.quiet(status)}, targets: []int{-1}}
+		})
 	}
-	budget := n - len(rows)
-	if p.problem != "" && budget >= 2 {
-		add(m.paint(x.Warning, oneLine(p.problem)), -1)
-		budget--
-	}
-	showKeys := budget >= 2
-	if showKeys {
-		budget--
-	}
-	showSample := budget >= 5 && w >= themeSampleWidth
-	if showSample {
-		budget--
-	}
-	showFills := budget >= 5
-	if showFills {
-		budget--
-	}
-	first := min(max(0, d.selected-budget+1), max(0, len(d.filtered)-budget))
-	for i := first; i < min(first+budget, len(d.filtered)); i++ {
-		choice := d.choices[d.filtered[i]]
-		label, tone := "  "+choice.Label, x.Plain
-		if i == d.selected {
-			label, tone = "› "+choice.Label, x.Accent
+	c.scope = m.themeNote()
+	current, ok := d.choice()
+	if ok {
+		switch {
+		case current.ID == themeTemplateChoice:
+			c.consequence = chromeLine(m.menuAction("Copy starter JSON", "Keep the current theme"))
+		case current.Description == "unavailable on disk":
+			c.consequence = chromeLine(m.quiet("Theme is no longer on disk · choose another theme"))
+		default:
+			c.consequence = chromeLine(m.menuAction("Save theme", current.Label+" · keep the previewed fills"))
 		}
-		if choice.ID == p.before.name {
-			choice.Description = strings.TrimSpace("current " + choice.Description)
-		}
-		row := m.paint(tone, label)
-		if choice.Description != "" {
-			row += m.control(" · " + choice.Description)
-		}
-		add(row, i)
 	}
-	if showSample {
-		add(m.themeSampleRow(), -1)
-	}
-	if showFills {
-		add(m.themeFillsRow(w), themeFillsTarget)
-	}
-	if showKeys {
-		action := "apply"
-		if c, ok := d.choice(); ok && c.ID == themeTemplateChoice {
-			action = "copy"
+	c.keys = chromeLine(m.menuKeys(w, "↑↓ move", "←→ fills", "↵ apply", d.zoomKey()))
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		var out menuFrame
+		if p.problem != "" && h >= 3 {
+			out.add(m.paint(x.Warning, oneLine(p.problem)), -1)
+			h--
 		}
-		full, compact := m.keyHint("↑↓", "preview")+"  ", "↑↓  "
-		if showFills {
-			full, compact = full+m.keyHint("←→", "fills")+"  ", compact+"←→  "
+		fills := h >= 3
+		sample := h >= 5 && w >= themeSampleWidth
+		if fills {
+			h--
 		}
-		full += m.keyHint("enter", action) + "  " + m.keyHint("esc", "cancel")
-		add(m.hintRow(w, full, compact+"enter  esc", ""), -1)
-	}
-	return rows, hits
+		if sample {
+			h--
+		}
+		list := m.menuColumns(w, h, func(width, height int) []string {
+			description := current.Description
+			if current.ID == themeTemplateChoice {
+				description = "Copy an editable theme template to the clipboard"
+			}
+			if description == "" {
+				description = "Preview the theme and fills before saving"
+			}
+			return m.menuDetail(current.Label, description, width, height)
+		}, func(lw, lh int) menuFrame {
+			var list menuFrame
+			lo, hi := menuWindow(d.selected, len(d.filtered), lh)
+			for i := lo; i < hi; i++ {
+				choice := d.choices[d.filtered[i]]
+				item := menuItem{title: choice.Label, focus: i == d.selected}
+				if choice.ID == p.before.name {
+					item.state, item.tone = "Current", x.Muted
+				}
+				list.add(m.menuRow(lw, 7, item), i)
+			}
+			return list
+		})
+		out.appendBody(list)
+		if sample {
+			out.add(m.themeSampleRow(), -1)
+		}
+		if fills {
+			out.add(m.themeFillsRow(w), themeFillsTarget)
+		}
+		return out
+	})
 }
