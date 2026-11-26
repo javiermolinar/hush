@@ -37,7 +37,7 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	case d.plan != nil:
 		frame = m.planRows(d, w, n)
 	case d.git != nil:
-		frame.rows, frame.targets = m.gitReviewRows(d, w, n)
+		frame = m.gitReviewRows(d, w, n)
 	case d.workTrust != nil:
 		frame.rows, frame.targets = m.workspaceTrustRows(d.workTrust, w, n)
 	case d.config != nil:

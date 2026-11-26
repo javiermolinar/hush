@@ -102,7 +102,7 @@ func TestGitDiffReviewFlow(t *testing.T) {
 	}
 	m.Update(cmd())
 	body := ansi.Strip(assertFrame(t, m))
-	for _, want := range []string{"src/auth/session.ts · 1/4 · last checkpoint", "/work/project/src  ⎇ feature/review", "42 −   if (!lock)", "42 +   const lock", "␛[31m", "unsent draft", "± 4 files"} {
+	for _, want := range []string{"src/auth/session.ts · last checkpoint", "1/4", "/work/project/src  ⎇ feature/review", "42 −   if (!lock)", "42 +   const lock", "␛[31m", "unsent draft", "± 4 files"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in\n%s", want, body)
 		}
@@ -146,7 +146,7 @@ func TestGitDiffScopeWithoutBranch(t *testing.T) {
 		{errors.New("This directory is not a Git worktree."), "This directory is not a Git worktree."},
 	} {
 		d.git.apply(sdk.GitDiffSummary{Revision: diffFixtureRevision}, tc.err)
-		rows, _ := m.gitReviewRows(d, 70, 6)
+		rows := m.gitReviewRows(d, 70, 6).rows
 		text := ansi.Strip(strings.Join(rows, "\n"))
 		if !strings.Contains(text, "/work/project/src\n"+tc.want) || strings.Contains(text, "⎇") {
 			t.Fatalf("unexpected review scope:\n%s", text)
@@ -183,7 +183,7 @@ func TestGitDiffFrameGeometry(t *testing.T) {
 func TestGitDiffGoldens(t *testing.T) {
 	m, s := demo(t, Options{Fills: FillOff, ReducedMotion: true})
 	enableGitDiffFixture(m, s)
-	m.Update(tea.WindowSizeMsg{Width: 76, Height: 18})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	s.info.Status = x.Running
 	m.editor.set("keep this draft")
 	m.openGitDiff(m.route(m.active, coreID))

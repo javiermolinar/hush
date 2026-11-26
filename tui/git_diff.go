@@ -18,6 +18,7 @@ import (
 const gitDiffID x.ActionID = coreID + ".gitDiff"
 const openGitDiffOp x.LocalOp = "gitDiff.open"
 const gitRangeTarget = -2
+const gitOpenTarget = -3
 const gitDiffTimeout = 5 * time.Second
 
 type gitDiffBackend interface {
@@ -401,7 +402,7 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 		case "up", "down", "pgup", "pgdown":
 			step := 1
 			if chord == "pgup" || chord == "pgdown" {
-				step = m.frame.dialogHeight - 4
+				step = m.frame.dialogBodyHeight
 				if m.gitReviewCWD(d) != "" || g.list.Branch != "" {
 					step-- // workspace context row
 				}
@@ -436,8 +437,14 @@ func (m *Model) gitDiffMouse(d *dialog, msg tea.Msg, row int) tea.Cmd {
 			return nil
 		}
 		target := m.frame.dialogChoices[row]
-		if target == gitRangeTarget {
+		switch target {
+		case gitRangeTarget:
 			return m.gitDiffKey(d, "tab")
+		case gitOpenTarget:
+			return m.gitDiffKey(d, "enter")
+		}
+		if m.frame.dialogListWidth > 0 && v.X >= m.frame.dialogX+m.frame.dialogListWidth {
+			return nil
 		}
 		if target >= 0 && !d.git.patch && d.git.cancel == nil && target < len(d.git.list.Files) {
 			d.git.selected = target
@@ -502,113 +509,84 @@ func gitReviewScope(cwd, branch string, w int) string {
 	return path
 }
 
-func (m *Model) gitReviewRows(d *dialog, w, h int) ([]string, []int) {
-	if h <= 0 {
-		return nil, nil
-	}
+func (m *Model) gitReviewRows(d *dialog, w, h int) menuFrame {
 	g := d.git
-	var rows []string
-	var targets []int
-	add := func(s string, target int) {
-		rows = append(rows, ansi.Truncate(s, w, "…"))
-		targets = append(targets, target)
-	}
 	base := "HEAD"
 	if g.rangeName == sdk.GitDiffCheckpoint {
 		base = "last checkpoint"
 	}
-	target := -1
-	title := "Worktree changes · " + base
-	footer := m.keyHint("enter", "open") + "  " + m.keyHint("esc", "close")
+	c := menuChrome{title: "Worktree changes", scope: base, count: menuCount(len(g.list.Files), "file", "files")}
+	keys := []string{"↑↓ move", "u refresh"}
 	if g.patch {
 		file := g.list.Files[g.selected]
-		title = fmt.Sprintf("%s · %d/%d · %s", oneLine(file.Path), g.selected+1, len(g.list.Files), base)
-		footer = m.keyHint("n/p", "next/previous file") + "  " + m.keyHint("esc", "back")
+		c.title = file.Path
+		c.count = fmt.Sprintf("%d/%d", g.selected+1, len(g.list.Files))
+		keys = []string{"↑↓ scroll", "n/p next/previous file"}
 	} else if g.list.Checkpoint || g.rangeName == sdk.GitDiffCheckpoint {
-		title += " ▾"
-		target = gitRangeTarget
-		footer += "  " + m.keyHint("tab", "range")
-	} else if sdk.GitDiffNeedsTrust(g.err) {
-		footer = m.keyHint("esc", "close")
+		c.headerTarget = gitRangeTarget
+		keys = append(keys, "tab range")
 	}
-	if !g.patch {
-		footer += "  " + m.keyHint("u", "refresh")
+	if !g.patch && g.cancel == nil && g.err == nil && len(g.list.Files) > 0 {
+		c.consequence = menuLine{m.menuAction("Open diff", oneLine(g.list.Files[g.selected].Path)), gitOpenTarget}
+		keys = append(keys, "↵ open")
+	} else if g.patch && g.view != nil && g.view.truncated {
+		c.consequence = chromeLine(m.paint(x.Warning, "This preview is clipped"))
 	}
-	add(m.paint(x.Accent, title), target)
-	if h >= 3 {
-		if scope := gitReviewScope(m.gitReviewCWD(d), g.list.Branch, w); scope != "" {
-			add(m.paint(x.Muted, scope), -1)
+	keys = append(keys, d.zoomKey())
+	c.keys = chromeLine(m.menuKeys(w, keys...))
+	return m.menuShell(w, h, c, func(budget int) menuFrame {
+		var out menuFrame
+		if scope := gitReviewScope(m.gitReviewCWD(d), g.list.Branch, w); scope != "" && budget >= 2 {
+			out.add(m.quiet(scope), -1)
+			budget--
 		}
-	}
-	body := h - len(rows)
-	showFooter := body >= 2 // leave small views one useful body row
-	if showFooter {
-		body--
-	}
-	if body > 0 {
 		switch {
 		case g.cancel != nil || !g.patch && g.err == nil && g.list.Revision == "":
-			add(m.control("Loading…"), -1)
+			out.add(m.quiet("Loading changes…"), -1)
 		case sdk.GitDiffNeedsTrust(g.err):
-			add(m.paint(x.Warning, "Workspace trust required for Git review"), -1)
-			if body >= 3 {
-				add(m.control("On the backend host, run:"), -1)
-			}
-			if body >= 2 {
-				add(m.control("hush trust grant --cwd PATH"), -1)
+			out.add(m.paint(x.Warning, "Workspace trust required for Git review"), -1)
+			if budget >= 2 {
+				out.add(m.quiet("On the backend host, run hush trust grant --cwd PATH"), -1)
 			}
 		case g.err != nil:
-			add(m.paint(x.Warning, oneLine(g.err.Error())), -1)
-		case g.patch && g.view != nil:
-			for _, row := range m.gitPatchRows(g.view, w, body) {
-				add(row, -1)
+			out.add(m.paint(x.Danger, oneLine(g.err.Error())), -1)
+			if budget >= 2 && !g.patch {
+				out.add(m.quiet("u refresh to retry"), -1)
 			}
-			if g.view.truncated {
-				footer += "  " + m.paint(x.Warning, "preview clipped")
+		case g.patch && g.view != nil:
+			for _, row := range m.gitPatchRows(g.view, w, budget) {
+				out.add(row, -1)
 			}
 		case len(g.list.Files) == 0:
-			add(m.paint(x.Muted, "No changes"), -1)
+			out.add(m.quiet("No changes"), -1)
 		case !g.patch:
-			lo := min(max(0, g.selected-body+1), max(0, len(g.list.Files)-body))
-			for i := lo; i < min(lo+body, len(g.list.Files)); i++ {
-				f := g.list.Files[i]
-				prefix := "  "
-				if i == g.selected {
-					prefix = m.paint(x.Accent, "› ")
-				}
-				status, tone := f.Status, x.Warning
-				switch status {
-				case "A", "?":
-					tone = x.Good
-				case "D":
-					tone = x.Danger
-				}
-				var stats string
-				if f.Added != nil && f.Removed != nil {
-					stats = m.paint(x.Good, "+"+strconv.FormatInt(*f.Added, 10)) + " " + m.paint(x.Danger, "−"+strconv.FormatInt(*f.Removed, 10))
-				} else {
-					stats = m.paint(x.Muted, "—")
-				}
-				if f.Staged {
-					stats = m.control("index") + "  " + stats
-				}
-				left := prefix + m.paint(tone, status) + "  " + oneLine(f.Path)
-				room := max(5, w-stringWidth(stats)-2)
-				add(fit(ansi.Truncate(left, room, "…"), room)+"  "+stats, i)
+			focused := g.list.Files[g.selected]
+			detail := "Line totals unavailable"
+			if focused.Added != nil && focused.Removed != nil {
+				detail = fmt.Sprintf("+%d −%d", *focused.Added, *focused.Removed)
 			}
+			if focused.Staged {
+				detail += " · Staged"
+			}
+			list := m.menuColumns(w, budget, func(lw, lh int) []string { return m.menuDetail(focused.Path, detail, lw, lh) }, func(lw, lh int) menuFrame {
+				var list menuFrame
+				lo, hi := menuWindow(g.selected, len(g.list.Files), lh)
+				for i := lo; i < hi; i++ {
+					f := g.list.Files[i]
+					state := "Changed"
+					if f.Staged {
+						state = "Staged"
+					}
+					list.add(m.menuRow(lw, 8, menuItem{title: f.Path, icon: f.Status, state: state, tone: x.Muted, focus: i == g.selected}), i)
+				}
+				return list
+			})
+			out.rows = append(out.rows, list.rows...)
+			out.targets = append(out.targets, list.targets...)
+			out.listWidth = list.listWidth
 		}
-	}
-	if g.patch {
-		for len(rows) < h-1 {
-			add("", -1)
-		}
-	}
-	if showFooter {
-		add(m.hintRow(w, footer, m.keyHint("esc", "back"), ""), -1)
-	} else if g.patch && len(rows) < h {
-		add("", -1)
-	}
-	return rows, targets
+		return out
+	})
 }
 
 type gitPatchView struct {
@@ -702,11 +680,7 @@ func (m *Model) gitPatchRows(v *gitPatchView, width, height int) []string {
 				}
 				prefix = m.paint(x.Muted, fmt.Sprintf("%6s", number)) + " " + m.paint(tone, sign+" ")
 			}
-			row := prefix + m.paint(tone, text)
-			if tone != x.Plain && m.theme.Fills {
-				row = fill(fit(row, width), m.palette.diffFill(tone))
-			}
-			rows = append(rows, row)
+			rows = append(rows, prefix+m.paint(tone, text))
 		}
 	}
 	return rows
