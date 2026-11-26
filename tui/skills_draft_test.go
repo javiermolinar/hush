@@ -24,7 +24,7 @@ func (f draftSkillFixture) NewThread(_ context.Context, input sdk.NewThread) (sd
 	return f.create(input)
 }
 
-func TestWorkspaceSkillsOnFreshLocalPrompt(t *testing.T) {
+func TestGoldenWorkspaceSkillsOnFreshLocalPrompt(t *testing.T) {
 	const cwd = "/workspace with spaces"
 	pin := strings.Repeat("A", 80)
 	m := modelFor(t, Options{NewThread: sdk.NewThread{CWD: cwd}, WorkspaceLocal: true, ReducedMotion: true, Intro: &IntroOptions{}})
@@ -67,9 +67,11 @@ func TestWorkspaceSkillsOnFreshLocalPrompt(t *testing.T) {
 	if m.intro.standaloneSkillCount == nil || *m.intro.standaloneSkillCount != 1 {
 		t.Fatal("preview did not feed the intro count")
 	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.editor.set("/skills")
 	workflowWork(t, m, press(m, tea.KeyEnter, 0))
-	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "Loaded skills") || !strings.Contains(frame, "review") {
+	golden(t, "menu-skills", m)
+	if frame := ansi.Strip(m.View().Content); !strings.Contains(frame, "Loaded skills") || !strings.Contains(frame, "review") {
 		t.Fatal(frame)
 	}
 	press(m, tea.KeyEnter, 0)

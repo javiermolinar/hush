@@ -636,9 +636,9 @@ func showSkills(_ x.Context, result x.ClientResult) x.Outcome {
 	}
 	choices := make([]x.Choice, 0, min(maxChoices, len(result.Skills)))
 	for _, name := range result.Skills[:min(maxChoices, len(result.Skills))] {
-		choices = append(choices, x.Choice{ID: name, Label: name})
+		choices = append(choices, x.Choice{ID: name, Label: name, Action: "Insert skill command for"})
 	}
-	title := "Loaded skills · Enter inserts command"
+	title := "Loaded skills"
 	if n := len(result.Skills) - len(choices) + result.MoreSkills; n > 0 {
 		title += fmt.Sprintf(" · +%d not listed", n)
 	}

@@ -181,9 +181,9 @@ func stageSkillChoice(result []sdk.WorkspaceSkill) x.Outcome {
 	}
 	choices := make([]x.Choice, 0, len(result))
 	for _, s := range result {
-		choices = append(choices, x.Choice{ID: s.Name, Label: s.Name, Description: s.Source + " · " + s.Description})
+		choices = append(choices, x.Choice{ID: s.Name, Label: s.Name, Description: s.Description + "\n" + s.Source, Action: "Insert skill command for"})
 	}
-	return x.Outcome{x.SelectDialog{Title: "Loaded skills · Enter inserts command", Placement: x.Sheet, Choices: choices,
+	return x.Outcome{x.SelectDialog{Title: "Loaded skills", Placement: x.Sheet, Choices: choices,
 		Done: func(_ x.Context, reply x.Reply[string]) x.Outcome {
 			if reply.Accepted {
 				if i := slices.IndexFunc(result, func(s sdk.WorkspaceSkill) bool { return s.Name == reply.Value }); i >= 0 {

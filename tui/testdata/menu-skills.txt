@@ -1,0 +1,24 @@
+  ██      ██  ██      ██    ████████  ██      ██  ▄
+  ██      ██  ██      ██  ██          ██      ██  █  ▂
+  ██████████  ██      ██    ██████    ██████████  █▄▂█
+  ██      ██  ██      ██          ██  ██      ██  █████▂▆▇▁▇▁  ▆      ▁
+  ██      ██    ██████    ████████    ██      ██  ████████████▇█▇▆█▇█▅█▅▆▂▃▅▄▅
+
+  ⎇ main  /workspace with spaces                                         ·····
+
+  sessions    ·····
+  skills      1 loaded
+
+
+  Loaded skills ───────────────────────────────────────────────────── 1 choice
+  › Type to filter
+  › review                               │ review
+                                         │ Read the draft
+                                         │ workspace
+
+  ↵ Insert skill command for  review
+  ↑↓ move  ↵ choose  type to filter  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  main ›
+  dir workspace with spaces
