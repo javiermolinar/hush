@@ -4,15 +4,15 @@
 
 
 
-│ ╭──────────────────────────────────────────────────────────────────────╮
-  │ Worktree changes · HEAD ▾                                            │
-  │ /work/project/src  ⎇ feature/review                                  │
-  │ › M  src/auth/session.ts                               index  +41 −9 │
-  │   A  src/auth/lock.ts                                         +41 −0 │
-  │   D  src/auth/legacy.ts                                        +0 −9 │
-  │   ?  src/auth/fixture␛.png                                         — │
-  │ enter open  esc close  tab range  u refresh                          │
-  ╰──────────────────────────────────────────────────────────────────────╯
+│ What changed in @app/main.go:12?
+
+  Worktree changes · HEAD ▾
+  /work/project/src  ⎇ feature/review
+  › M  src/auth/session.ts                                   index  +41 −9
+    A  src/auth/lock.ts                                             +41 −0
+    D  src/auth/legacy.ts                                            +0 −9
+    ?  src/auth/fixture␛.png                                             —
+  enter open  esc close  tab range  u refresh
   ◌ Working ────────────────────────────────────────── ± 4 files  +82 −18*
-  you › keep this draft
+  steer › keep this draft
   dir src

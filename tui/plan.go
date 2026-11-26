@@ -193,7 +193,7 @@ func (m *Model) openPlanSteps(r ownerRoute, expected string) tea.Cmd {
 			picker.selected[id] = true
 		}
 	}
-	d := &dialog{route: r, token: m.token(), promptDock: true, plan: picker}
+	d := &dialog{route: r, token: m.token(), plan: picker}
 	m.showChatSelection(d, m.planViewFor(d))
 	return tea.Batch(m.pushDialog(d), m.syncPlanWatch())
 }
@@ -331,7 +331,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 			p.scroll = max(0, p.scroll-1)
 			return nil
 		case "down", "pgdown":
-			width := planDetailWidth(m.dialogWidth(d))
+			width := planDetailWidth(m.pane().width)
 			count := len(m.planDetails(v, v.snapshot.Plan.Steps[p.focus], width))
 			delta := 1
 			if chord == "pgdown" {

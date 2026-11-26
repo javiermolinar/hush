@@ -588,7 +588,7 @@ func (childModel) Init() tea.Cmd                         { return nil }
 func (c childModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return c, nil }
 func (c childModel) View() tea.View                      { return tea.NewView(c.content) }
 
-func TestCustomDialogStyleEndsBeforeBorder(t *testing.T) {
+func TestCustomDialogStyleEndsBeforeNextRow(t *testing.T) {
 	m, _ := demo(t, Options{CustomModels: true})
 	b := maxEffects
 	m.openDialog(m.route(m.active, coreID), x.CustomDialog{Title: "Style fixture", New: func(x.RenderContext) tea.Model {
@@ -599,9 +599,8 @@ func TestCustomDialogStyleEndsBeforeBorder(t *testing.T) {
 	for _, prefix := range []string{"\x1b[31mred without reset", "\x1b[1;35mclipped"} {
 		_, tail, found := strings.Cut(frame, prefix)
 		row, _, _ := strings.Cut(tail, "\n")
-		beforeBorder, _, hasBorder := strings.Cut(row, "│")
-		if !found || !hasBorder || !strings.Contains(beforeBorder, ansi.ResetStyle) {
-			t.Fatalf("child style reached the border after %q: %q", prefix, row)
+		if !found || !strings.Contains(row, ansi.ResetStyle) {
+			t.Fatalf("child style leaked after %q: %q", prefix, row)
 		}
 	}
 	if !strings.Contains(frame, "\x1b[32mgreen"+ansi.ResetStyle+" plain") {

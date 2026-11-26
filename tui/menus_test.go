@@ -321,7 +321,7 @@ func TestSheetShowsRangeAndFooterDoesNotSelect(t *testing.T) {
 	d := m.sheet
 	d.selected = 13
 	frame := ansi.Strip(assertFrame(t, m))
-	for _, want := range []string{"Type to filter", "enter choose", "↑↓", "esc", "9–14 / 42"} {
+	for _, want := range []string{"Type to filter", "enter choose", "↑↓", "esc", "1–17 / 42"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("sheet missing %q:\n%s", want, frame)
 		}

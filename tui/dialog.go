@@ -15,8 +15,6 @@ import (
 const maxDialogs = 8
 const maxChoices = 512
 const selectQueryMaxBytes = 128
-const minOverlayFrameRows = 5
-const minOverlayBodyRows = 3
 
 type dialog struct {
 	token                       uint64
@@ -25,8 +23,6 @@ type dialog struct {
 	route                       ownerRoute
 	budget                      *int
 	placement                   x.Placement
-	anchorBottom                bool
-	promptDock                  bool // the existing input rule is the panel’s bottom edge
 	title, message, query       string
 	choices                     []x.Choice
 	filtered                    []int
@@ -131,7 +127,7 @@ func (m *Model) openDialog(r ownerRoute, e x.Effect, budget *int) tea.Cmd {
 			return m.notifyRoute(r, "Custom dialog unavailable", x.Warning)
 		}
 		d.title, d.result = v.Title, v.Result
-		ctx := m.renderContext(m.threads[r.owner], m.dialogWidth(d)-4, max(1, m.height/2-3), false)
+		ctx := m.renderContext(m.threads[r.owner], m.pane().width, max(1, m.height/2-3), false)
 		d.custom = v.New(ctx)
 		if d.custom == nil {
 			return m.notifyRoute(r, "Custom dialog returned no model", x.Warning)
@@ -158,7 +154,7 @@ func (m *Model) openDialog(r ownerRoute, e x.Effect, budget *int) tea.Cmd {
 func (m *Model) setReviewText(d *dialog, text string) {
 	d.review = true
 	d.output = newOutputViewer(limitText(text, 64<<10))
-	d.output.reflowReview(m.dialogWidth(d) - 4)
+	d.output.reflowReview(m.pane().width)
 }
 
 func (m *Model) pushDialog(d *dialog) tea.Cmd {
@@ -183,7 +179,7 @@ func (m *Model) resizeDialogEditor(d *dialog) {
 	if d.input == nil {
 		return
 	}
-	d.input.area.SetWidth(max(1, m.dialogWidth(d)-6))
+	d.input.area.SetWidth(max(1, m.pane().width-2))
 	height := 1
 	if d.multiline {
 		height = max(1, min(4, m.height/4-1))
@@ -198,7 +194,7 @@ func (m *Model) resizeCustom() tea.Cmd {
 			continue
 		}
 		// Size is an ordinary message scoped to the dialog; it cannot resize the parent.
-		token, w, h := d.token, max(1, m.dialogWidth(d)-4), max(1, m.height/2-3)
+		token, w, h := d.token, max(1, m.pane().width), max(1, m.height/2-3)
 		cmds = append(cmds, func() tea.Msg { return dialogMsg{token, tea.WindowSizeMsg{Width: w, Height: h}} })
 	}
 	return tea.Batch(cmds...)
@@ -648,38 +644,6 @@ func (m *Model) changeDialogQuery(d *dialog, query string) tea.Cmd {
 	return nil
 }
 
-func (m *Model) dialogWidth(d *dialog) int {
-	pane := m.pane()
-	if d.placement == x.Sheet || d.promptDock {
-		return pane.width
-	}
-	if d.git != nil {
-		if d.git.patch {
-			return max(1, m.width)
-		}
-		return min(92, pane.width)
-	}
-	if pane.narrow {
-		return pane.width
-	}
-	if d.palette {
-		return min(60, max(12, m.width-8))
-	}
-	if d.output != nil {
-		return min(128, max(12, m.width-8))
-	}
-	return min(72, max(12, m.width-8))
-}
-func (m *Model) dialogLimit(d *dialog) int {
-	if d.threadPicker != nil {
-		return max(2, min(12, m.height/2))
-	}
-	if d.placement == x.Sheet {
-		return max(2, min(9, m.height/3))
-	}
-	return max(3, min(14, m.height/2-2))
-}
-
 // targets maps every drawn row to its filtered choice, or -1 for chrome.
 func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 	if n <= 0 {
@@ -812,81 +776,6 @@ func (m *Model) dialogRows(d *dialog, w, n int) ([]string, []int) {
 		}
 	}
 	return rows, targets
-}
-
-func (m *Model) overlayFramed(d *dialog, available int) bool {
-	return !d.promptDock && available >= minOverlayFrameRows && m.dialogWidth(d) >= 24
-}
-
-func (m *Model) overlayRows(d *dialog, available int) ([]string, []int) {
-	if available <= 0 {
-		return nil, nil
-	}
-	w := m.dialogWidth(d)
-	if d.planWorkspace != nil {
-		return m.planWorkspaceRows(d, w, min(15, available))
-	}
-	if d.planHistory != nil {
-		return m.planHistoryRows(d, w, min(18, available))
-	}
-	if d.planReview != nil {
-		return m.planReviewRows(d, w, min(18, available))
-	}
-	if d.plan != nil {
-		return m.planRows(d, w, min(18, available))
-	}
-	if !m.overlayFramed(d, available) {
-		// Prefer usable body rows to a border in short or narrow panes.
-		if d.git != nil {
-			return m.gitReviewRows(d, w, available)
-		}
-		if d.workTrust != nil {
-			return m.workspaceTrustRows(d.workTrust, w, available)
-		}
-		if d.output != nil {
-			return m.outputRows(d, w, available)
-		}
-		if d.palette {
-			return m.paletteRows(d, w, available)
-		}
-		if d.themePicker != nil {
-			return m.themeRows(d, w, min(12, available))
-		}
-		return m.dialogRows(d, w, available)
-	}
-	var body []string
-	var choices []int
-	if d.git != nil {
-		height := available - 2
-		if !d.git.patch {
-			height = min(12, height-1) // keep some chat visible behind the popover
-		}
-		body, choices = m.gitReviewRows(d, w-4, height)
-	} else if d.workTrust != nil {
-		body, choices = m.workspaceTrustRows(d.workTrust, w-4, min(14, available-2))
-	} else if d.palette {
-		body, choices = m.paletteRows(d, w-4, min(paletteMaxHeight, available)-2)
-	} else if d.themePicker != nil {
-		body, choices = m.themeRows(d, w-4, min(12, available-2))
-	} else if d.output != nil {
-		body, choices = m.outputRows(d, w-4, available-2)
-	} else {
-		body, choices = m.dialogRows(d, w-4, min(m.dialogLimit(d), available-2))
-	}
-	rows := make([]string, 0, len(body)+2)
-	targets := make([]int, 0, len(body)+2)
-	rows = append(rows, m.paint(x.Muted, "╭"+strings.Repeat("─", w-2)+"╮"))
-	targets = append(targets, -1)
-	edge := m.paint(x.Muted, "│")
-	for i, row := range body {
-		if d.output == nil { // outputRows already fit their body width
-			row = fit(row, w-4)
-		}
-		rows = append(rows, edge+" "+row+" "+edge)
-		targets = append(targets, choices[i])
-	}
-	rows = append(rows, m.paint(x.Muted, "╰"+strings.Repeat("─", w-2)+"╯"))
-	return rows, append(targets, -1)
 }
 
 func threadLabel(id sdk.ID) string {

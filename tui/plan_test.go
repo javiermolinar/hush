@@ -107,9 +107,9 @@ func TestPlanDockUsesInputRuleWithoutMovingDraft(t *testing.T) {
 			t.Helper()
 			assertFrame(t, m)
 			f := m.frame
-			if f.ruleY != rule || f.dialogY+f.dialogHeight != rule || f.dialogFramed {
-				t.Fatalf("width %d: panel [%d,%d) did not dock to input rule %d (now %d); framed=%t",
-					width, f.dialogY, f.dialogY+f.dialogHeight, rule, f.ruleY, f.dialogFramed)
+			if f.ruleY != rule || f.dialogY+f.dialogHeight != rule {
+				t.Fatalf("width %d: panel [%d,%d) did not dock to input rule %d (now %d);",
+					width, f.dialogY, f.dialogY+f.dialogHeight, rule, f.ruleY)
 			}
 			if got := ansi.Strip(strings.Join(f.rows[rule+1:], "\n")); got != prompt {
 				t.Fatalf("width %d: prompt moved or changed:\n%s\nwant\n%s", width, got, prompt)
@@ -413,7 +413,7 @@ func TestRunNamedPlanHerePreservesThreadAndDraftAcrossReceiptRetry(t *testing.T)
 	}}
 	open := func() {
 		p := &planPicker{named: "a-plan"}
-		d := &dialog{route: m.route(m.active, menusID), token: m.token(), plan: p, promptDock: true}
+		d := &dialog{route: m.route(m.active, menusID), token: m.token(), plan: p}
 		m.pushDialog(d)
 		m.receiveNamedPlan(namedPlanMsg{token: d.token, ok: true, update: sdk.PlanUpdate{Snapshot: chatPlanFixtureSnapshot()}})
 		assertFrame(t, m)
@@ -457,7 +457,7 @@ func TestPlanWorkspaceDockAndStatuses(t *testing.T) {
 		{ID: "needs-check", Title: "Track config files", Status: "attention", Revision: 1, Total: 2},
 		{ID: "closed", Title: "Review history", Status: "pending", Revision: 7, Verified: 2, Total: 5, Closed: true},
 	}}
-	d := &dialog{route: m.route(m.active, menusID), token: m.token(), planWorkspace: p, selected: 2, promptDock: true}
+	d := &dialog{route: m.route(m.active, menusID), token: m.token(), planWorkspace: p, selected: 2}
 	m.pushDialog(d)
 	body := ansi.Strip(assertFrame(t, m))
 	for _, want := range []string{"Workspace plans", "Open plans", "Closed plans", "Running", "Needs check", "2/5 · r7", "c reopen", "± 4 files", "keep this draft"} {
@@ -487,7 +487,7 @@ func TestPlanCatalogShowsForeignReadOnlyPlans(t *testing.T) {
 	r := m.route(m.active, menusID)
 	workspace := "/projects/source-checkout"
 	rows := []sdk.PlanSummary{{ID: "foreign", Title: "Other plan", Revision: 1, Total: 1, Status: "pending", Workspace: workspace}}
-	list := &dialog{route: r, token: m.token(), planWorkspace: &planWorkspacePicker{ready: true, rows: rows}, promptDock: true}
+	list := &dialog{route: r, token: m.token(), planWorkspace: &planWorkspacePicker{ready: true, rows: rows}}
 	m.pushDialog(list)
 	frame := ansi.Strip(assertFrame(t, m))
 	for _, want := range []string{"all workspaces", "Other plan", "source-checkout", "↵ preview", "h history"} {
@@ -501,7 +501,7 @@ func TestPlanCatalogShowsForeignReadOnlyPlans(t *testing.T) {
 		}
 	}
 	p := &planPicker{named: "foreign", workspace: workspace}
-	detail := &dialog{route: r, token: m.token(), plan: p, promptDock: true}
+	detail := &dialog{route: r, token: m.token(), plan: p}
 	m.pushDialog(detail)
 	m.receiveNamedPlan(namedPlanMsg{token: detail.token, ok: true, update: sdk.PlanUpdate{Snapshot: sdk.PlanSnapshot{
 		Plan:            &sdk.PlanDefinition{ID: "foreign", Revision: 1, Title: "Other plan", Steps: []sdk.PlanStep{{ID: "read", Title: "Read it"}}},
@@ -565,7 +565,7 @@ func TestPlanWorktreeTrustStartsExactSelectionAndKeepsOriginalDraft(t *testing.T
 		}
 		return "42", nil
 	}}
-	d := &dialog{route: m.route(original, menusID), token: m.token(), promptDock: true, plan: &planPicker{
+	d := &dialog{route: m.route(original, menusID), token: m.token(), plan: &planPicker{
 		named: "a-plan", view: planView{ready: true, snapshot: chatPlanFixtureSnapshot()}, focus: 1,
 	}}
 	m.pushDialog(d)
@@ -628,7 +628,7 @@ func TestPlanWorktreeStartupRetryKeepsExactSourceAndCanLeaveIdle(t *testing.T) {
 		t.Fatal("reviewing instructions or leaving idle must not start the run")
 		return "", nil
 	}}
-	d := &dialog{route: m.route("", menusID), token: m.token(), promptDock: true, plan: &planPicker{
+	d := &dialog{route: m.route("", menusID), token: m.token(), plan: &planPicker{
 		named: "a-plan", view: planView{ready: true, snapshot: chatPlanFixtureSnapshot()}, focus: 1,
 	}}
 	m.pushDialog(d)

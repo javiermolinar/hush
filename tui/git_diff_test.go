@@ -77,8 +77,8 @@ func TestGitDiffReviewFlow(t *testing.T) {
 	}
 	m.View()
 	d := m.focusedDialog()
-	if got := m.frame.dialogY + m.frame.dialogHeight; got != m.frame.transcriptHeight {
-		t.Fatalf("popover not anchored at bottom of transcript: %d != %d", got, m.frame.transcriptHeight)
+	if got := m.frame.dialogY + m.frame.dialogHeight; got != m.frame.ruleY {
+		t.Fatalf("changes list not docked at the input rule: %d != %d", got, m.frame.ruleY)
 	}
 	cmd := press(m, tea.KeyTab, 0)
 	if cmd == nil {
@@ -107,8 +107,8 @@ func TestGitDiffReviewFlow(t *testing.T) {
 			t.Fatalf("missing %q in\n%s", want, body)
 		}
 	}
-	if m.frame.dialogHeight != m.frame.transcriptHeight || strings.Contains(body, "What changed in") {
-		t.Fatal("patch did not cover the transcript")
+	if m.frame.dialogY+m.frame.dialogHeight != m.frame.ruleY || m.frame.dialogHeight > m.height*7/10 {
+		t.Fatal("patch is not docked and capped")
 	}
 	cmd = press(m, 'n', 0)
 	if cmd == nil {

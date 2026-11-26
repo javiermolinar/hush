@@ -1,12 +1,12 @@
-│ Wh╭──────────────────────────────╮
-    │ Loaded context · next submi… │
-  An│ Personal · APPEND_SYSTEM.md  │
-    │   /backend/home/.hush/APPEND │
-  Se│ _SYSTEM.md                   │
-    │ Workspace · AGENTS.md        │
-  ──│   /backend/workspace/AGENTS. │──
-    │ esc close            1–5 / 9 │
-  ──╰──────────────────────────────╯──
+│ What changed in @app/main.go:12?
+  Loaded context · next submission
+  Personal · APPEND_SYSTEM.md
+    /backend/home/.hush/APPEND_SYSTEM.
+  md
+  Workspace · AGENTS.md
+    /backend/workspace/AGENTS.md
+  Workspace · AGENTS.md
+  esc close  ↑↓ scroll         1–6 / 8
   ────────────────────────────────────
   you ›
   dir workspa…

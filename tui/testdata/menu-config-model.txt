@@ -2,15 +2,13 @@
 
 
 
+
+
+
+
+
+
 │ What changed in @app/main.go:12?
-
-  Answer
-
-  See the docs and app/main.go:12.
-
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
   ─ model · default ──────────────────────────────────────────────────────────────
 
   › Type to filter
@@ -19,4 +17,6 @@
     fixture/two  Fixture two
 
   enter use  ctrl+d make default  esc back to settings                    2 models
+  ────────────────────────────────────────────────────────────────────────────────
+  you › keep this draft
   dir workspace

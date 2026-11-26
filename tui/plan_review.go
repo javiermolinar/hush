@@ -51,7 +51,7 @@ func (m *Model) openPlanReview(r ownerRoute, id, title string, revision uint64) 
 	if !m.planAvailable() || !m.menuFeaturesFromBackend.Has(x.PlanReview) || !m.foreground(r) || len(m.overlays) >= maxDialogs {
 		return nil
 	}
-	d := &dialog{route: r, token: m.token(), promptDock: true, planReview: &planReviewPicker{
+	d := &dialog{route: r, token: m.token(), planReview: &planReviewPicker{
 		target: sdk.PlanReviewTarget{ThreadID: r.owner, PlanID: id, Revision: revision}, title: title,
 	}}
 	return tea.Batch(m.pushDialog(d), m.watchPlanReview(d))
@@ -132,7 +132,7 @@ func (m *Model) planReviewKey(d *dialog, chord string) tea.Cmd {
 		}
 	case "up", "down", "pgup", "pgdown", "home":
 		delta := map[string]int{"up": -1, "down": 1, "pgup": -4, "pgdown": 4, "home": -p.offset}[chord]
-		p.offset = min(max(0, p.offset+delta), max(0, len(p.lines(m.dialogWidth(d)))-1))
+		p.offset = min(max(0, p.offset+delta), max(0, len(p.lines(m.pane().width))-1))
 	case "enter":
 		if p.canStart() {
 			return m.sendPlanReview(d, "")

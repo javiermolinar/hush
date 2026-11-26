@@ -51,7 +51,7 @@ func TestOutputWindowCacheUsesSizeAndCurrentRows(t *testing.T) {
 	}
 }
 
-func TestShortOutputViewerClampsAgainstUnframedWidth(t *testing.T) {
+func TestShortOutputViewerClampsAgainstContentWidth(t *testing.T) {
 	m, s := demo(t, Options{Intro: &IntroOptions{}, ReducedMotion: true})
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 	m.ensureThread("2")
@@ -68,8 +68,8 @@ func TestShortOutputViewerClampsAgainstUnframedWidth(t *testing.T) {
 		t.Fatal("viewer did not open")
 	}
 	assertFrame(t, m)
-	if m.frame.dialogFramed || m.frame.dialogWidth == 0 {
-		t.Fatal("fixture did not exercise unframed layout")
+	if m.frame.dialogWidth != m.pane().width {
+		t.Fatal("fixture did not use the dock content width")
 	}
 	m.outputMove(d, 0, d.output.widest)
 	want := d.output.widest - m.frame.dialogWidth
@@ -129,7 +129,7 @@ func TestToolOutputViewerShowsAndCopiesRetainedResult(t *testing.T) {
 	}
 	// Copy through the rendered control, not by calling the viewer directly.
 	f := m.frame
-	cmd := m.mouse(tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft, X: f.dialogX + 2, Y: f.dialogY + f.dialogHeight - 2}))
+	cmd := m.mouse(tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft, X: f.dialogX + 2, Y: f.dialogY + f.dialogHeight - 1}))
 	if cmd == nil {
 		t.Fatal("copy footer has no hit target")
 	}

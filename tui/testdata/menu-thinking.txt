@@ -2,21 +2,21 @@
 
 
 
+
+
+
+
+
+
 │ What changed in @app/main.go:12?
 
   Answer
-
-  See the docs and app/main.go:12.
-
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────────────────
-  you ›
   Thinking level
   › Type to filter
   › off
     low
     high
   enter choose  ↑↓ move  esc close
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
   dir workspace

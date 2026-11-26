@@ -186,7 +186,7 @@ func (m *Model) openUsage(r ownerRoute, t *threadState, budget *int) tea.Cmd {
 		}
 		text += fmt.Sprintf("\n\nCurrent context: %s of %d tokens", used, contextLimit(thread))
 	}
-	d := &dialog{route: r, token: m.token(), budget: budget, title: "Usage details", anchorBottom: true}
+	d := &dialog{route: r, token: m.token(), budget: budget, title: "Usage details"}
 	m.setReviewText(d, text)
 	return m.pushDialog(d)
 }

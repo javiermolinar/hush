@@ -61,7 +61,7 @@ func (m *Model) openPlanWorkspace(r ownerRoute) tea.Cmd {
 	if !m.foreground(r) || (!r.owner.Valid() && !m.draftPlanAvailable()) || len(m.overlays) >= maxDialogs {
 		return nil
 	}
-	d := &dialog{route: r, token: m.token(), promptDock: true, planWorkspace: &planWorkspacePicker{}}
+	d := &dialog{route: r, token: m.token(), planWorkspace: &planWorkspacePicker{}}
 	return tea.Batch(m.pushDialog(d), m.watchPlanWorkspace(d, 0))
 }
 
@@ -373,7 +373,7 @@ func (m *Model) inspectPlan(r ownerRoute, id, workspace string) tea.Cmd {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	d := &dialog{route: r, token: m.token(), promptDock: true, plan: &planPicker{named: id, workspace: workspace, cancel: cancel}}
+	d := &dialog{route: r, token: m.token(), plan: &planPicker{named: id, workspace: workspace, cancel: cancel}}
 	token := d.token
 	return tea.Batch(m.pushDialog(d), func() tea.Msg { return awaitNamedPlan(ctx, token, watch(ctx))() })
 }
@@ -508,7 +508,7 @@ func (m *Model) openPlanHistory(r ownerRoute, id, title string) tea.Cmd {
 	if !m.foreground(r) || len(m.overlays) >= maxDialogs {
 		return nil
 	}
-	d := &dialog{route: r, token: m.token(), promptDock: true, planHistory: &planHistoryPicker{id: id, title: title}}
+	d := &dialog{route: r, token: m.token(), planHistory: &planHistoryPicker{id: id, title: title}}
 	return tea.Batch(m.pushDialog(d), m.loadPlanHistory(d, ""))
 }
 

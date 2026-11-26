@@ -22,7 +22,8 @@ func TestConfirmationRetainsQuestionAndCannotAcceptBeforePaint(t *testing.T) {
 		t.Fatal("confirmation accepted without drawing its question")
 	}
 	for h := 1; h <= 6; h++ {
-		rows, targets := m.overlayRows(d, h)
+		panel := m.menuFrame(d, h)
+		rows, targets := panel.rows, panel.targets
 		canChoose := slices.ContainsFunc(targets, func(target int) bool { return target >= 0 })
 		if len(rows) > h || !strings.Contains(ansi.Strip(strings.Join(rows, "\n")), "Reset the conversation?") || canChoose != (h >= 2) {
 			t.Fatalf("%d-row confirmation misplaced its question or choices: %q, %v", h, rows, targets)
@@ -57,11 +58,32 @@ func TestShortOverlayRetainsUsableRowsOverNoticesAndLists(t *testing.T) {
 	}
 	check()
 	if m.frame.slashStart != m.height {
-		t.Fatal("completion list is competing with the floating overlay")
+		t.Fatal("completion list is competing with the focused panel")
 	}
 	press(m, tea.KeyEscape, 0)
 	m.editor.set("line one\nline two\nline three")
 	m.openDialog(r, x.SelectDialog{Placement: x.Sheet, Title: "Sheet underneath", Choices: []x.Choice{{ID: "1", Label: "First"}}}, &b)
 	m.openPalette(r, &b)
 	check()
+}
+
+func TestGoldenDockPreservesPromptAndOneBackLevel(t *testing.T) {
+	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.editor.set("Keep the draft\nKeep the second line")
+	assertFrame(t, m)
+	rule := m.frame.ruleY
+	prompt := slices.Clone(m.frame.rows[rule+1:])
+	route, budget := m.route(m.active, coreID), maxEffects
+	m.openDialog(route, x.SelectDialog{Placement: x.Sheet, Title: "Parent", Choices: []x.Choice{{ID: "1", Label: "Parent choice"}}}, &budget)
+	parent := m.focusedDialog()
+	m.openDialog(route, x.ConfirmDialog{Title: "Child", Message: "Only the top panel is drawn"}, &budget)
+	golden(t, "menu-dock-nested", m)
+	if m.frame.ruleY != rule || m.frame.dialogY+m.frame.dialogHeight != rule || !slices.Equal(prompt, m.frame.rows[rule+1:]) {
+		t.Fatal("the panel moved or replaced the prompt")
+	}
+	press(m, tea.KeyEscape, 0)
+	if m.focusedDialog() != parent {
+		t.Fatal("Escape did not return to the parent")
+	}
 }

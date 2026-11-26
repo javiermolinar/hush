@@ -1,18 +1,18 @@
-╭──────────────────────────────────────────────────────────────────────────╮
-│ src/auth/session.ts · 1/4 · HEAD                                         │
-│ /work/project/src  ⎇ feature/review                                      │
-│ @@ -41,2 +41,2 @@ refreshSession()                                       │
-│     41     const token = await refresh();                                │
-│     42 −   if (!lock) lock = acquire();                                  │
-│     42 +   const lock = await mutex.take(key);                           │
-│     43 +   // output with ␛[31m and a long path 界界界界界界界界界界界界 │
-│          界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界  │
-│          界界                                                            │
-│                                                                          │
-│                                                                          │
-│                                                                          │
-│ n/p next/previous file  esc back                                         │
-╰──────────────────────────────────────────────────────────────────────────╯
+
+
+
+  src/auth/session.ts · 1/4 · HEAD
+  /work/project/src  ⎇ feature/review
+  @@ -41,2 +41,2 @@ refreshSession()
+      41     const token = await refresh();
+      42 −   if (!lock) lock = acquire();
+      42 +   const lock = await mutex.take(key);
+      43 +   // output with ␛[31m and a long path 界界界界界界界界界界界界
+           界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界
+           界界
+
+
+  n/p next/previous file  esc back
   ◌ Working ────────────────────────────────────────── ± 4 files  +82 −18*
-  you › keep this draft
+  steer › keep this draft
   dir src

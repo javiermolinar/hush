@@ -1,17 +1,15 @@
 
 
 
+
+
+
+
+
+
+
 │ What changed in @app/main.go:12?
 
-  Answer
-
-  See the docs and app/main.go:12.
-
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────────────────
-  you ›
   Switch thread · workspace unverified
   › Workspace, thread, or message
     Workspace unknown
@@ -19,4 +17,6 @@
       ⑂ thread 14  fork of #1
     + New thread
   enter choose  ↑↓ move  esc close
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
   dir workspace

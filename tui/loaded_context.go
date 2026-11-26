@@ -71,7 +71,7 @@ func (m *Model) openLoadedContext(r ownerRoute, budget *int) tea.Cmd {
 
 func (m *Model) setContextOutput(d *dialog, text string) {
 	d.output = newOutputViewer(text)
-	d.output.reflowReview(m.dialogWidth(d) - 4)
+	d.output.reflowReview(m.pane().width)
 }
 
 func (m *Model) contextCanOpenSkills(d *dialog) bool {

@@ -1,18 +1,18 @@
 
 │ What changed in @app/main.go:12?
-    ╭──────────────────────────────────────────────────────╮
-  An│ Confirm                                              │
-    │ This is a layered overlay.                           │
-  Se│ › No                                                 │
-    │   Yes                                                │
-  ──│ enter choose  ↑↓ move  esc close                     │
-    ╰──────────────────────────────────────────────────────╯
-  ────────────────────────────────────────
-  Streaming
+
+  Answer
+
+  See the docs and app/main.go:12.
 
   ── go  copy     ────────────────────────
-    fmt.Print("Hello")
+    func main() { println(42) }
   ────────────────────────────────────────
+  Confirm
+  This is a layered overlay.
+  › No
+    Yes
+  enter choose  ↑↓ move  esc close
   ◌ Running go test ./... ────────────────────────────────────
-  you ›
+  steer ›
   dir workspace

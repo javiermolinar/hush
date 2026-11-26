@@ -11,8 +11,6 @@ import (
 	x "github.com/javiermolinar/hush/tui/extension"
 )
 
-const paletteMaxHeight = 20 // includes the border
-
 type paletteGroup uint8
 
 const (
@@ -310,16 +308,14 @@ func (m *Model) paletteActionRow(c x.Choice, selected bool, width int) string {
 	return fit(m.paint(tone, name), width-keyWidth) + m.control(key)
 }
 
-func (m *Model) paletteCursor(d *dialog, left, top, width, height int, framed bool) *tea.Cursor {
-	if framed {
-		left, top, width, height = left+2, top+1, width-4, height-2
-	}
+func (m *Model) paletteCursor(d *dialog, width, height int) *tea.Cursor {
 	if height < 2 {
 		return nil
 	}
 	_, x := m.paletteInput(d.query, width)
+	y := 0
 	if height >= 3 { // title present
-		top++
+		y++
 	}
-	return tea.NewCursor(left+x, top)
+	return tea.NewCursor(x, y)
 }

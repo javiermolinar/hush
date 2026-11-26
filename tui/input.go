@@ -331,7 +331,7 @@ func (m *Model) resizeEditors() tea.Cmd {
 	for _, d := range m.overlays {
 		m.resizeDialogEditor(d)
 		if d.review || d.loadedContext != nil {
-			d.output.reflowReview(m.dialogWidth(d) - 4)
+			d.output.reflowReview(m.pane().width)
 		}
 	}
 	return nil

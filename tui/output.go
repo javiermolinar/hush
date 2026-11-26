@@ -237,15 +237,11 @@ func outputPage(body int) int {
 }
 
 func (m *Model) outputSize(d *dialog) (int, int) {
-	w := m.dialogWidth(d)
+	w := m.pane().width
 	if !m.currentFrame() || m.frame.dialogToken != d.token {
 		return w, 1
 	}
-	room := m.frame.transcriptHeight
-	if m.frame.dialogFramed {
-		return w - 4, outputPage(room - 2)
-	}
-	return w, outputPage(room)
+	return w, outputPage(m.frame.dialogHeight)
 }
 
 func (m *Model) outputMove(d *dialog, rows, cols int) {

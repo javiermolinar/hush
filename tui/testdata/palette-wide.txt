@@ -1,29 +1,29 @@
 
 
-                  ╭──────────────────────────────────────────────────────────╮
-                  │ Commands ─────────────────────────────────────────────── │
-                  │ › Type to filter                                         │
-                  │                                                          │
-                  │ Thread                                                   │
-                  │ › Switch threads                                ctrl+x s │
-                  │   New thread                                    ctrl+x n │
-                  │   Usage details                               ctrl+x i u │
-                  │   Browse all workspaces                   ctrl+x shift+s │
-                  │   Fork history                                    ctrl+f │
-                  │   Select thinking level                        shift+tab │
-                  │   Compact the context                           ctrl+x j │
-                  │   Reset the context                             ctrl+x z │
-                  │   Close tab                                       ctrl+w │
-                  │   Previous tab                                  ctrl+x [ │
-│ What changed in │ Prompt                                                   │
-                  │   Edit prompt                                   ctrl+x e │
-  Answer          │                                                          │
-                  │ enter run  ↑↓ move  esc close                  1–11 / 22 │
-  See the docs and╰──────────────────────────────────────────────────────────╯
 
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
+
+
+
+  Commands ───────────────────────────────────────────────────────────────────────────────────
+  › Type to filter
+
+  Thread
+  › Switch threads                                                                    ctrl+x s
+    New thread                                                                        ctrl+x n
+    Usage details                                                                   ctrl+x i u
+    Browse all workspaces                                                       ctrl+x shift+s
+    Fork history                                                                        ctrl+f
+    Select thinking level                                                            shift+tab
+    Compact the context                                                               ctrl+x j
+    Reset the context                                                                 ctrl+x z
+    Close tab                                                                           ctrl+w
+    Previous tab                                                                      ctrl+x [
+  Prompt
+    Edit prompt                                                                       ctrl+x e
+    Recall queued messages                                                              alt+up
+    Insert a newline                                                      shift+enter / ctrl+j
+
+  enter run  ↑↓ move  esc close                                                      1–13 / 22
   ────────────────────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

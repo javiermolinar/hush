@@ -88,7 +88,7 @@ func TestPaletteGoldens(t *testing.T) {
 	if m.View().Cursor == nil {
 		t.Fatal("palette search has no cursor")
 	}
-	y := m.frame.dialogY
+	rule := m.frame.ruleY
 	if c, ok := d.choice(); !ok || c.ID != string(switcherID) {
 		t.Fatal("the first action must not close the current tab")
 	}
@@ -99,8 +99,8 @@ func TestPaletteGoldens(t *testing.T) {
 		t.Fatalf("slash alias didn't resolve to Copy last answer: %+v", c)
 	}
 	golden(t, "palette-filter", m)
-	if m.frame.dialogY != y {
-		t.Fatal("typing moved the palette title")
+	if m.frame.dialogY+m.frame.dialogHeight != rule || m.frame.ruleY != rule {
+		t.Fatal("filter moved the input rule or undocked the palette")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
 	d.query = ""

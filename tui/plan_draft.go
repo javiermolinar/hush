@@ -116,7 +116,7 @@ func (m *Model) inspectPlanPreview(r ownerRoute, id sdk.ID) tea.Cmd {
 	}
 	_, body, _ := strings.Cut(msgs[0].Blocks[0].Text, "\n")
 	d := &dialog{route: r, token: m.token(), title: "Plan preview", output: newOutputViewer(body), review: true}
-	d.output.reflowReview(m.dialogWidth(d) - 4)
+	d.output.reflowReview(m.pane().width)
 	return m.pushDialog(d)
 }
 

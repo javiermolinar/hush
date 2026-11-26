@@ -84,8 +84,8 @@ func TestFooterUsageDetails(t *testing.T) {
 			t.Fatalf("missing %q:\n%s", want, frame)
 		}
 	}
-	if got := m.frame.dialogY + m.frame.dialogHeight; got != m.frame.transcriptHeight {
-		t.Fatalf("usage popover bottom = %d, want transcript bottom %d", got, m.frame.transcriptHeight)
+	if got := m.frame.dialogY + m.frame.dialogHeight; got != m.frame.ruleY {
+		t.Fatalf("usage panel bottom = %d, want input rule %d", got, m.frame.ruleY)
 	}
 	press(m, tea.KeyEscape, 0)
 	if m.focusedDialog() != nil {
@@ -309,8 +309,8 @@ func TestPinnedFooterOutlivesIntro(t *testing.T) {
 	m.openDialog(m.route(m.active, coreID), x.SelectDialog{Title: "Select", Placement: x.Sheet,
 		Choices: []x.Choice{{ID: "one", Label: "First"}}}, &budget)
 	status("hush", "gpt-6.2-sol", "ctx 38%")
-	if m.frame.dialogY+m.frame.dialogHeight != m.height-1 {
-		t.Fatal("sheet overlays the metadata footer")
+	if m.frame.dialogY+m.frame.dialogHeight != m.frame.ruleY {
+		t.Fatal("sheet is not docked to the input rule")
 	}
 	m.switchThread("2")
 	if lease.ctx.Err() == nil || m.reportFeed.token == lease.token {

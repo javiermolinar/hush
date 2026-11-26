@@ -1,12 +1,12 @@
-│ Wh╭──────────────────────────────╮
-    │ Commands ─────────────────── │
-  An│ › Type to filter             │
-    │                              │
-  Se│ App                          │
-    │   Quit              ctrl+x d │
-  ──│ › Themes          ctrl+x i h │──
-    │ enter run  ↑↓  …  21–22 / 22 │
-  ──╰──────────────────────────────╯──
+│ What changed in @app/main.go:12?
+
+  Commands ───────────────────────────
+  › Type to filter
+
+  App
+    Quit                      ctrl+x d
+  › Themes                  ctrl+x i h
+  enter run  ↑↓  esc        21–22 / 22
   ────────────────────────────────────
   you ›
   dir workspa…

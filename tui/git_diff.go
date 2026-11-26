@@ -288,7 +288,7 @@ func (m *Model) openGitDiff(r ownerRoute) tea.Cmd {
 		return nil
 	}
 	state := m.threads[r.owner].gitDiff
-	d := &dialog{token: m.token(), route: r, anchorBottom: true, git: &gitReview{rangeName: sdk.GitDiffHead, list: state.summary, err: state.err}}
+	d := &dialog{token: m.token(), route: r, git: &gitReview{rangeName: sdk.GitDiffHead, list: state.summary, err: state.err}}
 	open := m.pushDialog(d)
 	if m.focusedDialog() != d {
 		return open
@@ -460,9 +460,6 @@ func (m *Model) scrollGitDiff(d *dialog, delta int) {
 	}
 	if v := d.git.view; v != nil && m.dialogVisible(d) {
 		w := m.frame.dialogWidth
-		if m.frame.dialogFramed {
-			w -= 4
-		}
 		v.move(w, delta)
 	}
 }

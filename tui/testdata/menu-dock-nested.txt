@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+│ What changed in @app/main.go:12?
+
+  Answer
+
+  Child
+  Only the top panel is drawn
+  › No
+    Yes
+  enter choose  ↑↓ move  esc close
+  ────────────────────────────────────────────────────────────────────────────
+  you › Keep the draft
+        Keep the second line
+  dir workspace

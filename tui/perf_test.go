@@ -275,7 +275,7 @@ func TestFrameBudget(t *testing.T) {
 					rows[i] = sdk.PlanSummary{ID: fmt.Sprint(i), Title: "Refresh saved workspace preferences", Revision: 3,
 						Verified: i % 5, Total: 5, Status: "pending", Closed: i >= 36}
 				}
-				m.pushDialog(&dialog{route: m.route(m.active, menusID), token: m.token(), promptDock: true,
+				m.pushDialog(&dialog{route: m.route(m.active, menusID), token: m.token(),
 					planWorkspace: &planWorkspacePicker{ready: true, rows: rows, more: true}})
 			}
 			if which == "plan-review" {
@@ -284,7 +284,7 @@ func TestFrameBudget(t *testing.T) {
 					findings[i] = sdk.PlanReviewFinding{Severity: "blocking", Area: "acceptance", StepID: fmt.Sprint(i),
 						Message: strings.Repeat("Make the acceptance check explicit. ", 10)}
 				}
-				m.pushDialog(&dialog{route: m.route(m.active, menusID), token: m.token(), promptDock: true,
+				m.pushDialog(&dialog{route: m.route(m.active, menusID), token: m.token(),
 					planReview: &planReviewPicker{ready: true, title: "Refresh workspace preferences", target: sdk.PlanReviewTarget{Revision: 3},
 						view: sdk.PlanReviewView{Revision: 3, HeadRevision: 3, Review: &sdk.PlanReviewRecord{State: "complete", ReviewerThreadID: "24",
 							Report: &sdk.PlanReviewReport{Summary: "Acceptance is not fully specified.", Findings: findings}}}}})

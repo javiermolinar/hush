@@ -3,20 +3,20 @@
 
 
 
+
+
+
+
+
 │ What changed in @app/main.go:12?
 
   Answer
 
-  See the docs and app/main.go:12.
-
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────────────────
-  you ›
   Compact context?
   The backend will summarize the current context.
   › No
     Yes
   enter choose  ↑↓ move  esc close
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
   dir workspace

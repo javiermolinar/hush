@@ -3,20 +3,20 @@
 
 
 
+
+
+
+
+
 │ What changed in @app/main.go:12?
 
   Answer
 
-  See the docs and app/main.go:12.
-
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────────────────
-  you ›
   Archive thread?
   Hide the thread without deleting its history or files.
   › No
     Yes
   enter choose  ↑↓ move  esc close
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
   dir workspace

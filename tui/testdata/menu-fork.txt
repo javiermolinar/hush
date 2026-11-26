@@ -3,20 +3,20 @@
 
 
 
+
+
+
+
+
 │ What changed in @app/main.go:12?
 
   Answer
 
-  See the docs and app/main.go:12.
-
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
-  ────────────────────────────────────────────────────────────────────────────
-  you ›
   Fork transcript at an entry · files unchanged
   › Type to filter
   › 2 · Done  transcript fork
     1 · Open the fixture  transcript fork
   enter choose  ↑↓ move  esc close
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
   dir workspace

@@ -28,7 +28,6 @@ type frameMemo struct {
 	dialogPlanRev                               string
 	dialogPlanSelectionRev                      uint64
 	dialogX, dialogY, dialogWidth, dialogHeight int
-	dialogFramed                                bool
 	dialogChoices                               []int
 	slashStart, slashEnd                        int
 	hasHover                                    bool
@@ -98,48 +97,20 @@ func (m *Model) View() tea.View {
 	w := pane.width
 	var slash []registeredAction
 	var below []displayRow
-	var dockTargets []int
-	var dockCursor *tea.Cursor
 	f.slashStart, f.slashEnd = m.height, m.height
 	continuation, filePicker := false, false
 	var fileChoices int
-	configDock := m.sheet != nil && m.sheet.config != nil
 	var chrome []displayRow
 	if !pane.short {
 		chrome = m.chromeRows(t, w)
 	}
 	listEnd := m.height - len(chrome)
-	// Size lists against the maximum editor height so moving or typing in a
-	// visible list never steals a row from the prompt. At the minimum height,
-	// a focused sheet can use the one transcript row.
-	space := listEnd - 1 - pane.editorRows
-	listBudget := max(1, space-1)
-	var overlayRoom int
-	if d := m.focusedDialog(); d != nil && !d.promptDock && d != m.sheet {
-		if configDock {
-			overlayRoom = min(minOverlayBodyRows, listEnd-1)
-		} else {
-			overlayRoom = min(minOverlayBodyRows, space)
-		}
-		listBudget = max(0, space-overlayRoom)
-	}
-	if configDock {
-		limit := min(12, max(6, m.height-4), listEnd-max(1, overlayRoom))
-		rows, targets, cursor := m.configDockRows(m.sheet, w, limit)
-		for _, row := range rows {
-			below = append(below, displayRow{text: row})
-		}
-		dockTargets, dockCursor = targets, cursor
-	} else if m.sheet != nil {
-		rows, choices := m.dialogRows(m.sheet, w, min(m.dialogLimit(m.sheet), listBudget))
-		for _, row := range rows {
-			below = append(below, displayRow{text: row})
-		}
-		f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, pane.edge, w
-		f.dialogY, f.dialogHeight = listEnd-len(rows), len(rows)
-		f.dialogChoices = choices
-	} else if len(m.overlays) != 0 {
-		continuation = true // an overlay owns focus; hide background completion lists
+	// Size completions against the maximum editor height. A completion can
+	// use the one transcript row on a minimum-height terminal.
+	listBudget := max(1, listEnd-2-pane.editorRows)
+	d := m.focusedDialog()
+	if d != nil {
+		continuation = true // hide background completion lists
 	} else if files, n := m.fileRows(w, listBudget); len(files) > 0 {
 		below, filePicker, fileChoices = files, true, n
 	} else if slash = m.slashMatches(); len(slash) > 0 {
@@ -149,21 +120,16 @@ func (m *Model) View() tea.View {
 		continuation = true
 	}
 	below = append(below, chrome...)
-
 	editorRows, cursor := m.promptRows(t, pane, slash)
-	fixedRows := 1
-	if configDock {
-		editorRows, cursor = nil, dockCursor
-		fixedRows = 0
-	}
+	const fixedRows = 1 // live rule
 	var notice displayRow
 	free := m.height - fixedRows - len(editorRows) - len(below)
 	var attachments []displayRow
-	if d := m.focusedDialog(); free > overlayRoom+1 && (d == nil || d.promptDock) && (t.attaching || len(t.attachments) != 0) {
+	if free > 1 && (t.attaching || len(t.attachments) != 0) {
 		attachments = []displayRow{m.attachmentRow(t, w)}
 		free--
 	}
-	if free > max(1, overlayRoom) && m.notice.text != "" {
+	if free > 1 && m.notice.text != "" {
 		notice.text = m.paint(m.notice.tone, ansi.Truncate(oneLine(m.notice.text), w, "…"))
 		free--
 	}
@@ -171,7 +137,7 @@ func (m *Model) View() tea.View {
 	if notice.text != "" {
 		noticeRows = 1
 	}
-	room := max(0, free-max(1, overlayRoom))
+	room := max(0, free-1)
 	queued := m.queueRows(t, w, room)
 	room -= len(queued)
 	widgetAbove := m.widgetRows(t, w, x.AboveEditor, min(3, room))
@@ -291,7 +257,7 @@ func (m *Model) View() tea.View {
 			continue
 		}
 		add(y, row.displayRow)
-		if len(m.overlays) == 0 && row.image != nil && len(f.imageWants) < previewCacheSize {
+		if d == nil && row.image != nil && len(f.imageWants) < previewCacheSize {
 			found := false
 			for _, want := range f.imageWants {
 				found = found || want.ref == row.image.ref
@@ -332,36 +298,23 @@ func (m *Model) View() tea.View {
 			paused = "output below"
 		}
 	}
-	if !configDock {
-		f.ruleY = y
-		var hints []string
-		if !pane.short {
-			hints = m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)
-		}
-		add(y, m.promptRule(t, w, paused, hints))
-		y++
-		if cursor != nil && m.focused {
-			cursor.Position.X += pane.edge
-			cursor.Position.Y += y
-			v.Cursor = cursor
-		}
-		for _, row := range editorRows {
-			add(y, row)
-			y++
-		}
+	f.ruleY = y
+	var hints []string
+	if !pane.short {
+		hints = m.ruleHints(t, len(slash) > 0, filePicker, fileChoices)
 	}
-	for i, row := range below {
-		if configDock && i == 0 {
-			f.ruleY = y
-			f.dialogToken, f.dialogX, f.dialogWidth = m.sheet.token, pane.edge, w
-			f.dialogY, f.dialogHeight = y, len(dockTargets)
-			f.dialogChoices = dockTargets
-			if cursor != nil && m.focused && m.focusedDialog() == m.sheet {
-				cursor.Position.X += pane.edge
-				cursor.Position.Y += y
-				v.Cursor = cursor
-			}
-		}
+	add(y, m.promptRule(t, w, paused, hints))
+	y++
+	if cursor != nil && m.focused {
+		cursor.Position.X += pane.edge
+		cursor.Position.Y += y
+		v.Cursor = cursor
+	}
+	for _, row := range editorRows {
+		add(y, row)
+		y++
+	}
+	for _, row := range below {
 		add(y, row)
 		y++
 	}
@@ -376,63 +329,27 @@ func (m *Model) View() tea.View {
 			}
 		}
 	}
-	for i, d := range m.overlays {
-		if i < len(m.overlays)-1 && d.promptDock && m.overlays[len(m.overlays)-1].promptDock {
-			continue // one docked panel at a time
-		}
-		bottom := f.transcriptHeight
-		if d.promptDock {
-			// Overlay the rows immediately above the rule; do not reserve input rows.
-			bottom = f.ruleY
-		}
-		rows, choices := m.overlayRows(d, bottom)
-		framed := m.overlayFramed(d, bottom)
-		width := m.dialogWidth(d)
-		left := max(0, (m.width-width)/2)
-		space := max(0, bottom-len(rows))
-		anchorSpace := space
-		if d.palette {
-			anchorSpace = max(0, f.transcriptHeight-paletteMaxHeight)
-		}
-		top := min(space, anchorSpace/3+2*i)
-		if d.promptDock || d.anchorBottom {
-			top = space
-		}
-		for j, row := range rows {
+	if d != nil {
+		panel := m.menuFrame(d, f.ruleY)
+		top := f.ruleY - len(panel.rows)
+		for j, row := range panel.rows {
 			y := top + j
-			f.hits[y] = nil // the overlay owns this row
-			if d.promptDock {
-				// Don't leave transcript bars behind the edge of the panel.
-				f.rows[y] = padding[:left] + fit(row, width) + padding[left+width:]
-				continue
-			}
-			if !framed && d.output == nil {
-				row = fit(row, width)
-			}
-			if f.rows[y] == "" {
-				f.rows[y] = padding[:left] + row + padding[left+width:]
-				continue
-			}
-			base := fit(f.rows[y], m.width)
-			f.rows[y] = ansi.Cut(base, 0, left) + row + ansi.Cut(base, left+width, m.width)
+			f.rows[y] = margin + fit(row, w) + margin
+			f.hits[y] = nil // the focused panel owns this row
 		}
-		if i == len(m.overlays)-1 {
-			f.dialogToken, f.dialogX, f.dialogY = d.token, left, top
-			f.dialogWidth, f.dialogHeight = width, len(rows)
-			f.dialogFramed = framed
-			f.dialogChoices = choices
-			if d.plan != nil {
-				f.dialogPlanRev = m.planViewFor(d).snapshot.Revision
-				f.dialogPlanSelectionRev = d.plan.selectionRev
-			}
-			if d.git != nil {
-				v.Cursor = nil
-			}
-			if d.palette && m.focused {
-				v.Cursor = m.paletteCursor(d, left, top, width, len(rows), f.dialogFramed)
-			}
+		f.dialogToken, f.dialogX, f.dialogY = d.token, pane.edge, top
+		f.dialogWidth, f.dialogHeight, f.dialogChoices = w, len(panel.rows), panel.targets
+		if d.plan != nil {
+			f.dialogPlanRev = m.planViewFor(d).snapshot.Revision
+			f.dialogPlanSelectionRev = d.plan.selectionRev
+		}
+		if panel.cursor != nil && m.focused {
+			panel.cursor.Position.X += pane.edge
+			panel.cursor.Position.Y += top
+			v.Cursor = panel.cursor
 		}
 	}
+
 	if v.Cursor != nil {
 		// Let the terminal blink the block without waking the render loop.
 		v.Cursor.Shape = tea.CursorBlock
@@ -535,7 +452,7 @@ func (m *Model) promptRows(t *threadState, pane paneLayout, slash []registeredAc
 	if intro {
 		label = "main › "
 	}
-	if d := m.focusedDialog(); threadBusy(t) && (d == nil || d.promptDock) && len(slash) == 0 {
+	if threadBusy(t) && len(slash) == 0 {
 		label = "steer › "
 	}
 	if pane.narrow {
@@ -809,8 +726,7 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 	event := msg.(tea.MouseMsg)
 	p := event.Mouse()
 	f := m.frame
-	// Switching tabs dismisses an under-prompt sheet, but a modal overlay
-	// must consume the click without letting it through to the footer.
+	// Preserve tab switching through sheets. Stacked dialogs own all clicks.
 	if _, click := msg.(tea.MouseClickMsg); click && p.Button == tea.MouseLeft && len(m.overlays) == 0 && p.Y >= f.transcriptHeight {
 		if hit, ok := m.hitAt(p.X, p.Y); ok && hit.action.ID == activateTabID {
 			if id := sdk.ID(hit.action.Target); id.Valid() {
@@ -847,9 +763,6 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 						if d.plan != nil {
 							v := m.planViewFor(d)
 							left, width := f.dialogX, f.dialogWidth
-							if f.dialogFramed {
-								left, width = left+2, width-4
-							}
 							if v.snapshot.Plan != nil && f.dialogPlanRev == v.snapshot.Revision && target < len(v.snapshot.Plan.Steps) &&
 								p.X >= left && p.X < left+planListWidth(width) {
 								d.plan.focus, d.plan.details, d.plan.scroll = target, false, 0
@@ -892,18 +805,12 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 					}
 					if target == outputSkillsTarget && d.loadedContext != nil {
 						left := f.dialogX
-						if f.dialogFramed {
-							left += 2
-						}
 						if p.X >= left && p.X < left+stringWidth(m.contextSkillsHint()) {
 							return m.openContextSkills(d)
 						}
 					}
 					if target == outputCopyTarget && d.output != nil {
 						left := f.dialogX
-						if f.dialogFramed {
-							left += 2
-						}
 						if p.X >= left && p.X < left+stringWidth(m.outputCopyHint()) {
 							return m.copyToolOutput(d)
 						}
@@ -949,9 +856,6 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 		}
 		if inside && d.custom != nil {
 			x, y := f.dialogX, f.dialogY+1 // skip the title row
-			if f.dialogFramed {
-				x, y = x+2, y+1
-			}
 			return m.customUpdate(d, relativeMouse(event, x, y))
 		}
 		return nil
