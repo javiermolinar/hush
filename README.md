@@ -96,8 +96,20 @@ personal roots and trusted workspaces. Use `/skills` to stage one without submit
 
 ## TUI themes
 
-Hush uses the terminal palette by default. Open `?` → **Themes** → **Copy starter JSON**,
-paste it into `~/.hush/themes/<name>.json`, and edit it in your editor. For example:
+Hush uses the terminal palette by default. Open `/theme` (or `?` → **Themes**) and use ↑/↓ or
+click a row to preview it. The sample shows the active accent, link, status, and syntax colors.
+Press Enter to apply and save locally, or Esc to restore the previous theme without saving.
+
+Built-in choices are `panther`, `gruvbox-dark`, `keanu`, `rose-pine`, `rose-pine-moon`,
+`rose-pine-dawn`, and `kitt`. Dawn is intended for a light terminal; the other presets are
+intended for a dark terminal. Gruvbox and Rosé Pine use foreground adaptations of the MIT-licensed
+[Gruvbox palette](https://github.com/ellisonleao/gruvbox.nvim) and
+[Rosé Pine palette](https://github.com/rose-pine/rose-pine-palette)
+([notices](app/redistribution/THIRD_PARTY_NOTICES/INDEX.tsv)). Panther, Keanu, and KITT are Hush
+interpretations of the palettes previewed in Crush.
+
+For a custom theme, choose **Copy starter JSON** in `/theme`, paste it into
+`~/.hush/themes/<name>.json`, and edit it. For example:
 
 ```json
 {"version":1,"base":"terminal","colors":{"accent":"#8b9df5","syntax_keyword":"#c69af7"}}
@@ -108,9 +120,9 @@ or digit). The starter lists every supported foreground role. Remove any role to
 the terminal default. The client rejects unknown roles, non-hex colors, and settings other
 than `version`, `base`, and `colors`.
 
-Reopen **Themes** to load the file. Use ↑/↓ to preview, Enter to save the choice locally,
-or Esc to restore the previous theme without saving. `hush --theme NAME` overrides the saved
-choice for that launch; `hush --theme terminal` always uses the terminal palette. If the
+Reopen `/theme` to load the file. A local JSON file takes precedence over a built-in theme
+of the same name; `terminal` is reserved. `hush --theme NAME` overrides the saved choice for
+that launch; `hush --theme terminal` always uses the terminal palette. If the
 override is invalid, Hush reports the error and keeps the saved choice if it is valid.
 The terminal still owns the background; custom RGB needs truecolor and a
 reported background with sufficient contrast. `NO_COLOR` suppresses custom colors and fills.

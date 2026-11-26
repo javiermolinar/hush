@@ -184,6 +184,32 @@ func readNamedTheme(dir *os.Root, name string) (namedTheme, error) {
 	return namedTheme{}, fmt.Errorf("%s: %w", path, err)
 }
 
+// Local files keep precedence, including validation errors for an existing
+// file. Only a missing file can fall back to a preset of the same name.
+func readThemeChoice(dir *os.Root, name string) (namedTheme, error) {
+	chosen, err := readNamedTheme(dir, name)
+	if errors.Is(err, fs.ErrNotExist) {
+		if preset, ok := presetTheme(name); ok {
+			return preset, nil
+		}
+	}
+	return chosen, err
+}
+
+func resolveTheme(agent *os.Root, name string) (namedTheme, error) {
+	themes, err := openThemeDir(agent, "themes")
+	if errors.Is(err, fs.ErrNotExist) {
+		if preset, ok := presetTheme(name); ok {
+			return preset, nil
+		}
+	}
+	if err != nil {
+		return namedTheme{}, fmt.Errorf("open ~/.hush/themes for %q: %w", name, err)
+	}
+	defer themes.Close()
+	return readThemeChoice(themes, name)
+}
+
 func (s themeStore) load(override string) (namedTheme, error) {
 	fallback := namedTheme{name: terminalTheme}
 	if override != "" && !validThemeName(override) {
@@ -193,8 +219,13 @@ func (s themeStore) load(override string) (namedTheme, error) {
 		return fallback, nil
 	}
 	agent, err := s.agent(false)
-	if errors.Is(err, fs.ErrNotExist) && override == "" {
-		return fallback, nil
+	if errors.Is(err, fs.ErrNotExist) {
+		if override == "" {
+			return fallback, nil
+		}
+		if preset, ok := presetTheme(override); ok {
+			return preset, nil
+		}
 	}
 	if err != nil {
 		return fallback, fmt.Errorf("open ~/.hush: %w", err)
@@ -217,12 +248,7 @@ func (s themeStore) load(override string) (namedTheme, error) {
 			return fallback, errors.New("~/.hush/theme: expected one valid theme name")
 		}
 	}
-	themes, err := openThemeDir(agent, "themes")
-	if err != nil {
-		return fallback, fmt.Errorf("open ~/.hush/themes for %q: %w", name, err)
-	}
-	defer themes.Close()
-	chosen, err := readNamedTheme(themes, name)
+	chosen, err := resolveTheme(agent, name)
 	if err != nil {
 		return fallback, err
 	}
@@ -249,7 +275,7 @@ type themeBook struct {
 }
 
 func (s themeStore) list(ctx context.Context) themeBook {
-	book := themeBook{choices: []namedTheme{{name: terminalTheme}}}
+	book := themeBook{choices: append([]namedTheme{{name: terminalTheme}}, presetThemes[:]...)}
 	agent, err := s.agent(false)
 	if errors.Is(err, fs.ErrNotExist) {
 		return book
@@ -268,6 +294,19 @@ func (s themeStore) list(ctx context.Context) themeBook {
 		return book
 	}
 	defer dir.Close()
+	// Resolve preset names directly, even if an override would be outside
+	// the bounded directory scan. Each effective name appears only once.
+	book.choices = book.choices[:1]
+	for _, preset := range presetThemes {
+		theme, err := readThemeChoice(dir, preset.name)
+		if err != nil {
+			if book.problem == "" {
+				book.problem = err.Error()
+			}
+			continue
+		}
+		book.choices = append(book.choices, theme)
+	}
 	f, err := dir.Open(".")
 	if err != nil {
 		book.problem = "List ~/.hush/themes: " + err.Error()
@@ -284,6 +323,7 @@ func (s themeStore) list(ctx context.Context) themeBook {
 		book.problem = "Showing up to 512 entries in ~/.hush/themes"
 		files = files[:maxScanned]
 	}
+	count := 0
 	for _, file := range files {
 		if ctx.Err() != nil {
 			break
@@ -292,6 +332,9 @@ func (s themeStore) list(ctx context.Context) themeBook {
 		if !ok || !validThemeName(name) || name == terminalTheme {
 			continue
 		}
+		if _, preset := presetTheme(name); preset {
+			continue // resolved above
+		}
 		t, err := readNamedTheme(dir, name)
 		if err != nil {
 			if book.problem == "" {
@@ -299,11 +342,12 @@ func (s themeStore) list(ctx context.Context) themeBook {
 			}
 			continue
 		}
-		book.choices = append(book.choices, t)
-		if len(book.choices) > maxThemeCount {
-			book.problem = "Showing up to 64 themes in ~/.hush/themes"
+		if count == maxThemeCount {
+			book.problem = "Showing up to 64 additional themes in ~/.hush/themes"
 			break
 		}
+		book.choices = append(book.choices, t)
+		count++
 	}
 	return book
 }
@@ -324,12 +368,7 @@ func (s themeStore) save(ctx context.Context, chosen namedTheme) error {
 	// Don't publish a broken choice if the theme changed on disk while
 	// previewing. The palette in memory remains the last usable one.
 	if name != terminalTheme {
-		dir, err := openThemeDir(agent, "themes")
-		if err != nil {
-			return fmt.Errorf("open ~/.hush/themes: %w", err)
-		}
-		onDisk, err := readNamedTheme(dir, name)
-		dir.Close()
+		onDisk, err := resolveTheme(agent, name)
 		if err != nil {
 			return err
 		}

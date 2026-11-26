@@ -150,6 +150,79 @@ func TestThemePickerPreviewCancelAndSave(t *testing.T) {
 	}
 }
 
+func TestThemeSlashPreviewsAndAppliesPreset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("NO_COLOR", "")
+	m := modelFor(t, Options{Fills: FillOff, ReducedMotion: true})
+	darkThemeTerminal(m)
+	m.Update(tea.WindowSizeMsg{Width: 96, Height: 24})
+	open := func() *dialog {
+		t.Helper()
+		m.editor.set("/the")
+		if body := ansi.Strip(assertFrame(t, m)); !strings.Contains(body, "/theme") {
+			t.Fatalf("theme not in slash completion:\n%s", body)
+		}
+		press(m, tea.KeyTab, 0)
+		if m.editor.value() != "/theme " {
+			t.Fatalf("theme didn't complete: %q", m.editor.value())
+		}
+		cmd := press(m, tea.KeyEnter, 0)
+		d := m.focusedDialog()
+		if d == nil || d.themePicker == nil || !d.themePicker.loading || m.editor.value() != "" {
+			t.Fatal("/theme did not open its picker from the startup prompt")
+		}
+		finishThemeWork(t, m, cmd)
+		assertFrame(t, m)
+		return d
+	}
+	assertNotSaved := func() {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(home, ".hush", "theme")); !os.IsNotExist(err) {
+			t.Fatalf("preview wrote the preference: %v", err)
+		}
+	}
+	d := open()
+	chooseThemeForTest(t, m, d, "gruvbox-dark")
+	body := assertFrame(t, m)
+	if m.themes.active.name != "gruvbox-dark" || !strings.Contains(body, "\x1b[38;2;250;189;47mAccent") ||
+		!strings.Contains(ansi.Strip(body), "enter apply") {
+		t.Fatalf("missing live preset preview or apply hint:\n%s", ansi.Strip(body))
+	}
+	assertNotSaved()
+	press(m, tea.KeyEscape, 0)
+	if m.themes.active.name != terminalTheme || m.focusedDialog() != nil {
+		t.Fatal("Esc did not cancel the preset preview")
+	}
+	assertNotSaved()
+	d = open()
+	f := m.frame
+	row := slices.Index(f.dialogChoices, slices.IndexFunc(d.choices, func(c x.Choice) bool { return c.ID == "rose-pine" }))
+	if row < 0 {
+		t.Fatal("expected a visible Rosé Pine choice to click")
+	}
+	m.Update(tea.MouseClickMsg(tea.Mouse{X: f.dialogX + 3, Y: f.dialogY + row, Button: tea.MouseLeft}))
+	if m.themes.active.name != "rose-pine" || d.themePicker.saving {
+		t.Fatal("click must preview without applying")
+	}
+	assertNotSaved()
+	cmd := press(m, tea.KeyEnter, 0)
+	if cmd == nil {
+		t.Fatal("Enter didn't schedule apply")
+	}
+	assertNotSaved()
+	saved, ok := cmd().(themeSaved)
+	if !ok || saved.err != nil {
+		t.Fatalf("preset apply failed: %+v", saved)
+	}
+	m.Update(saved)
+	reattach := modelFor(t, Options{})
+	if m.focusedDialog() != nil || m.themes.active.name != "rose-pine" || m.themes.active != reattach.themes.active {
+		t.Fatal("applied preset did not persist")
+	}
+}
+
 func TestInvalidThemePreservesLastUsablePalette(t *testing.T) {
 	store, dir := themeFixture(t)
 	m, _ := demo(t, Options{ThemeName: "violet", Fills: FillOff, ReducedMotion: true})

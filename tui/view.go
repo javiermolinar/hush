@@ -857,6 +857,13 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 							}
 							return nil
 						}
+						if p := d.themePicker; p != nil {
+							if !p.loading && !p.saving {
+								d.selected = target
+								m.previewTheme(d) // Enter applies; clicking only previews
+							}
+							return nil
+						}
 						d.selected = target
 						return m.acceptChoice(d)
 					}

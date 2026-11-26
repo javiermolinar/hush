@@ -36,7 +36,7 @@ func builtins(workspaceTrust bool) x.Registration {
 				return x.Outcome{x.Local{Op: x.CloseTab, ThreadID: sdk.ID(v.Target)}}
 			}},
 		local("quit", "Quit", "", "d", "quit", x.Quit),
-		local("themes", "Themes", "", "i h", "", openThemesOp),
+		local("themes", "Themes", "", "i h", "theme", openThemesOp),
 	}}
 	if workspaceTrust {
 		r.Actions = append(r.Actions, local("trust", "Workspace trust", "", "i t", "trust", openWorkspaceTrustOp))

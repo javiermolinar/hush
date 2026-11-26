@@ -218,6 +218,11 @@ func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
 	if showKeys {
 		budget--
 	}
+	const sampleText = "Accent  Link  OK  Warn  Error  if  \"text\"  // note"
+	showSample := budget >= 5 && w >= stringWidth(sampleText)
+	if showSample {
+		budget--
+	}
 	first := min(max(0, d.selected-budget+1), max(0, len(d.filtered)-budget))
 	for i := first; i < min(first+budget, len(d.filtered)); i++ {
 		choice := d.choices[d.filtered[i]]
@@ -234,8 +239,15 @@ func (m *Model) themeRows(d *dialog, w, n int) ([]string, []int) {
 		}
 		add(row, i)
 	}
+	if showSample {
+		roles := m.palette.roles
+		add(m.paint(x.Accent, "Accent")+"  "+roles[roleLink].ink.paint("\x1b[4mLink\x1b[24m")+"  "+
+			m.paint(x.Good, "OK")+"  "+m.paint(x.Warning, "Warn")+"  "+m.paint(x.Danger, "Error")+"  "+
+			roles[roleSyntaxKeyword].ink.paint("if")+"  "+roles[roleSyntaxLiteral].ink.paint("\"text\"")+"  "+
+			roles[roleSyntaxComment].ink.paint("// note"), -1)
+	}
 	if showKeys {
-		action := "save"
+		action := "apply"
 		if c, ok := d.choice(); ok && c.ID == themeTemplateChoice {
 			action = "copy"
 		}

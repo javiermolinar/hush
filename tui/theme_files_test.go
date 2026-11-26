@@ -72,6 +72,89 @@ func TestGeneratedThemeTemplateCoversAllRoles(t *testing.T) {
 	}
 }
 
+func TestPresetThemesOnFreshHome(t *testing.T) {
+	store := themeStore{home: t.TempDir()}
+	book := store.list(t.Context())
+	if book.problem != "" || len(book.choices) != len(presetThemes)+1 || book.choices[0].name != terminalTheme {
+		t.Fatalf("unexpected fresh catalog: %+v", book)
+	}
+	seen := map[string]bool{terminalTheme: true}
+	for _, theme := range book.choices[1:] {
+		if !validThemeName(theme.name) || seen[theme.name] || theme.colors[roleText] != nil {
+			t.Fatalf("invalid or duplicate preset: %+v", theme)
+		}
+		seen[theme.name] = true
+		bg := themeRGB(0x1e1e2e)
+		if theme.name == "rose-pine-dawn" {
+			bg = themeRGB(0xeff1f5)
+		}
+		for role, def := range colorRoles {
+			if def.name != "" && (theme.colors[role] == nil || contrastRatio(theme.colors[role], bg) < 4.5) {
+				t.Errorf("%s: %s doesn't meet contrast on the reference terminal", theme.name, def.name)
+			}
+		}
+		if got, err := store.load(theme.name); err != nil || got != theme {
+			t.Fatalf("preset override on first launch: %+v %v", got, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(store.home, ".hush")); !os.IsNotExist(err) {
+		t.Fatalf("listing or launching a preset created config: %v", err)
+	}
+	if got, err := store.load(""); err != nil || got.name != terminalTheme {
+		t.Fatalf("preset changed the default: %+v %v", got, err)
+	}
+}
+
+func TestLocalThemeOverridesPreset(t *testing.T) {
+	store, dir := themeFixture(t)
+	preset, _ := presetTheme("rose-pine")
+	writeThemeFixture(t, dir, "rose-pine.json", violetThemeJSON)
+	custom, err := store.load("rose-pine")
+	if err != nil || custom.colors[roleAccent] != themeRGB(0x8b9df5) {
+		t.Fatalf("local file didn't take precedence: %+v %v", custom, err)
+	}
+	count := 0
+	for _, choice := range store.list(t.Context()).choices {
+		if choice.name == custom.name {
+			count++
+			if choice != custom {
+				t.Fatal("picker displayed the preset instead of the local file")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("picker listed %d choices for %s", count, custom.name)
+	}
+	if err := store.save(t.Context(), preset); err == nil {
+		t.Fatal("saved a preset when the effective theme was the local file")
+	}
+	if err := store.save(t.Context(), custom); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.load(""); err != nil || got != custom {
+		t.Fatalf("saved override didn't reload: %+v %v", got, err)
+	}
+	writeThemeFixture(t, dir, "rose-pine.json", "invalid")
+	if got, err := store.load("rose-pine"); err == nil || got.name != terminalTheme {
+		t.Fatal("bad local override was silently substituted")
+	}
+	book := store.list(t.Context())
+	for _, choice := range book.choices {
+		if choice.name == preset.name {
+			t.Fatal("invalid effective theme was offered in the picker")
+		}
+	}
+	if !strings.Contains(book.problem, "rose-pine.json") {
+		t.Fatalf("missing diagnostic: %q", book.problem)
+	}
+	if err := os.Remove(filepath.Join(dir, "rose-pine.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.load(""); err != nil || got != preset {
+		t.Fatalf("missing override didn't fall back to the preset: %+v %v", got, err)
+	}
+}
+
 func TestThemeStoreScopeAndPersistence(t *testing.T) {
 	store, dir := themeFixture(t)
 	chosen, err := store.load("violet")
