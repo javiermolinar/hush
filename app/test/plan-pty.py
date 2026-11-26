@@ -21,9 +21,9 @@ ansi = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*?(?:\x07|\x1b\\)|[()][
 pending = bytearray()
 
 
-def wait_for(*texts):
+def wait_for(*texts, timeout=5):
     expected = [text.encode("utf-8") for text in texts]
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and child.poll() is None:
         if not select.select([master], [], [], 0.05)[0]:
             continue
@@ -47,6 +47,25 @@ def submit(text):
     os.write(master, b"\r")
 
 
+def leader_plan():
+    # A transcript can paint before capabilities arrive. Probe the existing
+    # chord without submitting the draft, and retry only from an idle leader.
+    for _ in range(4):
+        os.write(master, b"\x18")
+        wait_for("Leader")
+        os.write(master, b"i")
+        try:
+            wait_for("Open plan", timeout=0.35)
+        except AssertionError:
+            os.write(master, b"\x1b")
+            time.sleep(0.12)  # Escape disambiguation
+            pending.clear()
+            continue
+        os.write(master, b"n")
+        return
+    raise AssertionError("plan capability did not appear in the leader menu")
+
+
 def open_plan(title, count):
     submit("/plan")
     wait_for("Workspace plans", title, count)
@@ -58,7 +77,7 @@ try:
         wait_for("ask anything")
         os.write(master, b"keep this draft")
         wait_for("keep this draft")
-        os.write(master, b"\x18in")  # ctrl+x i n opens /plan without replacing the draft
+        leader_plan()
         wait_for("Workspace plans", "Interface preferences")
         os.write(master, b"\r")
         wait_for("Select tasks to run here", "Restore preferences")
@@ -111,7 +130,7 @@ try:
         wait_for("ask anything")
         os.write(master, b"keep this draft")
         wait_for("keep this draft")
-        os.write(master, b"\x18in")
+        leader_plan()
         wait_for("all workspaces", "Interface preferences", "Read-only", "source-", "checkout", "preview")
         os.write(master, b"\r")
         wait_for("Save preferences", "Read-only")
