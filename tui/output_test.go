@@ -82,7 +82,7 @@ func TestShortOutputViewerClampsAgainstContentWidth(t *testing.T) {
 	}
 }
 
-func TestToolOutputViewerShowsAndCopiesRetainedResult(t *testing.T) {
+func TestGoldenToolOutputViewerShowsAndCopiesRetainedResult(t *testing.T) {
 	var copied string
 	m, state := demo(t, Options{ReducedMotion: true, CopyText: func(_ context.Context, text string) error {
 		copied = text
@@ -109,14 +109,15 @@ func TestToolOutputViewerShowsAndCopiesRetainedResult(t *testing.T) {
 	if d == nil || d.output == nil || d.output.raw != raw {
 		t.Fatal("overflow did not open the complete retained result")
 	}
-	body = ansi.Strip(assertFrame(t, m))
+	golden(t, "menu-tool-output", m)
+	body = ansi.Strip(m.View().Content)
 	if !strings.Contains(body, "Tool output · fixture") || !strings.Contains(body, "fixture line 01") ||
 		!strings.Contains(body, "c copy all") {
 		t.Fatal("viewer or its controls not visible")
 	}
 	press(m, tea.KeyEnd, 0)
 	body = ansi.Strip(assertFrame(t, m))
-	if !strings.Contains(body, "final row ␛ raw") || !strings.Contains(body, " / 44") {
+	if !strings.Contains(body, "final row ␛ raw") || !strings.Contains(body, "44 lines") {
 		t.Fatal("End did not reach the final result row")
 	}
 	press(m, tea.KeyRight, 0)
@@ -129,7 +130,13 @@ func TestToolOutputViewerShowsAndCopiesRetainedResult(t *testing.T) {
 	}
 	// Copy through the rendered control, not by calling the viewer directly.
 	f := m.frame
-	cmd := m.mouse(tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft, X: f.dialogX + 2, Y: f.dialogY + f.dialogHeight - 1}))
+	var cmd tea.Cmd
+	for row, target := range f.dialogChoices {
+		if target == outputCopyTarget {
+			cmd = m.mouse(tea.MouseClickMsg(tea.Mouse{Button: tea.MouseLeft, X: f.dialogX + 2, Y: f.dialogY + row}))
+			break
+		}
+	}
 	if cmd == nil {
 		t.Fatal("copy footer has no hit target")
 	}

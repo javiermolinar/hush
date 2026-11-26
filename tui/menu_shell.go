@@ -16,6 +16,7 @@ type menuFrame struct {
 	targets               []int // -1 for chrome, otherwise a row or action in the owner's input handler
 	cursor                *tea.Cursor
 	listWidth, bodyHeight int
+	consequence           menuLine // optional override once the body knows its visible window
 }
 
 func (m *Model) menuFrame(d *dialog, available int) menuFrame {
@@ -47,7 +48,7 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	case d.themePicker != nil:
 		frame.rows, frame.targets = m.themeRows(d, w, n)
 	case d.output != nil:
-		frame.rows, frame.targets = m.outputRows(d, w, n)
+		frame = m.outputRows(d, w, n)
 	default:
 		frame = m.dialogRows(d, w, n)
 	}
@@ -120,7 +121,11 @@ func (m *Model) menuShell(w, n int, c menuChrome, body func(int) menuFrame) menu
 		out.add("", -1)
 	}
 	if action {
-		out.add(c.consequence.text, c.consequence.target)
+		line := c.consequence
+		if content.consequence.text != "" {
+			line = content.consequence
+		}
+		out.add(line.text, line.target)
 	}
 	if keys {
 		out.add(c.keys.text, c.keys.target)

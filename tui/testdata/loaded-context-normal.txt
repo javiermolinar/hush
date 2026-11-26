@@ -9,16 +9,16 @@
 
 
 
-
-│ What changed in @app/main.go:12?
-  Loaded context · next submission
+  Loaded context · next submission ─────────────────────────────────────────────────── 6 lines
   Personal · APPEND_SYSTEM.md
     /backend/home/.hush/APPEND_SYSTEM.md
   Workspace · AGENTS.md
     /backend/workspace/AGENTS.md
   Workspace · AGENTS.md
     /backend/workspace/nested folder/AGENTS.md
-  s skills  esc close
+
+  s skills  ↑↓ scroll  ←→ horizontal  f full  esc back
+
   ────────────────────────────────────────────────────────────────────────────────────────────
   you ›
   dir workspace

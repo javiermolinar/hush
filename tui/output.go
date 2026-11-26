@@ -8,7 +8,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/javiermolinar/hush/sdk"
-	x "github.com/javiermolinar/hush/tui/extension"
 )
 
 const (
@@ -169,55 +168,44 @@ func (v *outputViewer) reflowReview(width int) {
 	}
 }
 
-func (m *Model) outputCopyHint() string { return m.paint(x.Accent, "c copy all") }
+func (m *Model) outputCopyHint() string { return "c copy all" }
 
-// Output rows are already padded to exactly w cells.
-func (m *Model) outputRows(d *dialog, w, n int) ([]string, []int) {
+func (m *Model) outputRows(d *dialog, w, n int) menuFrame {
 	v := d.output
-	page := min(len(v.lines), outputPage(n))
-	top := min(v.top, len(v.lines)-page)
-	left := min(v.left, max(0, v.widest-w))
-	rows, targets := make([]string, 0, page+2), make([]int, 0, page+2)
-	add := func(s string, target int) {
-		rows, targets = append(rows, s), append(targets, target)
-	}
-	if n >= 3 {
-		add(fit(m.paint(x.Accent, ansi.Truncate(d.title, w, "…")), w), -1)
-	}
-	for i := top; i < top+page; i++ {
-		add(v.window(i, left, w), -1)
-	}
-	if n >= 2 {
-		copyHint := m.outputCopyHint()
-		full := copyHint + "  " + m.keyHint("↑↓ ←→", "scroll") + "  " + m.keyHint("esc", "close")
-		compact := copyHint + "  " + m.keyCap("↑↓ ←→") + "  " + m.keyCap("esc")
-		target := outputCopyTarget
-		if d.loadedContext != nil {
-			compact, target = m.keyHint("esc", "close"), -1
-			if m.contextCanOpenSkills(d) {
-				compact = m.contextSkillsHint() + "  " + compact
-				target = outputSkillsTarget
-			}
-			full = compact
-			if page < len(v.lines) {
-				full += "  " + m.keyHint("↑↓", "scroll")
-			}
-		} else if d.review {
-			accept, escape := "continue", "cancel"
-			if d.done == nil {
-				accept, escape = "close", "close"
-			}
-			if top+page < len(v.lines) {
-				accept = "more"
-			}
-			key := m.keyHint("enter", accept)
-			full = key + "  " + m.keyHint("↑↓", "scroll") + "  " + m.keyHint("esc", escape) + "  " + copyHint
-			compact = key + "  " + m.keyCap("esc")
-			target = -1
+	c := menuChrome{title: d.title, count: menuCount(len(v.lines), "line", "lines")}
+	scroll := []string{"↑↓ scroll", "←→ horizontal", d.zoomKey()}
+	switch {
+	case d.loadedContext != nil:
+		c.keys = chromeLine(m.menuKeys(w, scroll...))
+		if m.contextCanOpenSkills(d) {
+			c.keys = menuLine{m.menuKeys(w, append([]string{m.contextSkillsHint()}, scroll...)...), outputSkillsTarget}
 		}
-		add(fit(m.hintRow(w, full, compact, visibleRange(top, top+page, len(v.lines))), w), target)
+	case d.review:
+		c.keys = chromeLine(m.menuKeys(w, append([]string{"↵ continue"}, scroll...)...))
+		c.consequence = chromeLine(m.menuAction("Continue", "")) // exact action depends on the last visible line
+	default:
+		c.keys = menuLine{m.menuKeys(w, append([]string{m.outputCopyHint()}, scroll...)...), outputCopyTarget}
 	}
-	return rows, targets
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		page := min(len(v.lines), h)
+		top := min(v.top, len(v.lines)-page)
+		left := min(v.left, max(0, v.widest-w))
+		var out menuFrame
+		for i := top; i < top+page; i++ {
+			out.add(v.window(i, left, w), -1)
+		}
+		if d.review {
+			switch {
+			case top+page < len(v.lines):
+				out.consequence = chromeLine(m.menuAction("Read more", "Scroll to the next section"))
+			case d.done == nil:
+				out.consequence = chromeLine(m.menuAction("Back", "Close this preview"))
+			default:
+				out.consequence = chromeLine(m.menuAction("Continue", "Open the confirmation"))
+			}
+		}
+		return out
+	})
 }
 
 func (m *Model) copyToolOutput(d *dialog) tea.Cmd {
@@ -225,23 +213,12 @@ func (m *Model) copyToolOutput(d *dialog) tea.Cmd {
 	return m.copyText(d.route, d.output.raw, &budget)
 }
 
-func outputPage(body int) int {
-	switch {
-	case body >= 3:
-		return body - 2 // title and footer
-	case body == 2:
-		return 1 // footer only
-	default:
-		return max(0, body)
-	}
-}
-
 func (m *Model) outputSize(d *dialog) (int, int) {
 	w := m.pane().width
 	if !m.currentFrame() || m.frame.dialogToken != d.token {
 		return w, 1
 	}
-	return w, outputPage(m.frame.dialogHeight)
+	return w, m.frame.dialogBodyHeight
 }
 
 func (m *Model) outputMove(d *dialog, rows, cols int) {

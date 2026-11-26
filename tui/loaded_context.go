@@ -78,7 +78,7 @@ func (m *Model) contextCanOpenSkills(d *dialog) bool {
 	return d.loadedContext != nil && d.loadedContext.ready && m.foreground(d.route) && len(m.currentSkills()) != 0
 }
 
-func (m *Model) contextSkillsHint() string { return m.keyHint("s", "skills") }
+func (m *Model) contextSkillsHint() string { return "s skills" }
 
 func (m *Model) openContextSkills(d *dialog) tea.Cmd {
 	if !m.contextCanOpenSkills(d) {

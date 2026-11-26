@@ -2,7 +2,6 @@ package tui
 
 import (
 	"cmp"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -240,13 +239,6 @@ func (m *Model) paletteRows(d *dialog, w, h int) menuFrame {
 		out.appendBody(columns)
 		return out
 	})
-}
-
-func visibleRange(start, end, count int) string {
-	if end > start && (start > 0 || end < count) {
-		return fmt.Sprintf("%d–%d / %d", start+1, end, count)
-	}
-	return ""
 }
 
 func (m *Model) hintRow(w int, full, compact, right string) string {
