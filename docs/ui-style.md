@@ -67,4 +67,6 @@ Use sentence case. No trailing period on labels or headings. Use “your,” nev
 
 - The guide doesn't define keyboard selection in prose or terminal image pixels. Preserve the existing copy-selection and image behavior; neither defines chrome styling.
 - Extension custom models can supply sanitized foreground and emphasis; keep the extension API intact and apply the shared chrome around the child view.
+- Forms and read-only documents have no focused list item. Use the shared body for the fields or document, not an empty list or a fabricated detail pane.
+- At minimum terminal heights, keep the focused item or message before optional chrome. Keep the full consequence whenever the operation requires reviewing scope before acting.
 - See the audit migration column for where the target conflicts with current behavior. These entries are not precedent for new UI.
