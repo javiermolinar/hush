@@ -385,20 +385,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		m.escapeAt, m.stopAt = time.Time{}, time.Time{}
 	}
 	if m.leader != "" {
-		seq := strings.TrimSpace(m.leader + " " + normalizeChord(chord))
-		m.leader = ""
-		if i, ok := m.host.leader[seq]; ok {
-			return m.runAction(i, "")
-		}
-		if chord != "esc" && chord != "ctrl+x" {
-			for s, i := range m.host.leader {
-				if strings.HasPrefix(s, seq+" ") && m.eligible(m.host.actions[i], m.active) {
-					m.leader = seq
-					break
-				}
-			}
-		}
-		return nil
+		return m.advanceLeader(normalizeChord(chord))
 	}
 	if key.Matches(k, shellKeys.leader) {
 		m.leader = " "

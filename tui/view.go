@@ -112,6 +112,8 @@ func (m *Model) View() tea.View {
 	d := m.focusedDialog()
 	if d != nil {
 		continuation = true // hide background completion lists
+	} else if m.leader != "" {
+		completions = m.leaderRows(w, min(listBudget, max(1, m.height*7/10)))
 	} else if files, n := m.fileRows(w, listBudget); len(files) > 0 {
 		completions, filePicker, fileChoices = files, true, n
 	} else if slash = m.slashMatches(); len(slash) > 0 {
@@ -512,14 +514,7 @@ func (m *Model) ruleHints(t *threadState, slashes, files bool, fileChoices int) 
 		return nil
 	}
 	if m.leader != "" {
-		var labels []string
-		for _, a := range m.host.actions {
-			prefix := strings.TrimSpace(m.leader)
-			if m.eligible(a, t.info.ID) && (prefix == "" || strings.HasPrefix(a.action.Binding.Leader, prefix+" ")) {
-				labels = append(labels, m.keyHint(a.action.Binding.Leader, oneLine(a.action.Title)))
-			}
-		}
-		return labels
+		return nil
 	}
 	if slashes {
 		return []string{m.keyHint("enter", "run"), m.keyHint("tab", "complete"), m.keyHint("esc", "close")}
@@ -849,6 +844,9 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 		}
 		if p.Y >= f.transcriptHeight {
 			if h, ok := m.hitAt(p.X, p.Y); ok {
+				if h.action.ID == leaderStepID {
+					return m.clickLeader(h.action.Target)
+				}
 				if p.Y >= f.slashStart && p.Y < f.slashEnd {
 					if h.action.ID == browsePathsID {
 						m.openPathRoots()

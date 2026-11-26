@@ -1,15 +1,15 @@
-
-
-│ What changed in @app/main.go:12?
-
-  Answer
-
-  See the docs and app/main.go:12.
-
-  ── go  copy     ────────────────────────
-    func main() { println(42) }
-  ────────────────────────────────────────
-  ◌ Working ─── p Command palette  o Toggle details  e Edit prompt  y Copy last answer
+  ── go  copy     ────────────────────────                                             │
+    func main() { println(42) }                                                        │
+  ────────────────────────────────────────                                             ┃
+  Leader · ctrl+x ────────────────────────────────────────────────────────── 18 chords
+  p         Command palette
+  o         Toggle details
+  e         Edit prompt
+  y         Copy last answer
+  c         Copy last code block
+  q         Recall queued messages
+  type a chord  esc back
+  ◌ Working ──────────────────────────────────────────────────────────────────────────
   steer ›
   dir workspace · inbox 2 · ⎇ agent/1 · model-v1 high           ctx ▰▰▰▰▰▱ 80% · $1.23
    ● Working thread   ◐ ⑂ thread 2   ✓ thread 3   ◌ thread 4   ◷ thread 5
