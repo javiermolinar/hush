@@ -210,7 +210,7 @@ func (m *Model) planWorkspaceRows(d *dialog, w, n int) (rows []string, targets [
 	if n >= 8 {
 		add("", -1)
 	}
-	add(planRunEmphasis(title), -1)
+	add(strongText(title), -1)
 	if n >= 7 {
 		add("", -1)
 	}
@@ -596,7 +596,7 @@ func (m *Model) planHistoryRows(d *dialog, w, n int) (rows []string, targets []i
 			rows, targets = append(rows, ansi.Truncate(line, w, "…")), append(targets, -1)
 		}
 	}
-	add(planRunEmphasis("Run history · " + oneLine(p.title)))
+	add(strongText("Run history · " + oneLine(p.title)))
 	if n >= 6 {
 		add("")
 	}

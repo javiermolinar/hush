@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -56,7 +57,7 @@ func testPlanFrameGeometry(t *testing.T) {
 
 func TestGoldenPlanPicker(t *testing.T) {
 	m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
-	m.Update(tea.WindowSizeMsg{Width: 116, Height: 22})
+	m.Update(tea.WindowSizeMsg{Width: 116, Height: 24})
 	d := planPickerFixture(m, s)
 	press(m, tea.KeySpace, 0)
 	golden(t, "plan-single-selection", m)
@@ -238,14 +239,14 @@ func TestPlanRunRequiresVisibleAction(t *testing.T) {
 	checkBlocked() // don't reuse the larger frame before View
 	minimum := ansi.Strip(assertFrame(t, m))
 	checkBlocked()
-	if !strings.Contains(minimum, "● Save") || strings.Contains(minimum, "↵ Run") {
+	if !strings.Contains(minimum, "■ ○ Sav") || strings.Contains(minimum, "↵ Run") {
 		t.Fatalf("one-row panel must show the selected step, not a Run or a heading:\n%s", minimum)
 	}
 
 	m.Update(tea.WindowSizeMsg{Width: 12, Height: 4})
 	checkBlocked() // even with room, wait until the action has been drawn
 	body := ansi.Strip(assertFrame(t, m))
-	if !strings.Contains(body, "● Save") || !strings.Contains(body, "↵ Run 1") {
+	if !strings.Contains(body, "■ ○ Sav") || !strings.Contains(body, "↵ Run 1") {
 		t.Fatalf("two-row panel must show the selection and Run:\n%s", body)
 	}
 	workflowWork(t, m, press(m, tea.KeyEnter, 0))
@@ -256,7 +257,7 @@ func TestPlanRunRequiresVisibleAction(t *testing.T) {
 
 func TestScopedPlanSelectionAndStop(t *testing.T) {
 	m, thread := demo(t, Options{ReducedMotion: true, Fills: FillOff})
-	m.Update(tea.WindowSizeMsg{Width: 116, Height: 22})
+	m.Update(tea.WindowSizeMsg{Width: 116, Height: 24})
 	d := planPickerFixture(m, thread)
 	v := &thread.plan
 	v.snapshot.RunAvailability = sdk.PlanRunScoped
@@ -662,5 +663,28 @@ func TestPlanWorktreeStartupRetryKeepsExactSourceAndCanLeaveIdle(t *testing.T) {
 	m.planKey(d, "x")
 	if m.active != "" || m.threads[""].plan.worktree != nil || m.editor.value() != "keep this draft" {
 		t.Fatal("leaving the worktree idle must retain the startup draft and leave no pending request")
+	}
+}
+
+func TestGoldenPlanZoom(t *testing.T) {
+	m, s := demo(t, Options{ReducedMotion: true, Fills: FillOff})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	d := planPickerFixture(m, s)
+	for i := range 20 {
+		s.plan.snapshot.Plan.Steps = append(s.plan.snapshot.Plan.Steps, sdk.PlanStep{
+			ID: fmt.Sprintf("extra-%d", i), Title: fmt.Sprintf("Additional task %d", i+1),
+		})
+	}
+	assertFrame(t, m)
+	height, rule := m.frame.dialogHeight, m.frame.ruleY
+	press(m, 'f', 0)
+	golden(t, "plan-full", m)
+	if m.frame.dialogHeight <= height || m.frame.ruleY != rule || m.focusedDialog() != d {
+		t.Fatal("zoom did not expand the plan at the same input rule")
+	}
+	press(m, 'f', 0)
+	assertFrame(t, m)
+	if m.frame.dialogHeight != height {
+		t.Fatal("zoom did not restore the fitted height")
 	}
 }

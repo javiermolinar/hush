@@ -1,0 +1,24 @@
+  Workspace profiles · Plan · r7 ─────────────────────────────── 0/23 verified
+  › □ ○ Save a profile     Ready         │ Save a profile
+    □ ○ Restore saved pr…  Needs 1       │ Store a profile under a stable
+    □ ⏸ Document discove…  Blocked       │ name.
+    □ ○ Additional task 1  Ready         │ Check: Profile has the expected
+    □ ○ Additional task 2  Ready         │ name
+    □ ○ Additional task 3  Ready         │ Thinking: high
+    □ ○ Additional task 4  Ready         │
+    □ ○ Additional task 5  Ready         │
+    □ ○ Additional task 6  Ready         │
+    □ ○ Additional task 7  Ready         │
+    □ ○ Additional task 8  Ready         │
+    □ ○ Additional task 9  Ready         │
+    □ ○ Additional task …  Ready         │
+    □ ○ Additional task …  Ready         │
+    □ ○ Additional task …  Ready         │
+    □ ○ Additional task …  Ready         │
+
+  Select the steps to run
+  space select  tab details  ↑↓ move  f fit  esc back
+
+  ○ idle ─────────────────────────────────────────────────────────────────────
+  you ›
+  dir workspace

@@ -1,12 +1,12 @@
 │ What changed in @app/main.go:12?
-  Plan · r7 · Workspace…  1/3 verified
-    ✓ Save a profile      Verified
-  › ● Restore saved pro…  Running
-    ○ Document discovery  Blocked
-
+  Workspace profiles ·… ─ 1/3 verified
+    ✓ Save a profile     Verified
+  › ◐ Restore saved pr…  Running
+    ⏸ Document discove…  Blocked
+  Restore saved profiles
+  Read the saved profile and restore
   Plan · 1/2 verified · Restore saved…
-  tab details  ↑↓ move       esc close
-
+  tab details  ↑↓ move  esc back
   Plan · 1/2 verified · Restore sa… ──
   you ›
   dir workspa…

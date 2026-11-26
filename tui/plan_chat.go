@@ -167,7 +167,7 @@ func (m *Model) chatRunBar(d *dialog, v *planView, width int) (string, string, b
 			if stringWidth(label) > width {
 				label = "↵ retry"
 			}
-			return planRunEmphasis(label), "", true
+			return strongText(label), "", true
 		}
 	}
 	if t.sending || t.aborting || t.attaching || t.plan.sending || t.plan.request != nil {

@@ -767,9 +767,7 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 						}
 						if d.plan != nil {
 							v := m.planViewFor(d)
-							left, width := f.dialogX, f.dialogWidth
-							if v.snapshot.Plan != nil && f.dialogPlanRev == v.snapshot.Revision && target < len(v.snapshot.Plan.Steps) &&
-								p.X >= left && p.X < left+planListWidth(width) {
+							if v.snapshot.Plan != nil && f.dialogPlanRev == v.snapshot.Revision && target < len(v.snapshot.Plan.Steps) {
 								d.plan.focus, d.plan.details, d.plan.scroll = target, false, 0
 								m.togglePlanStep(v, d.plan)
 							}
@@ -791,6 +789,14 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 						}
 						d.selected = target
 						return m.acceptChoice(d)
+					}
+					if d.plan != nil {
+						switch target {
+						case planRunTarget:
+							return m.planKey(d, "enter")
+						case planWorktreeDismissTarget:
+							return m.planKey(d, "x")
+						}
 					}
 					if target == themeFillsTarget && d.themePicker != nil {
 						m.moveFills(d, 1)

@@ -29,6 +29,7 @@ type dialog struct {
 	actions                     []x.ActionID
 	selected                    int
 	multiline, confirm, palette bool
+	full                        bool // expands the dock without moving the composer
 	paletteItems                []paletteItem
 	input                       *promptEditor
 	custom                      tea.Model
@@ -460,6 +461,10 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	chord := ""
 	if key {
 		chord = normalizeChord(k.String())
+		if chord == "f" && m.dialogCanInput(d) && d.canZoom() {
+			d.full = !d.full
+			return nil
+		}
 	}
 	if d.themePicker != nil {
 		return m.themePickerKey(d, chord)

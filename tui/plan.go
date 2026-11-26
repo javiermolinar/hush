@@ -331,7 +331,7 @@ func (m *Model) planKey(d *dialog, chord string) tea.Cmd {
 			p.scroll = max(0, p.scroll-1)
 			return nil
 		case "down", "pgdown":
-			width := planDetailWidth(m.pane().width)
+			width := menuDetailWidth(m.pane().width)
 			count := len(m.planDetails(v, v.snapshot.Plan.Steps[p.focus], width))
 			delta := 1
 			if chord == "pgdown" {
@@ -483,7 +483,7 @@ func (v *planView) label(s sdk.PlanStep, selected map[string]bool) (string, x.To
 		return "Pending", x.Muted
 	}
 	if v.progress(s.ID).State == "failed" {
-		return "Not verified", x.Warning
+		return "Not verified", x.Danger
 	}
 	if s.Blocker != "" {
 		return "Blocked", x.Warning
@@ -525,220 +525,142 @@ func (v *planView) label(s sdk.PlanStep, selected map[string]bool) (string, x.To
 	return "Ready", x.Plain
 }
 
-func planListWidth(w int) int {
-	if w >= 70 {
-		return w/2 - 2
+func (v *planView) stepIcon(s sdk.PlanStep, status string) (string, x.Tone) {
+	switch v.progress(s.ID).State {
+	case "verified":
+		return "✓", x.Good
+	case "running":
+		return "◐", x.Warning
+	case "failed":
+		return "✗", x.Danger
 	}
-	return w
+	switch status {
+	case "In run":
+		return "◐", x.Warning
+	case "Blocked", "Incomplete":
+		return "⏸", x.Warning
+	default:
+		return "○", x.Muted
+	}
 }
 
-const planDetailGutter = " │   "
-
-func planDetailWidth(w int) int {
-	if list := planListWidth(w); list < w {
-		return w - list - stringWidth(planDetailGutter)
-	}
-	return w
-}
-
-func (m *Model) planRows(d *dialog, w, n int) (rows []string, targets []int) {
-	add := func(line string, target int) {
-		if len(rows) < n {
-			rows, targets = append(rows, ansi.Truncate(line, w, "…")), append(targets, target)
-		}
-	}
+func (m *Model) planRows(d *dialog, w, n int) menuFrame {
 	v, p := m.planViewFor(d), d.plan
 	plan := v.snapshot.Plan
-	if v.ready && !p.matches(v) {
-		add("Plan binding changed · open it again from the list", -1)
-		add(m.keyHint("esc", "back"), -1)
-		return
-	}
-	if !v.ready || plan == nil {
-		add("Plan", -1)
-		if v.err != nil {
-			add("Plan connection unavailable", -1)
-		} else if !v.ready {
-			add("Loading plan…", -1)
-		} else {
-			if v.snapshot.RunAvailability == sdk.PlanRunFixture {
-				add("No plan yet · send !plan-fixture", -1)
-			} else {
-				add("No plan yet · ask “Create a plan…”", -1)
-			}
+	c := menuChrome{title: "Plan", keys: chromeLine(m.menuKeys(w, d.zoomKey()))}
+	if !v.ready || plan == nil || !p.matches(v) || len(plan.Steps) == 0 {
+		status, tone := "No plan yet · ask to create a plan", x.Muted
+		switch {
+		case v.ready && !p.matches(v):
+			status, tone = "Plan binding changed · open it again from the list", x.Warning
+		case v.err != nil:
+			status, tone = "Plan connection unavailable · reopen to retry", x.Danger
+		case !v.ready:
+			status = "Loading plan…"
+		case plan == nil && v.snapshot.RunAvailability == sdk.PlanRunFixture:
+			status = "No plan yet · send !plan-fixture"
+		case plan != nil:
+			status = "No steps · revise this plan to add steps"
 		}
-		add(m.keyHint("esc", "close"), -1)
-		return
+		return m.menuShell(w, n, c, func(int) menuFrame {
+			return menuFrame{rows: []string{m.paint(tone, status)}, targets: []int{-1}}
+		})
 	}
-	var verified int
-	for _, r := range v.snapshot.Progress {
-		if r.State == "verified" {
+	var verified, done int
+	for _, s := range plan.Steps {
+		if v.progress(s.ID).State == "verified" {
 			verified++
 		}
-	}
-	count := fmt.Sprintf("%d/%d verified", verified, len(plan.Steps))
-	if len(v.snapshot.Reports) > 0 {
-		done := 0
-		for _, step := range plan.Steps {
-			if v.done(step.ID) {
-				done++
-			}
-		}
-		if done != verified {
-			count = fmt.Sprintf("%d/%d done · %d verified", done, len(plan.Steps), verified)
+		if v.done(s.ID) {
+			done++
 		}
 	}
-	progress := m.control(count)
-	label := fmt.Sprintf("Plan · r%d · %s", plan.Revision, oneLine(plan.Title))
-	label = ansi.Truncate(label, max(1, w-stringWidth(progress)-2), "…")
-	strokes := max(0, w-stringWidth(label)-stringWidth(progress)-2)
-	listWidth := planListWidth(w)
-	showHeader, showRun, showKeys := n >= 3, n >= 2, n >= 5
-	body := max(1, n-2) // drop the heading, then the Run row, before the focused task
-	if showKeys {
-		body--
+	c.title, c.scope = plan.Title, fmt.Sprintf("Plan · r%d", plan.Revision)
+	c.count = fmt.Sprintf("%d/%d verified", verified, len(plan.Steps))
+	if done != verified {
+		c.count = fmt.Sprintf("%d/%d done · %d verified", done, len(plan.Steps), verified)
+	}
+	t := m.threads[d.route.owner]
+	canSelect := p.workspace == "" && !v.locked() && v.request == nil && t.plan.chatRequest == nil && t.plan.worktree == nil
+	bar, preview, runnable := m.planRunBar(d, v, w)
+	c.consequence = chromeLine(bar + preview)
+	if runnable && stringWidth(bar) <= w {
+		c.consequence.target = planRunTarget
+	}
+	move, tab := "↑↓ move", "tab details"
+	if p.details {
+		move, tab = "↑↓ scroll", "tab steps"
+	}
+	var hints []string
+	if canSelect && !p.details {
+		hints = append(hints, "space select")
+	}
+	hints = append(hints, tab)
+	if runnable {
+		hints = append(hints, "↵ run")
+	}
+	scoped := false
+	if canSelect && m.planChatAvailable(v) && v.snapshot.RunAvailability == sdk.PlanRunScoped {
+		ids, reason := v.selection(p)
+		if len(ids) > 0 && reason == "" {
+			hints = append(hints, "s scoped")
+			scoped = true
+		}
+	}
+	hints = append(hints, move, d.zoomKey())
+	if p.workspace == "" && d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanReview) {
+		hints = append(hints, "v review")
+	}
+	if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
+		hints = append(hints, "h history")
+		if p.workspace == "" && !v.snapshot.Closed {
+			hints = append(hints, "c close plan")
+		} else if p.workspace == "" && !v.snapshot.Complete {
+			hints = append(hints, "c reopen")
+		}
+	}
+	c.keys = chromeLine(m.menuKeys(w, hints...))
+	if scoped && strings.Contains(c.keys.text, "s scoped") {
+		c.keys.target = planScopedTarget
 	}
 	worktree, worktreeAction := m.planWorktreeBar(d, v)
-	showWorktree := n >= 4 && body > 1 && worktree != ""
-	if showWorktree {
-		body--
-	}
-	// Spend spare rows on separation, not at the expense of the focused task
-	// or the Run line. On short terminals keep the lower two gaps first.
-	minBody := min(4, len(plan.Steps))
-	if p.details || listWidth < w {
-		minBody = max(6, minBody)
-	}
-	gaps := min(4, max(0, body-minBody))
-	body -= gaps
-	if gaps >= 4 {
-		add("", -1)
-	}
-	if showHeader {
-		add(label+m.paint(x.Muted, " "+strings.Repeat("─", strokes)+" ")+progress, -1)
-	}
-	if gaps >= 3 {
-		add("", -1)
-	}
-	if listWidth == w && p.details {
-		for _, line := range m.planDetailWindow(v, p, w, body) {
-			add(line, -1)
+	return m.menuShell(w, n, c, func(h int) menuFrame {
+		showWorktree := worktree != "" && n >= 4 && h > 1
+		if showWorktree {
+			h--
 		}
-	} else {
-		stateWidth := min(12, listWidth/2) // reserve room for both title and status
-		if v.snapshot.Chat {
-			stateWidth = min(13, listWidth/2)
+		if h == 1 && p.details && w == menuListWidth(w) {
+			return menuFrame{rows: m.planDetailWindow(v, p, w, 1), targets: []int{-1}}
 		}
-		if listWidth < 20 {
-			stateWidth = 0 // keep the selection mark and some title in a narrow pane
-		}
-		lo := min(max(0, p.focus-body+1), max(0, len(plan.Steps)-body))
-		list := make([]string, 0, body)
-		for i := lo; i < min(lo+body, len(plan.Steps)); i++ {
-			s := plan.Steps[i]
-			focus, mark := "  ", "○ "
-			if i == p.focus {
-				focus = m.paint(x.Accent, "› ")
-			}
-			if v.progress(s.ID).State == "verified" {
-				mark = m.paint(x.Good, "✓ ")
-			} else if p.selected[s.ID] || v.snapshot.Run != nil && v.snapshot.Run.State == "running" && slices.Contains(v.snapshot.Run.StepIDs, s.ID) {
-				mark = m.paint(x.Accent, "● ")
-			} else if v.done(s.ID) {
-				mark = m.paint(x.Muted, "– ")
-			}
-			title := focus + mark + oneLine(s.Title)
-			line := ""
-			if stateWidth == 0 {
-				line = ansi.Truncate(title, listWidth, "…")
-			} else {
-				status, tone := v.label(s, p.selected)
-				titleWidth := listWidth - stateWidth
-				line = fit(ansi.Truncate(title, titleWidth-2, "…"), titleWidth) + m.paint(tone, fit(status, stateWidth))
-			}
-			if i == p.focus && m.theme.Fills {
-				line = fill(fit(line, listWidth), m.palette.selected)
-			}
-			list = append(list, line)
-		}
-		if listWidth == w {
-			for i, line := range list {
-				add(line, lo+i)
-			}
-		} else {
-			details := m.planDetailWindow(v, p, planDetailWidth(w), body)
-			for i := range max(len(list), len(details)) {
-				left, right, target := "", "", -1
-				if i < len(list) {
-					left, target = list[i], lo+i
+		out := m.menuColumns(w, h, func(width, height int) []string { return m.planDetailWindow(v, p, width, height) }, func(lw, lh int) menuFrame {
+			var out menuFrame
+			start, end := menuWindow(p.focus, len(plan.Steps), lh)
+			for i := start; i < end; i++ {
+				s := plan.Steps[i]
+				state, stateTone := v.label(s, p.selected)
+				glyph, tone := v.stepIcon(s, state)
+				if tone == x.Muted {
+					tone = stateTone
 				}
-				if i < len(details) {
-					right = details[i]
+				item := menuItem{title: s.Title, icon: glyph, state: state, tone: tone, focus: i == p.focus}
+				if canSelect || len(p.selected) != 0 {
+					item.selection = "□"
+					if p.selected[s.ID] {
+						item.selection = "■"
+					}
 				}
-				add(fit(left, listWidth)+m.paint(x.Muted, planDetailGutter)+right, target)
+				out.add(m.menuRow(lw, 13, item), i)
 			}
-		}
-	}
-	if gaps >= 2 {
-		add("", -1)
-	}
-	if showRun {
-		bar, preview, runnable := m.planRunBar(d, v, w)
-		target := -1
-		if runnable && stringWidth(bar) <= w {
-			target = planRunTarget
-		}
-		add(bar+preview, target)
-	}
-	if showWorktree {
-		if stringWidth(worktree) > w {
-			worktreeAction = -1
-		}
-		add(m.control(worktree), worktreeAction)
-	}
-	if showKeys {
-		close := "esc close"
-		primary, compact, move := "space select  tab details", "space pick  tab info", "↑↓ move"
-		if p.details {
-			primary, compact, move = "tab steps", "tab steps", "↑↓ scroll"
-		} else if p.workspace != "" || v.locked() || v.request != nil || m.threads[d.route.owner].plan.chatRequest != nil || m.threads[d.route.owner].plan.worktree != nil {
-			primary, compact = "tab details", "tab details"
-		}
-		scoped := false
-		if m.planChatAvailable(v) && v.snapshot.RunAvailability == sdk.PlanRunScoped && !v.locked() &&
-			v.request == nil && m.threads[d.route.owner].plan.chatRequest == nil && m.threads[d.route.owner].plan.worktree == nil {
-			ids, reason := v.selection(p)
-			if len(ids) > 0 && reason == "" {
-				primary += "  s scoped"
-				compact += "  s scoped"
-				scoped = true
+			return out
+		})
+		if showWorktree {
+			if stringWidth(worktree) > w {
+				worktreeAction = -1
 			}
+			out.add(m.quiet(worktree), worktreeAction)
 		}
-		if p.workspace == "" && d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanReview) {
-			primary += "  v review"
-			compact += "  v review"
-		}
-		if d.route.owner.Valid() && m.menuFeaturesFromBackend.Has(x.PlanWorkspace) && v.snapshot.RunAvailability != sdk.PlanRunPinned {
-			primary += "  h history"
-			if p.workspace == "" && !v.snapshot.Closed {
-				primary += "  c close plan"
-			} else if p.workspace == "" && !v.snapshot.Complete {
-				primary += "  c reopen"
-			}
-		}
-		if m.menuFeaturesFromBackend.Has(x.PlanWorkspace) {
-			close = "esc back"
-		}
-		hint, target := m.hintRow(w, primary+"  "+move, compact, close), -1
-		if scoped && strings.Contains(ansi.Strip(hint), "s scoped") {
-			target = planScopedTarget
-		}
-		add(m.paint(x.Muted, hint), target)
-	}
-	if gaps >= 1 {
-		add("", -1)
-	}
-	return
+		return out
+	})
 }
 
 func (m *Model) planRunBar(d *dialog, v *planView, width int) (bar, preview string, runnable bool) {
@@ -790,7 +712,7 @@ func (m *Model) planRunBar(d *dialog, v *planView, width int) (bar, preview stri
 		if stringWidth(label) > width {
 			label = "↵ retry"
 		}
-		return planRunEmphasis(label), m.paint(x.Muted, " · no receipt"), true
+		return strongText(label), m.paint(x.Muted, " · no receipt"), true
 	case v.snapshot.Run != nil && v.snapshot.Run.State == "running":
 		return v.activity(), "", false
 	}
@@ -801,7 +723,7 @@ func (m *Model) planRunBar(d *dialog, v *planView, width int) (bar, preview stri
 	if v.note != "" {
 		note := oneLine(v.note)
 		if len(ids) != 0 {
-			return planRunEmphasis("↵ retry"), m.paint(x.Warning, " · "+note), true
+			return strongText("↵ retry"), m.paint(x.Warning, " · "+note), true
 		}
 		return m.control(note), "", false
 	}
@@ -824,7 +746,7 @@ func (m *Model) planSelectionBar(v *planView, p *planPicker, ids []string, width
 		compact = fmt.Sprintf("↵ Run %d", len(ids))
 	}
 	if stringWidth(compact+revision) > width {
-		return planRunEmphasis(compact), "", true
+		return strongText(compact), "", true
 	}
 	count, dependent := v.unselected(p, ids[0])
 	remaining := ""
@@ -834,10 +756,10 @@ func (m *Model) planSelectionBar(v *planView, p *planPicker, ids []string, width
 	if len(ids) == 1 {
 		prefix := "↵ " + label + " "
 		if stringWidth(prefix+revision) >= width {
-			return planRunEmphasis(compact), "", true
+			return strongText(compact), "", true
 		}
 		title := ansi.Truncate(v.title(ids[0]), max(1, width-stringWidth(prefix+revision)), "…")
-		bar = planRunEmphasis(prefix + title + revision)
+		bar = strongText(prefix + title + revision)
 		room := width - stringWidth(bar) - 2
 		if dependent != "" {
 			label := dependent + " stays pending"
@@ -855,7 +777,7 @@ func (m *Model) planSelectionBar(v *planView, p *planPicker, ids []string, width
 		}
 		return bar, "", true
 	}
-	bar = planRunEmphasis(compact + revision)
+	bar = strongText(compact + revision)
 	room := width - stringWidth(bar) - 2
 	if room <= 0 {
 		return bar, "", true
@@ -870,8 +792,6 @@ func (m *Model) planSelectionBar(v *planView, p *planPicker, ids []string, width
 	}
 	return bar, m.paint(x.Muted, "  "+ansi.Truncate(order, room, "…")), true
 }
-
-func planRunEmphasis(label string) string { return "\x1b[1m" + label + "\x1b[22m" }
 
 func (v *planView) unselected(p *planPicker, first string) (count int, dependent string) {
 	for _, s := range v.snapshot.Plan.Steps {
@@ -893,9 +813,10 @@ func (m *Model) planDetailWindow(v *planView, p *planPicker, width, height int) 
 }
 
 func (m *Model) planDetails(v *planView, s sdk.PlanStep, width int) []string {
-	rows := wrapped(oneLine(s.Title), width)
-	rows = append(rows, wrapped(oneLine(s.Description), width)...)
-	rows = append(rows, "")
+	rows := wrapped(strongText(oneLine(s.Title)), width)
+	for _, line := range wrapped(oneLine(s.Description), width) {
+		rows = append(rows, m.quiet(line))
+	}
 	add := func(label, value string) {
 		if width < 40 {
 			rows = append(rows, wrapped(label+": "+value, width)...)
@@ -909,16 +830,6 @@ func (m *Model) planDetails(v *planView, s sdk.PlanStep, width int) []string {
 			}
 			rows = append(rows, prefix+line)
 		}
-	}
-	if report := v.taskReport(s.ID); report.State != "" {
-		add("Reported", oneLine(report.Detail))
-	}
-	if s.Blocker != "" {
-		label := "Blocked"
-		if v.snapshot.Chat {
-			label = "Plan note"
-		}
-		add(label, oneLine(s.Blocker))
 	}
 	for _, id := range s.Requires {
 		add("Needs", v.title(id))
@@ -956,6 +867,16 @@ func (m *Model) planDetails(v *planView, s sdk.PlanStep, width int) []string {
 	add("Thinking", requested)
 	for _, evidence := range result.Evidence {
 		rows = append(rows, wrapped(oneLine(evidence), width)...)
+	}
+	if s.Blocker != "" {
+		label := "Blocked"
+		if v.snapshot.Chat {
+			label = "Plan note"
+		}
+		add(label, oneLine(s.Blocker))
+	}
+	if report := v.taskReport(s.ID); report.State != "" {
+		add("Reported", oneLine(report.Detail))
 	}
 	return rows
 }

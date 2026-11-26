@@ -23,6 +23,9 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 		return menuFrame{}
 	}
 	w, n := m.pane().width, min(available, max(1, m.height*7/10))
+	if d.full {
+		n = available
+	}
 	var frame menuFrame
 	switch {
 	case d.planWorkspace != nil:
@@ -32,7 +35,7 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	case d.planReview != nil:
 		frame.rows, frame.targets = m.planReviewRows(d, w, n)
 	case d.plan != nil:
-		frame.rows, frame.targets = m.planRows(d, w, n)
+		frame = m.planRows(d, w, n)
 	case d.git != nil:
 		frame.rows, frame.targets = m.gitReviewRows(d, w, n)
 	case d.workTrust != nil:
@@ -79,7 +82,7 @@ func (m *Model) menuShell(w, n int, c menuChrome, body func(int) menuFrame) menu
 	}
 	floor := max(1, c.minBody)
 	h := n
-	header := c.title != "" && h > floor
+	header := c.title != "" && (h > floor+1 || h > floor && c.consequence.text == "")
 	if header {
 		h--
 	}
@@ -281,4 +284,18 @@ func menuCount(n int, singular, plural string) string {
 		return "1 " + singular
 	}
 	return strconv.Itoa(n) + " " + plural
+}
+
+// Do not intercept f in a text field or a type-to-filter list.
+func (d *dialog) canZoom() bool {
+	return d.plan != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil ||
+		d.git != nil || d.output != nil || d.workTrust != nil || d.themePicker != nil ||
+		d.config != nil && !d.config.pickingModel
+}
+
+func (d *dialog) zoomKey() string {
+	if d.full {
+		return "f fit"
+	}
+	return "f full"
 }

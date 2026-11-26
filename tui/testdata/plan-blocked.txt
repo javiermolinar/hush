@@ -5,17 +5,19 @@
 
 
 
-  Plan · r7 · Workspace profiles ──────────────────────────────────────────────────────────────────── 0/3 verified
 
-    ○ Save a profile                        Ready        │   Restore saved profiles
-  › ● Restore saved profiles                Needs 1      │   Read the saved profile and restore its settings.
-    ○ Document discovery                    Blocked      │
-                                                         │   Needs     Save a profile
-                                                         │   Check     Saved settings round-trip
-                                                         │   Thinking  inherit
+
+
+
+  Workspace profiles · Plan · r7 ──────────────────────────────────────────────────────────────────── 0/3 verified
+    □ ○ Save a profile                       Ready         │ Restore saved profiles
+  › ■ ○ Restore saved profiles               Needs 1       │ Read the saved profile and restore its settings.
+    □ ⏸ Document discovery                   Blocked       │ Needs     Save a profile
+                                                           │ Check     Saved settings round-trip
+                                                           │ Thinking  inherit
 
   Blocked · select Save a profile
-  space select  tab details  ↑↓ move                                                                     esc close
+  space select  tab details  ↑↓ move  f full  esc back
 
   ○ idle ─────────────────────────────────────────────────────────────────────────────────────────────────────────
   you ›

@@ -261,7 +261,7 @@ func (m *Model) planReviewRows(d *dialog, w, n int) (rows []string, targets []in
 			rows, targets = append(rows, ansi.Truncate(line, w, "…")), append(targets, -1)
 		}
 	}
-	add(planRunEmphasis(fmt.Sprintf("Plan review · r%d · %s", p.target.Revision, oneLine(p.title))))
+	add(strongText(fmt.Sprintf("Plan review · r%d · %s", p.target.Revision, oneLine(p.title))))
 	keys := "↑↓ scroll"
 	if p.failed {
 		add("Could not load review · r refresh")
