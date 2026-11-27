@@ -5,7 +5,7 @@ import { access, link, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile 
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { configure, defineTask, ToolResultEntry } from "@earendil-works/pi-durable";
+import { configure, defineDoc, defineTask, ToolResultEntry } from "@earendil-works/pi-durable";
 import { dial } from "../../server/test/client.mjs";
 import { admitToolProfile } from "../../dist/backend/src/tool-policy.js";
 import { WorkspaceTrust } from "../../dist/backend/src/workspace-trust.js";
@@ -52,32 +52,45 @@ async function setup(t) {
   return { config, project, cwd, git, grant, put, secret: join(dir, "secret.txt") };
 }
 
-// No production launch API is involved. A fixture supplies an inert owner
-// (definition intentionally not installed). Only the Hush review tools run.
+// The inert owner is used only to prove that a profile without native admission grants no reads.
 const anchor = defineTask({ name: "fixture.snapshot-owner", version: 1, initial: () => ({ phase: "hold" }), phases: {} });
+const ledger = defineDoc({ kind: "hush.delegated-reviews", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: () => ({ cohorts: [] }), checkpointWhen: () => true });
 
 const scope = { tracked: ["entry.txt", "context.txt", "removed.txt"], untracked: ["new.txt"] };
 
 test("a persisted code review sees the exact dirty target, not its parent or the moving tree", { timeout: 18_000 }, async t => {
   const { config, cwd, git, grant, put } = await setup(t);
-  const provider = await planProvider(t, config.agentDir, ({ text, tools, results, messages, prompt }) => {
+  const normal = "Read the persisted snapshot", revoked = "Read after a grant change";
+  const gates = new Map([normal, revoked].map(brief => [brief, { placed: Promise.withResolvers(), read: Promise.withResolvers() }]));
+  const provider = await planProvider(t, config.agentDir, async ({ text, tools, results, messages, prompt }) => {
     if (text === "unrelated parent transcript") return "parent response";
-    assert.equal(text, "Code review fixture brief");
-    assert.deepEqual(tools, ["hush_review_read"]);
+    const prefix = "Code review assignment\n";
+    const native = text.startsWith(prefix);
+    if (!native) assert.equal(text, "Code review fixture brief");
+    assert.deepEqual(tools.toSorted(), native ? ["hush_review_read", "hush_review_report"] : ["hush_review_read"]);
     assert.doesNotMatch(prompt, /Current working directory|Saving a plan/);
     assert.doesNotMatch(JSON.stringify(messages), /UNRELATED|IGNORED_TOKEN|OUTSIDE_|LATEST_WORKING|parent transcript|parent response|git\/config/);
-    if (!results.length) return [call("hush_review_read"), call("hush_review_read", { path: "entry.txt" }),
-      call("hush_review_read", { path: "new.txt" }), call("hush_review_read", { path: "unrelated.txt" }),
-      call("hush_review_read", { path: "../outside.txt" }), call("hush_review_read", { path: "ignored.txt" }),
-      call("read", { path: "not-selected.txt" }), call("hush_plan_propose"), call("codemode", { code: 'return "no"' }),
-      call("bash", { command: "echo should-not-run" })];
+    if (!results.length) {
+      if (native) {
+        const gate = gates.get(JSON.parse(text.slice(prefix.length)).brief);
+        assert.ok(gate);
+        gate.placed.resolve();
+        await gate.read.promise;
+      }
+      return [call("hush_review_read"), call("hush_review_read", { path: "entry.txt" }),
+        call("hush_review_read", { path: "new.txt" }), call("hush_review_read", { path: "unrelated.txt" }),
+        call("hush_review_read", { path: "../outside.txt" }), call("hush_review_read", { path: "ignored.txt" }),
+        call("read", { path: "not-selected.txt" }), call("hush_plan_propose"), call("codemode", { code: 'return "no"' }),
+        call("bash", { command: "echo should-not-run" })];
+    }
     assert.equal(results.length, 10);
     return "advisory only";
   });
   let backend, wire;
   const start = async () => { backend = await startBackend({ ...config, model: provider.model }); };
   const stop = async () => { wire?.close(); await backend?.close(); backend = undefined; };
-  t.after(stop);
+  t.after(async () => { for (const gate of gates.values()) gate.read.resolve(); await stop(); });
   await start();
   const { harness: h, root } = backend;
   assert.equal((await (await root.submit({ type: "input", content: "unrelated parent transcript" }, ctx)).wait(ctx)).status, "done");
@@ -92,31 +105,45 @@ test("a persisted code review sees the exact dirty target, not its parent or the
   assert.deepEqual(await backend.reviewSnapshots.freshness(root.id, before.id, scope, ctx), { stale: false });
   assert.deepEqual(await backend.reviewSnapshots.freshness(root.id, before.id, { ...scope, untracked: [] }, ctx),
     { stale: true, reason: "scope_changed" });
-  await put("entry.txt", "LATEST_WORKING\n");
-  assert.deepEqual(await backend.reviewSnapshots.freshness(root.id, before.id, scope, ctx), { stale: true, reason: "source_changed" });
-  assert.notEqual((await backend.reviewSnapshots.capture(root.id, scope, ctx)).id, before.id);
-
   await stop();
   await start();
   wire = await dial(config.socket);
-  ok(await wire.send("hello", { versions: [1] }));
-  const running = backend.harness;
-  const review = async (owner, extensions, key) => {
+  ok(await wire.send("hello", { versions: [1], capabilities: { delegation: [1] } }));
+  const running = backend.harness, owner = backend.root.id;
+  assert.deepEqual(await backend.reviewSnapshots.freshness(owner, before.id, scope, ctx), { stale: false });
+  const toolResults = async id => {
+    const child = await running.conversation(id, ctx);
+    return (await child.entries({}, 64, undefined, ctx)).items.filter(entry => ToolResultEntry.is(entry)).map(entry => entry.model[0]);
+  };
+  const launch = async (requestId, brief) => {
+    const receipt = ok(await wire.send("ext.delegation.start", { threadId: String(owner), requestId, scope, assignments: [{ name: "Review", brief }] }));
+    await gates.get(brief).placed.promise;
+    const { cohorts } = await running.snapshot(ledger, owner, ctx);
+    const [{ child, task }] = cohorts.find(c => c.pin.receipt.requestId === requestId).rows;
+    return { receipt, child, task };
+  };
+  const unadmittedReview = async (owner, key) => {
     const id = await running.commit(async tx => {
       const taskId = await tx.createTask(anchor, null, { ownership: { kind: "conversation" }, conversationId: owner, background: true });
       const child = await tx.createConversation({ ownership: { kind: "task", taskId } });
       await admitToolProfile(tx, child, { kind: "reviewer", target: { kind: "code", snapshotId: before.id } });
-      await configure(tx, child.id, { extensions, tools: [{ name: "hush_review_read" }], modelTools: null,
+      await configure(tx, child.id, { extensions: [{ name: "hush-code-review-snapshot" }], tools: [{ name: "hush_review_read" }], modelTools: null,
         cwd, model: provider.model, instructions: "Only review the supplied target." });
       return child.id;
     }, ctx);
     const child = await running.conversation(id, ctx);
     const submitted = await child.submit({ type: "input", content: "Code review fixture brief", requestId: key }, ctx);
     assert.equal((await submitted.wait(ctx)).status, "done");
-    return { id, results: (await child.entries({}, 64, undefined, ctx)).items.filter(entry => ToolResultEntry.is(entry)).map(entry => entry.model[0]) };
+    return toolResults(id);
   };
-  const ext = [{ name: "hush-code-review-snapshot" }]; // Use registry names, not unguarded local definitions.
-  const { id, results } = await review(backend.root.id, ext, "original");
+  const admitted = await launch("original", normal), id = admitted.child;
+  assert.equal(admitted.receipt.snapshotId, before.id);
+  await put("entry.txt", "LATEST_WORKING\n");
+  assert.deepEqual(await backend.reviewSnapshots.freshness(owner, before.id, scope, ctx), { stale: true, reason: "source_changed" });
+  assert.notEqual((await backend.reviewSnapshots.capture(owner, scope, ctx)).id, before.id);
+  gates.get(normal).read.resolve();
+  await running.waitForTask(admitted.task, ctx);
+  const results = await toolResults(id);
   const input = index => {
     const m = results.find(r => r.toolCallId.endsWith(`-${index}`));
     assert.ok(m && !m.isError, JSON.stringify(results));
@@ -127,20 +154,30 @@ test("a persisted code review sees the exact dirty target, not its parent or the
     [["base", "\uFEFFbase\r\n"], ["staged", "\uFEFFstaged\r\n"], ["working", "\uFEFFworking\r\n"]].map(([kind, text]) => [kind, { mode: "100644", hash: sha(text), text }])) });
   assert.equal(input(2).working.text, "explicit untracked\n");
   assert.equal(results.filter(r => r.isError).length, 7);
+  const childEntries = (await (await running.conversation(id, ctx)).entries({}, 64, undefined, ctx)).items;
+  const assignment = childEntries.find(e => e.kind === "hush.review.assignment");
+  assert.ok(assignment, "the native worker received its own keyed assignment");
   for (const method of ["submit", "thread.fork", "thread.configure"]) {
     const threadId = String(id);
     const params = method === "submit" ? { threadId, text: "another task", requestId: "no", whenBusy: "reject" }
       : method === "thread.configure" ? { threadId, change: { thinkingLevel: "off" } }
-      : { threadId, atEntryId: String((await (await running.conversation(id, ctx)).entries({}, 64, undefined, ctx)).items.find(e => e.kind === "pi.user").id) };
+      : { threadId, atEntryId: String(assignment.id) };
     assert.equal((await wire.send(method, params)).error.code, "not_found");
   }
   const otherParent = await running.createConversation({ ownership: { kind: "ownerless" }, agent: { cwd, model: provider.model } }, ctx);
-  const wrongOwner = await review(otherParent.id, ext, "wrong-owner");
-  assert.ok(wrongOwner.results.every(result => result.isError), "a snapshot ID is not a transferable grant");
+  for (const [parent, key] of [[owner, "unadmitted"], [otherParent.id, "wrong-owner"]]) {
+    const denied = await unadmittedReview(parent, key);
+    assert.equal(denied.length, 10);
+    assert.ok(denied.every(result => result.isError), "a profile without a receipt must not grant reads");
+  }
+  const next = await launch("revoked-regrant", revoked);
   await grant(cwd, "revoke");
   await grant();
-  const regranted = await review(backend.root.id, ext, "revoked-regrant");
-  assert.ok(regranted.results.every(result => result.isError), "a new grant does not authorize a captured snapshot");
+  gates.get(revoked).read.resolve();
+  await running.waitForTask(next.task, ctx);
+  const denied = await toolResults(next.child);
+  assert.equal(denied.length, 10);
+  assert.ok(denied.every(result => result.isError), "a new grant does not authorize a captured snapshot");
 });
 
 test("snapshot capture rejects intent-to-add without rejecting genuinely staged empty files", { timeout: 18_000 }, async t => {

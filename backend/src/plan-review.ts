@@ -1,13 +1,13 @@
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, AssistantEntry, configure, defineDocFamily, defineExtension, defineTask, SubmissionSettled,
-  type ConversationId, type EntryRecord, type Harness, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+  type ConversationId, type ConversationRecord, type EntryRecord, type Harness, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { planReviewAreas, planReviewKind, type PlanReviewAssessment, type PlanReviewHost, type PlanReviewRecord,
   type PlanReviewReport, type PlanReviewSource, type PlanReviewTarget, type PlanReviewView } from "../../server/src/plan-review.js";
 import type { PlanDefinition } from "../../server/src/plan.js";
 import { object, WireError } from "../../server/src/wire.js";
 import { notePlanReviewChange, readPlanRevision, type Plans, type PlanSources } from "./plan.js";
 import type { PlanRunModel } from "./plan-turn.js";
-import { admitToolProfile } from "./tool-policy.js";
+import { admitToolProfile, assignedToolProfile } from "./tool-policy.js";
 
 export const planReviewTaskKind = "hush.plan-review";
 const settled = "review-settled";
@@ -28,6 +28,16 @@ const Reviews = defineDocFamily<{ attempts: Attempt[] }, null>({
   kind: "hush.plan-review-log", version: 1, family: true, scope: "session",
   initial: () => ({ attempts: [] }), checkpointWhen: () => true,
 });
+export async function isPublicPlanReviewer(tx: Tx, child: ConversationRecord, input: unknown) {
+  if (!child.owner || !object(input) || typeof input.planId !== "string" || typeof input.revision !== "number") return false;
+  const profile = await assignedToolProfile(tx, child);
+  if (profile?.kind !== "reviewer" || profile.target.kind !== "plan" ||
+      profile.target.planId !== input.planId || profile.target.revision !== input.revision) return false;
+  const { attempts } = await tx.doc(Reviews, key(profile.target), null);
+  return attempts.some(row => row.id === String(child.owner!.taskId) && row.threadId === String(child.owner!.conversationId) &&
+    row.reviewerThreadId === String(child.id));
+}
+
 const sourcesState = (sources?: PlanSources): PlanReviewSource => !sources?.inputs.length ? "missing" : sources.partial ? "partial" : "captured";
 
 function plain(value: unknown): value is string {

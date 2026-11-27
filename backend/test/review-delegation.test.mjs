@@ -22,6 +22,10 @@ const deny = (reply, code) => { assert.equal(reply.ok, false, JSON.stringify(rep
 const notices = "hush.worker.notice", spawnName = "hush_spawn_reviews", joinName = "hush_join_reviews";
 const ledger = defineDoc({ kind: "hush.delegated-reviews", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({ cohorts: [] }), checkpointWhen: () => true });
+const releases = defineDoc({ kind: "hush.review-releases", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: () => ({ byHandle: {} }), checkpointWhen: () => true });
+const policy = defineDoc({ kind: "hush.assigned-tool-policy", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: () => ({}), checkpointWhen: () => true });
 const scope = { tracked: ["a.txt"], untracked: ["test.txt"] };
 const query = (threadId, requestId, options = {}) => ({ threadId, requestId, scope,
   assignments: [{ name: "First", brief: "Review the API" }], ...options });
@@ -256,6 +260,19 @@ test("a parent-scoped roster and dossier preserve distinct, bounded code review 
 });
 
 const parallel = { mode: "parallel", assignments: [{ name: "Fast", brief: "Read the staged change" }, { name: "Slow", brief: "Read context" }] };
+const refillPair = { mode: "parallel", assignments: [
+  { name: "RefillOne", brief: "Review the first new assignment" }, { name: "RefillTwo", brief: "Review the second new assignment" },
+] };
+const isRefill = input => refillPair.assignments.some(assignment => assignment.brief === input.brief);
+const refillReport = ({ name }) => `CAPACITY_${name}_REPORT`;
+const refillReply = (turn, input) => turn.results.length ? "Finished." : [call("hush_review_report", { report: refillReport(input) })];
+
+async function assertRefillSucceeded(wire, q, receipt) {
+  const reports = q.assignments.map(refillReport);
+  await Promise.all(reports.map(report => waitFor(wire, report)));
+  assert.deepEqual((await info(wire, q)).workers.map(w => [w.handle, w.state, w.report]),
+    receipt.workers.map(({ handle }, i) => [handle, "succeeded", reports[i]]));
+}
 
 test("a same-turn join parks, retains a successful sibling, and late and repeated joins use the same outcomes", { timeout: 12_000 }, async t => {
   const env = await layout(t), fast = env.hold(), slow = env.hold(), allowFast = env.hold(), allowSlow = env.hold();
@@ -360,6 +377,7 @@ test("join reports unresolved evidence and still waits for a correlatable siblin
   let handles, single, both;
   const provider = await reviewProvider(t, env, async (turn, input) => {
     if (input) {
+      if (isRefill(input)) return refillReply(turn, input);
       if (input.name === "Slow" && !turn.results.length) { slowStarted.resolve(); await finishSlow.promise; }
       return turn.results.length ? "Finished." : [call("hush_review_report", { report: `${input.name.toUpperCase()}_REPORT` })];
     }
@@ -396,7 +414,7 @@ test("join reports unresolved evidence and still waits for a correlatable siblin
   });
   assert.equal(single.wait, "unresolved");
   assert.deepEqual(single.outcomes.map(w => [w.handle, w.state, w.noticeId, w.report]), [[handles[0], "unresolved", undefined, undefined]]);
-  assert.match(single.outcomes[0].detail, /reservation is still held/);
+  assert.match(single.outcomes[0].detail, /its task has ended; the slot is free/i);
   finishSlow.resolve();
   assert.equal(ok(await a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId })).status, "done");
   assert.equal(both.wait, "unresolved");
@@ -405,8 +423,10 @@ test("join reports unresolved evidence and still waits for a correlatable siblin
   ]);
   assert.ok(both.outcomes.every(w => w.snapshotId === receipt.snapshotId));
   assert.equal((await history(a, id)).entries.filter(e => e.kind === notices).length, 2);
-  deny(await start(a, query(id, "must-not-refill", parallel)), "limit");
-  assert.deepEqual(provider.requests.filter(r => isBrief(r.text)).map(r => brief(r.text).name).sort(), ["Fast", "Fast", "Slow", "Slow"]);
+  const refill = query(id, "refill-after-join", refillPair), refilled = ok(await start(a, refill));
+  await assertRefillSucceeded(a, refill, refilled);
+  assert.deepEqual((await info(a, q)).workers.map(w => ({ ...w, snapshotId: receipt.snapshotId })), both.outcomes);
+  assertBriefStarts(provider, { q, receipt }, { q: refill, receipt: refilled });
 });
 
 test("an unreleased reservation's terminal notice does not authorize a join", { timeout: 10_000 }, async t => {
@@ -640,8 +660,6 @@ test("a worker stays private when its assigned policy is unavailable", { timeout
   // wait is outstanding before the only change (a child document retirement).
   deny(await roster(baseline.cursor), "limit");
   await history(a, id);
-  const policy = defineDoc({ kind: "hush.assigned-tool-policy", version: 1, scope: "conversation", history: "latest", fork: "initial",
-    initial: () => ({}), checkpointWhen: () => true });
   const { child, submission } = await backend.harness.commit(async tx => {
     const { cohorts } = await tx.doc(ledger, Number(id));
     const [row] = cohorts[0].rows;
@@ -675,7 +693,9 @@ async function waitForTaskTerminal(backend, taskId) {
 
 test("restart does not settle a worker with a contradictory checkpoint", { timeout: 12_000 }, async t => {
   const env = await layout(t), allow = env.hold();
-  const provider = await reviewProvider(t, env, async turn => {
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    assert.ok(input);
+    if (isRefill(input)) return refillReply(turn, input);
     await allow.promise;
     return turn.results.length ? "Finished." : [call("hush_review_report", { report: "FIXTURE_REPORT" })];
   });
@@ -706,13 +726,17 @@ test("restart does not settle a worker with a contradictory checkpoint", { timeo
   assert.equal(worker.report, undefined);
   assert.deepEqual(ok(await stop(after, id, receipt.workers[0].handle)).worker, worker);
   assert.equal((await history(after, id)).entries.filter(e => e.kind === notices).length, 0);
-  deny(await start(after, query(id, "must-not-refill", parallel)), "limit");
-  assert.equal(provider.requests.length, 2, "the original child was not replayed");
+  await state(after, id);
+  const refill = query(id, "refill-after-restart", refillPair), refilled = ok(await start(after, refill));
+  await assertRefillSucceeded(after, refill, refilled);
+  assert.deepEqual((await info(after, q)).workers, [worker]);
+  assertBriefStarts(provider, { q, receipt }, { q: refill, receipt: refilled });
 });
 
 test("restart does not settle a held worker with an impossible open checkpoint", { timeout: 12_000 }, async t => {
   const env = await layout(t);
-  const provider = await reviewProvider(t, env, (_turn, input) => {
+  const provider = await reviewProvider(t, env, (turn, input) => {
+    if (input && isRefill(input)) return refillReply(turn, input);
     assert.equal(input, undefined, "no child can start without release");
     return "Finished without launching a review.";
   });
@@ -740,8 +764,12 @@ test("restart does not settle a held worker with an impossible open checkpoint",
   assert.equal(worker.noticeId, undefined);
   assert.equal(ok(await after.send("submission.wait", { threadId: id, submissionId: receipt.submissionId })).status, "done");
   assert.equal((await history(after, id)).entries.filter(e => e.kind === notices).length, 0);
-  deny(await start(after, query(id, "must-not-refill", parallel)), "limit");
-  assert.equal(provider.requests.length, 1, "only the original parent turn resumed");
+  await state(after, id);
+  const refill = query(id, "refill-after-held-restart", refillPair), refilled = ok(await start(after, refill));
+  await assertRefillSucceeded(after, refill, refilled);
+  assert.deepEqual((await info(after, q)).workers, [worker]);
+  assertBriefStarts(provider, { q, receipt, count: 0 }, { q: refill, receipt: refilled });
+  assert.equal(provider.requests.filter(r => !isBrief(r.text)).length, 1, "only the original parent turn resumed");
 });
 
 test("missing and corrupt worker evidence stays unresolved and holds capacity", { timeout: 12_000 }, async t => {
@@ -774,12 +802,13 @@ test("missing and corrupt worker evidence stays unresolved and holds capacity", 
   assert.deepEqual(activity.workers.map(w => [w.handle, w.state]), receipt.workers.map(w => [w.handle, "unresolved"]));
   for (const { handle } of receipt.workers) {
     const ref = { threadId: id, handle };
-    assert.equal(ok(await after.send("ext.workerActivity.inspect", ref)).worker.state, "unresolved");
+    deny(await after.send("ext.workerActivity.inspect", ref), "invalid_request");
     deny(await after.send("ext.workerActivity.inspect", { ...ref, transcript: true }), "invalid_request");
   }
   for (const _ of [1, 2]) {
     const v = await info(after, q);
     assert.ok(v.workers.every(w => w.state === "unresolved" && !w.report && !w.noticeId));
+    for (const worker of v.workers) assert.match(worker.detail, /reservation is still held/i);
     assert.deepEqual(v.receipt, receipt);
   }
   assert.equal(ok(await stop(after, id, receipt.workers[0].handle)).worker.state, "unresolved");
@@ -877,4 +906,860 @@ test("an ordinary model guessing a hidden tool cannot authorize a worker", { tim
   const { id } = ok(await a.send("thread.new", {}));
   assert.equal((await ask(a, id, "Try starting an unapproved review", "hidden-call")).status, "done");
   assert.equal((await backend.harness.commit(tx => tx.scanTasks({ conversationId: Number(id), kind: "hush.review-worker" }, 2), ctx)).items.length, 0);
+});
+
+const startedBriefs = provider => provider.requests.filter(r => isBrief(r.text) && !r.results.length).map(r => brief(r.text).brief);
+function assertBriefStarts(provider, ...cohorts) {
+  // The provider sees the brief, not the handle. Give each fixture assignment a distinct brief.
+  const started = startedBriefs(provider), seen = new Set();
+  let total = 0;
+  for (const { q, receipt, count = 1 } of cohorts) receipt.workers.forEach(({ handle }, i) => {
+    const text = q.assignments[i].brief;
+    assert.ok(!seen.has(text), "fixture briefs must be distinct");
+    seen.add(text);
+    assert.equal(started.filter(b => b === text).length, count, `provider starts for ${handle}`);
+    total += count;
+  });
+  assert.equal(started.length, total, "no extra brief reached the provider");
+}
+const noticeIds = async (wire, id) => (await history(wire, id)).entries.filter(e => e.kind === notices).map(e => e.id);
+
+for (const [mode, stoppedIndex] of [["parallel", 0], ["sequential", 0], ["sequential", 1]]) {
+  test(`held ${mode} spawn and join after Stop of the ${stoppedIndex === 0 ? "first" : "second"} worker`, { timeout: 10_000 }, async t => {
+    const env = await layout(t), parentReady = env.hold(), spawnNow = env.hold();
+    const prompt = "Launch the two reserved reviews and join both.";
+    const report = "SURVIVING_REVIEW_REPORT", survivor = 1 - stoppedIndex;
+    let released, joined;
+    const provider = await reviewProvider(t, env, async (turn, input) => {
+      if (input) return turn.results.length ? "Finished." : [call("hush_review_report", { report })];
+      assert.equal(turn.text, prompt);
+      switch (turn.results.length) {
+        case 0:
+          assert.ok(turn.tools.includes(spawnName) && turn.tools.includes(joinName));
+          parentReady.resolve();
+          await spawnNow.promise;
+          return [call(spawnName)];
+        case 1:
+          released = JSON.parse(turn.results[0].content);
+          return [call(joinName, { handles: released.workers.map(w => w.handle) })];
+        case 2:
+          joined = JSON.parse(turn.results[1].content);
+          return "Finished the parent turn.";
+        default:
+          assert.fail("expected one spawn and one join");
+      }
+    });
+    await env.boot(provider.model);
+    const a = await env.peer();
+    const { id } = ok(await a.send("thread.new", {}));
+    await state(a, id);
+    const q = query(id, "held-stop", { ...parallel, mode, prompt }), receipt = ok(await start(a, q));
+    await parentReady.promise;
+    assert.deepEqual((await info(a, q)).workers.map(w => w.state), ["reserved", "reserved"]);
+    ok(await stop(a, id, receipt.workers[stoppedIndex].handle));
+    await waitFor(a, "The worker was stopped.");
+    const held = (await info(a, q)).workers;
+    assert.equal(held[stoppedIndex].state, "cancelled");
+    assert.equal(held[survivor].state, "reserved");
+    assert.deepEqual(startedBriefs(provider), []);
+
+    spawnNow.resolve();
+    assert.equal(ok(await a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId })).status, "done");
+    assert.deepEqual(released, { snapshotId: receipt.snapshotId, workers: receipt.workers });
+    const { workers } = await info(a, q);
+    assert.deepEqual(workers.map(w => w.state), stoppedIndex === 0 ? ["cancelled", "succeeded"] : ["succeeded", "cancelled"]);
+    assert.equal(workers[survivor].report, report);
+    assert.deepEqual(joined, { wait: "settled", outcomes: workers.map(w => ({ ...w, snapshotId: receipt.snapshotId })) });
+    assert.deepEqual(await noticeIds(a, id), [held[stoppedIndex].noticeId, workers[survivor].noticeId]);
+    assert.deepEqual(startedBriefs(provider), [q.assignments[survivor].brief]);
+  });
+}
+
+function observeParentCommits(t, backend, id, visit) {
+  const owner = Number(id);
+  const observed = backend.harness.observeCommits({ advance({ changes }) {
+    for (const { type, value } of changes) if (value?.conversationId === owner) visit(type, value);
+  }, end() {} });
+  t.after(() => observed.detach());
+}
+
+// Wait for the successor to reach the fence without depending on how it is woken.
+const atReviewFence = (task, requestId) => task.kind === "hush.review-worker" && task.input.key === requestId &&
+  ["sleeping", "waiting"].includes(task.state.status) && task.state.checkpoint?.phase === "gate";
+
+test("a later review request starts only after its running predecessor publishes a success notice", { timeout: 10_000 }, async t => {
+  const env = await layout(t), firstStarted = env.hold(), finishFirst = env.hold(), fenced = Promise.withResolvers();
+  const [first, later] = parallel.assignments, order = [];
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    assert.ok(input);
+    if (turn.results.length) return "Finished.";
+    if (input.name === first.name) {
+      firstStarted.resolve();
+      await finishFirst.promise;
+      return [call("hush_review_report", { report: "FIRST_REQUEST_REPORT" })];
+    }
+    assert.equal(input.name, later.name);
+    order.push("later brief");
+    return [call("hush_review_report", { report: "LATER_REQUEST_REPORT" })];
+  });
+  const backend = await env.boot(provider.model), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {}));
+  await state(a, id);
+  const earlier = query(id, "earlier-request", { assignments: [first] });
+  const next = query(id, "later-request", { assignments: [later] });
+  const firstHandle = ok(await start(a, earlier)).workers[0].handle;
+  await firstStarted.promise;
+  observeParentCommits(t, backend, id, (type, value) => {
+    if (type === "task" && atReviewFence(value, next.requestId)) fenced.resolve(value.input.handle);
+    if (type === "entry" && value.kind === notices && value.data.handle === firstHandle) order.push("first notice");
+  });
+  const laterHandle = ok(await start(a, next)).workers[0].handle;
+  assert.equal(await fenced.promise, laterHandle);
+  assert.equal((await info(a, earlier)).workers[0].state, "running");
+  assert.equal((await info(a, next)).workers[0].state, "reserved");
+  assert.deepEqual(startedBriefs(provider), [first.brief]);
+
+  finishFirst.resolve();
+  await waitFor(a, "LATER_REQUEST_REPORT");
+  assert.equal((await info(a, earlier)).workers[0].state, "succeeded");
+  assert.equal((await info(a, next)).workers[0].state, "succeeded");
+  assert.deepEqual(order, ["first notice", "later brief"]);
+  assert.deepEqual(startedBriefs(provider), [first.brief, later.brief]);
+});
+
+test("Stop cancels a fenced sequential successor without stopping its running predecessor", { timeout: 10_000 }, async t => {
+  const env = await layout(t), firstStarted = env.hold(), finishFirst = env.hold(), fenced = Promise.withResolvers();
+  const [first] = parallel.assignments, report = "PREDECESSOR_REVIEW_REPORT";
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    assert.equal(input?.name, first.name, "the fenced successor never starts");
+    if (turn.results.length) return "Finished.";
+    firstStarted.resolve();
+    await finishFirst.promise;
+    return [call("hush_review_report", { report })];
+  });
+  const backend = await env.boot(provider.model), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {}));
+  await state(a, id);
+  const q = query(id, "stop-fenced", { ...parallel, mode: "sequential" });
+  observeParentCommits(t, backend, id, (type, value) => {
+    if (type === "task" && atReviewFence(value, q.requestId)) fenced.resolve(value.input.handle);
+  });
+  const { workers: [, successor] } = ok(await start(a, q));
+  await firstStarted.promise;
+  assert.equal(await fenced.promise, successor.handle);
+  assert.deepEqual((await info(a, q)).workers.map(w => w.state), ["running", "reserved"]);
+  ok(await stop(a, id, successor.handle));
+  await waitFor(a, "The worker was stopped.");
+  const live = (await info(a, q)).workers;
+  assert.deepEqual(live.map(w => w.state), ["running", "cancelled"]);
+  assert.deepEqual(await noticeIds(a, id), [live[1].noticeId]);
+
+  finishFirst.resolve();
+  await waitFor(a, report);
+  const { workers } = await info(a, q);
+  assert.deepEqual(workers.map(w => w.state), ["succeeded", "cancelled"]);
+  assert.deepEqual(await noticeIds(a, id), [live[1].noticeId, workers[0].noticeId]);
+  assert.deepEqual(startedBriefs(provider), [first.brief]);
+});
+
+async function heldReviewPair(t) {
+  const env = await layout(t), spawnNow = env.hold(), parked = Promise.withResolvers();
+  const tasks = new Map();
+  let spawnResult;
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    if (input) return isRefill(input) ? refillReply(turn, input) : "No advisory report.";
+    if (turn.results.length) spawnResult = turn.results[0].content;
+    else if (await spawnNow.promise) return [call(spawnName)];
+    return "Finished the parent turn.";
+  });
+  const backend = await env.boot(provider.model), a = await env.peer(1, { workerActivity: [1] });
+  const { id } = ok(await a.send("thread.new", {}));
+  const q = query(id, "held-pair", { ...parallel, prompt: "Launch both reserved reviewers." });
+  observeParentCommits(t, backend, id, (type, task) => {
+    if (type === "task" && atReviewFence(task, q.requestId)) {
+      tasks.set(task.input.handle, task.id);
+      if (tasks.size === 2) parked.resolve();
+    }
+  });
+  const receipt = ok(await start(a, q));
+  await parked.promise;
+  return { backend, a, id, q, receipt, provider, tasks, spawnNow, spawnResult: () => spawnResult };
+}
+
+const rosterWorkers = async (wire, threadId) => ok(await wire.send("ext.workerActivity.wait", { threadId })).workers;
+const workerStates = workers => workers.map(({ handle, name, state }) => ({ handle, name, state }));
+
+test("R6: losing a held worker row keeps the receipt member visible and prevents any release", { timeout: 10_000 }, async t => {
+  const { backend, a, id, q, receipt, provider, tasks, spawnNow, spawnResult } = await heldReviewPair(t);
+  const [first, second] = receipt.workers;
+  await backend.harness.commit(async tx => { (await tx.doc(ledger, Number(id))).cohorts[0].rows.pop(); }, ctx);
+  const expected = [{ ...first, state: "reserved" }, { ...second, state: "unresolved" }];
+  const { workers } = await info(a, q);
+  assert.deepEqual(workerStates(workers), expected);
+  assert.deepEqual(await rosterWorkers(a, id), expected.map(w => ({ ...w, activity: "" })));
+  deny(await a.send("ext.workerActivity.inspect", { threadId: id, handle: second.handle }), "invalid_request");
+
+  const firstTransitions = [];
+  observeParentCommits(t, backend, id, (type, task) => {
+    if (type === "task" && task.id === tasks.get(first.handle)) firstTransitions.push(task.state.status);
+  });
+  const stopped = await stop(a, id, second.handle);
+  spawnNow.resolve(true);
+  assert.equal(ok(await a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId })).status, "done");
+  assert.match(spawnResult(), /original review reservation cannot be correlated/i);
+  assert.equal((await backend.harness.snapshot(ledger, Number(id), ctx)).cohorts[0].released, false);
+  assert.deepEqual(firstTransitions, [], "spawn did not signal the intact reservation");
+  assert.deepEqual(ok(stopped).worker, workers[1]);
+  deny(await start(a, query(id, "must-not-refill", parallel)), "limit");
+  assert.deepEqual(startedBriefs(provider), []);
+});
+
+test("R10: a row copied across cohorts cannot duplicate or displace receipt members", { timeout: 10_000 }, async t => {
+  const env = await layout(t);
+  const provider = await reviewProvider(t, env, (turn, input) =>
+    turn.results.length ? "Finished." : [call("hush_review_report", { report: `COPIED_ROW_${input.name}_REPORT` })]);
+  const backend = await env.boot(provider.model), a = await env.peer(1, { workerActivity: [1] });
+  const { id } = ok(await a.send("thread.new", {}));
+  await state(a, id);
+  const one = query(id, "original-row"), two = query(id, "copied-row", { assignments: [{ name: "Second", brief: "Read the test" }] });
+  const [first] = ok(await start(a, one)).workers;
+  await waitFor(a, "COPIED_ROW_First_REPORT");
+  const [second] = ok(await start(a, two)).workers;
+  await waitFor(a, "COPIED_ROW_Second_REPORT");
+  await backend.harness.commit(async tx => {
+    const { cohorts: [original, other] } = await tx.doc(ledger, Number(id));
+    other.rows.unshift({ ...original.rows[0] });
+  }, ctx);
+  const expected = [{ ...first, state: "unresolved" }, { ...second, state: "succeeded" }];
+  assert.deepEqual(await rosterWorkers(a, id), expected.map(w => ({ ...w, activity: "" })));
+  assert.deepEqual(workerStates((await info(a, one)).workers), [expected[0]]);
+  assert.deepEqual(workerStates((await info(a, two)).workers), [expected[1]]);
+  deny(await a.send("ext.workerActivity.inspect", { threadId: id, handle: first.handle }), "invalid_request");
+  deny(await start(a, query(id, "ambiguous-row-refill", parallel)), "limit");
+});
+
+async function reviewPairMissingFirstRow(t) {
+  const env = await layout(t), slowStarted = env.hold(), finishSlow = env.hold(), joinNow = env.hold();
+  let joinResult;
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    if (input) {
+      if (turn.results.length) return "Finished.";
+      if (input.name === "Slow") { slowStarted.resolve(); await finishSlow.promise; }
+      return [call("hush_review_report", { report: `ROW_LOSS_${input.name}_REPORT` })];
+    }
+    switch (turn.results.length) {
+      case 0: return [call(spawnName)];
+      case 1: {
+        const handles = JSON.parse(turn.results[0].content).workers.map(w => w.handle);
+        await joinNow.promise;
+        return [call(joinName, { handles })];
+      }
+      default:
+        joinResult = turn.results[1].content;
+        return "Finished the parent turn.";
+    }
+  });
+  const backend = await env.boot(provider.model), a = await env.peer(1, { workerActivity: [1] });
+  const { id } = ok(await a.send("thread.new", {})), view = await state(a, id);
+  const q = query(id, "lost-first-row", { ...parallel, prompt: "Launch both reviews and join them." });
+  const receipt = ok(await start(a, q));
+  await Promise.all([slowStarted.promise, waitFor(a, "ROW_LOSS_Fast_REPORT")]);
+  assert.deepEqual((await info(a, q)).workers.map(w => w.state), ["succeeded", "running"]);
+  const firstTask = await backend.harness.commit(async tx => {
+    const [removed] = (await tx.doc(ledger, Number(id))).cohorts[0].rows.splice(0, 1);
+    assert.equal(removed.handle, receipt.workers[0].handle);
+    return removed.task;
+  }, ctx);
+  return { env, provider, backend, a, id, q, receipt, firstTask, view, joinNow, finishSlow, joinResult: () => joinResult };
+}
+
+test("R7: join waits for the running sibling of a receipt member whose row was lost", { timeout: 10_000 }, async t => {
+  const { a, id, q, receipt, view, joinNow, finishSlow, joinResult } = await reviewPairMissingFirstRow(t);
+  let live = view;
+  const parked = a.wait(frame => {
+    if (frame.type === "patch") live = applyImmutable(live, frame.ops);
+    return live.tools.some(slot => slot.name === joinName && slot.status === "sleeping");
+  });
+  joinNow.resolve();
+  const parent = a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId }).then(ok);
+  assert.equal(await Promise.race([parked.then(() => "parked"), parent.then(joinResult)]), "parked");
+  assert.deepEqual((await info(a, q)).workers.map(w => w.state), ["unresolved", "running"]);
+  finishSlow.resolve();
+  assert.equal((await parent).status, "done");
+  const { wait, outcomes } = JSON.parse(joinResult());
+  assert.equal(wait, "unresolved");
+  assert.deepEqual(outcomes.map(w => [w.handle, w.state, w.report]), [
+    [receipt.workers[0].handle, "unresolved", undefined],
+    [receipt.workers[1].handle, "succeeded", "ROW_LOSS_Slow_REPORT"],
+  ]);
+  assert.ok(outcomes.every(w => w.snapshotId === receipt.snapshotId));
+});
+
+test("R8: a missing row and task still occupy capacity after restart", { timeout: 10_000 }, async t => {
+  const { env, provider, backend, a, id, q, receipt, firstTask, joinNow, finishSlow } = await reviewPairMissingFirstRow(t);
+  joinNow.resolve();
+  finishSlow.resolve();
+  await waitFor(a, "ROW_LOSS_Slow_REPORT");
+  assert.equal(ok(await a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId })).status, "done");
+  await backend.close();
+  const sqlite = new DatabaseSync(join(env.config.dataDir, "history.sqlite"));
+  try {
+    assert.equal(sqlite.prepare("delete from tasks where id=?").run(firstTask).changes, 1);
+  } finally { sqlite.close(); }
+  await env.boot(provider.model);
+  const after = await env.peer(1, { workerActivity: [1] });
+  deny(await start(after, query(id, "must-not-refill", parallel)), "limit");
+  const [first, second] = receipt.workers;
+  const expected = [{ ...first, state: "unresolved" }, { ...second, state: "succeeded" }];
+  assert.deepEqual(workerStates((await info(after, q)).workers), expected);
+  assert.deepEqual(await rosterWorkers(after, id), expected.map(w => ({ ...w, activity: "" })));
+  assert.deepEqual(startedBriefs(provider).sort(), q.assignments.map(a => a.brief).sort());
+});
+
+test("R9: Stop ends an intact task with a contradictory held checkpoint without publishing an outcome", { timeout: 10_000 }, async t => {
+  const { backend, a, id, q, receipt, provider, tasks, spawnNow } = await heldReviewPair(t);
+  const handle = receipt.workers[1].handle, taskId = tasks.get(handle);
+  await backend.harness.commit(async tx => {
+    const task = await tx.task(taskId);
+    assert.equal(task.state.status, "sleeping");
+    tx.setTask({ ...task, state: { ...task.state, checkpoint: { phase: "open" } } });
+  }, ctx);
+  assert.deepEqual((await info(a, q)).workers.map(w => w.state), ["reserved", "unresolved"]);
+  const { worker } = ok(await stop(a, id, handle));
+  assert.equal(worker.state, "unresolved");
+  assert.equal(worker.noticeId, undefined);
+  const task = await backend.harness.getTask(taskId, ctx);
+  assert.ok(task.state.status === "terminal" || task.abortRequested, "Stop must abort the identity-checked task");
+  await waitForTaskTerminal(backend, taskId);
+  const { workers } = await info(a, q);
+  assert.deepEqual(workers.map(w => w.state), ["reserved", "unresolved"]);
+  assert.deepEqual((await backend.harness.commit(tx => tx.scanConversations({ ownerTaskId: taskId }, 2), ctx)).items, []);
+  assert.deepEqual(await noticeIds(a, id), []);
+  assert.deepEqual(startedBriefs(provider), []);
+
+  spawnNow.resolve(false);
+  assert.equal(ok(await a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId })).status, "done");
+  await state(a, id);
+  const refill = query(id, "refill-after-stop", { assignments: refillPair.assignments.slice(0, 1) });
+  const refilled = ok(await start(a, refill));
+  assert.match(workers[1].detail, /its task has ended; the slot is free/i);
+  assert.equal((await info(a, refill)).workers[0].state, "reserved", "the intact held worker still fences the refill");
+  deny(await start(a, query(id, "third-slot")), "limit");
+  ok(await stop(a, id, receipt.workers[0].handle));
+  await assertRefillSucceeded(a, refill, refilled);
+  assert.deepEqual((await info(a, q)).workers[1], workers[1]);
+  assertBriefStarts(provider, { q, receipt, count: 0 }, { q: refill, receipt: refilled });
+});
+
+for (const sameCohort of [true, false]) {
+  test(`${sameCohort ? "R4: a sequential sibling" : "R5b: a later review request"} starts after a predecessor ends without a notice`, { timeout: 10_000 }, async t => {
+    const env = await layout(t), firstStarted = env.hold(), finishFirst = env.hold(), fenced = Promise.withResolvers();
+    const [first, next] = parallel.assignments, order = [], report = "AFTER_UNRESOLVED_PREDECESSOR";
+    const provider = await reviewProvider(t, env, async (turn, input) => {
+      assert.ok(input);
+      if (isRefill(input)) return refillReply(turn, input);
+      if (input.name === first.name) {
+        firstStarted.resolve();
+        await finishFirst.promise;
+        return "Finished the predecessor's child turn.";
+      }
+      if (turn.results.length) return "Finished.";
+      assert.equal(input.name, next.name);
+      order.push("successor brief");
+      return [call("hush_review_report", { report })];
+    });
+    const backend = await env.boot(provider.model), a = await env.peer();
+    const { id } = ok(await a.send("thread.new", {}));
+    await state(a, id);
+    const earlier = query(id, "unresolved-predecessor", { mode: "sequential", assignments: sameCohort ? [first, next] : [first] });
+    const later = sameCohort ? earlier : query(id, "after-unresolved", { assignments: [next] });
+    observeParentCommits(t, backend, id, (type, value) => {
+      if (type === "task" && atReviewFence(value, later.requestId)) fenced.resolve(value.input.handle);
+    });
+    const receipt = ok(await start(a, earlier));
+    await firstStarted.promise;
+    const laterReceipt = sameCohort ? receipt : ok(await start(a, later));
+    const successor = laterReceipt.workers[sameCohort ? 1 : 0];
+    assert.equal(await fenced.promise, successor.handle);
+    assert.equal((await info(a, earlier)).workers[0].state, "running");
+    assert.equal((await info(a, later)).workers.at(-1).state, "reserved");
+    assert.deepEqual(startedBriefs(provider), [first.brief]);
+
+    const firstTask = await backend.harness.commit(async tx => {
+      const { task: taskId } = (await tx.doc(ledger, Number(id))).cohorts[0].rows[0];
+      const task = await tx.task(taskId), { checkpoint } = task.state;
+      assert.equal(task.state.status, "sleeping");
+      assert.equal(checkpoint.phase, "settle");
+      // The child still signals settlement, but the coordinator cannot
+      // correlate it. Its identity and the successor's fence are unchanged.
+      tx.setTask({ ...task, state: { ...task.state, checkpoint: { ...checkpoint, submission: checkpoint.submission + 1 } } });
+      return taskId;
+    }, ctx);
+    observeParentCommits(t, backend, id, (type, value) => {
+      if (type === "task" && value.id === firstTask && value.state.status === "terminal") order.push("predecessor ended");
+    });
+    finishFirst.resolve();
+    await waitForTaskTerminal(backend, firstTask);
+    assert.equal((await info(a, earlier)).workers[0].state, "unresolved");
+    await waitFor(a, report);
+    const { workers } = await info(a, earlier);
+    const outcomes = sameCohort ? workers : [workers[0], ...(await info(a, later)).workers];
+    assert.deepEqual(outcomes.map(w => [w.state, w.report]), [["unresolved", undefined], ["succeeded", report]]);
+    assert.equal(outcomes[0].noticeId, undefined);
+    assert.deepEqual(await noticeIds(a, id), [outcomes[1].noticeId]);
+    assert.deepEqual(order, ["predecessor ended", "successor brief"]);
+    assert.deepEqual(startedBriefs(provider), [first.brief, next.brief]);
+
+    const refill = query(id, "after-both-end", { ...refillPair, assignments: refillPair.assignments.slice(0, sameCohort ? 2 : 1) });
+    const refilled = ok(await start(a, refill));
+    const { cohorts } = await backend.harness.snapshot(ledger, Number(id), ctx);
+    assert.equal(cohorts.at(-1).rows[0].predecessor, undefined, "new work should not fence on an ended task");
+    await assertRefillSucceeded(a, refill, refilled);
+    assert.deepEqual((await info(a, earlier)).workers[0], outcomes[0]);
+    const originals = sameCohort ? [{ q: earlier, receipt }] : [{ q: earlier, receipt }, { q: later, receipt: laterReceipt }];
+    assertBriefStarts(provider, ...originals, { q: refill, receipt: refilled });
+  });
+}
+
+test("a contradictory assigned profile cannot read another admitted snapshot from the same parent", { timeout: 10_000 }, async t => {
+  const env = await layout(t), begun = env.hold(), readNow = env.hold(), readResult = Promise.withResolvers();
+  const provider = await reviewProvider(t, env, async turn => {
+    if (turn.results.length) {
+      readResult.resolve(turn.results[0].content);
+      return "Finished.";
+    }
+    begun.resolve();
+    await readNow.promise;
+    return [call("hush_review_read", { path: "other.txt" })];
+  });
+  const backend = await env.boot(provider.model), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {}));
+  await env.save("other.txt", "DIFFERENT_SNAPSHOT_CONTENT\n");
+  const other = await backend.reviewSnapshots.capture(Number(id), { tracked: [], untracked: ["other.txt"] }, ctx);
+  const q = query(id, "original-snapshot"), receipt = ok(await start(a, q));
+  assert.notEqual(receipt.snapshotId, other.id);
+  await begun.promise;
+  const taskId = await backend.harness.commit(async tx => {
+    const { child, task } = (await tx.doc(ledger, Number(id))).cohorts[0].rows[0];
+    const { pin } = await tx.doc(policy, child);
+    assert.equal(pin.profile.target.snapshotId, receipt.snapshotId);
+    pin.profile.target.snapshotId = other.id;
+    return task;
+  }, ctx);
+  readNow.resolve();
+  assert.match(await readResult.promise, /not available in this code review snapshot/i);
+  await waitForTaskTerminal(backend, taskId);
+  assert.equal((await info(a, q)).workers[0].state, "unresolved");
+  assert.deepEqual(await noticeIds(a, id), []);
+});
+
+test("inspection cannot return a brief copied from a different assignment", { timeout: 10_000 }, async t => {
+  const { backend, a, id, q, receipt } = await heldReviewPair(t);
+  await backend.harness.commit(async tx => {
+    const [first, second] = (await tx.doc(ledger, Number(id))).cohorts[0].rows;
+    second.brief = first.brief;
+  }, ctx);
+  const { workers } = await info(a, q);
+  assert.deepEqual(workers.map(w => w.state), ["reserved", "unresolved"]);
+  const inspect = i => a.send("ext.workerActivity.inspect", { threadId: id, handle: receipt.workers[i].handle });
+  deny(await inspect(1), "invalid_request");
+  assert.equal(ok(await inspect(0)).brief, q.assignments[0].brief);
+});
+
+for (const missing of [false, true]) test(`a premature open checkpoint cannot bypass a ${missing ? "missing" : "live"} predecessor`, { timeout: 10_000 }, async t => {
+  const env = await layout(t), firstStarted = env.hold(), finishFirst = env.hold(), parked = Promise.withResolvers();
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    if (turn.results.length) return "Finished.";
+    if (input.name === "Fast") { firstStarted.resolve(); await finishFirst.promise; }
+    return [call("hush_review_report", { report: `OPEN_GATE_${input.name}_REPORT` })];
+  });
+  const backend = await env.boot(provider.model), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {}));
+  await state(a, id);
+  const q = query(id, "premature-open", { ...parallel, mode: "sequential" });
+  observeParentCommits(t, backend, id, (type, task) => {
+    if (type === "task" && atReviewFence(task, q.requestId)) parked.resolve(task.id);
+  });
+  const receipt = ok(await start(a, q));
+  await firstStarted.promise;
+  const taskId = await parked.promise, reached = Promise.withResolvers();
+  observeParentCommits(t, backend, id, (type, task) => {
+    if (type !== "task" || task.id !== taskId) return;
+    const { state } = task;
+    if (atReviewFence(task, q.requestId) || state.checkpoint?.phase === "submit" || state.status === "terminal") reached.resolve(state);
+  });
+  await backend.harness.commit(async tx => {
+    const { rows } = (await tx.doc(ledger, Number(id))).cohorts[0];
+    const task = await tx.task(taskId);
+    assert.equal(rows[1].task, taskId);
+    if (missing) rows.shift();
+    tx.setTask({ ...task, state: { status: "pending", checkpoint: { phase: "open" } } });
+  }, ctx);
+  backend.harness.resume();
+  assert.equal((await reached.promise).status, missing ? "sleeping" : "waiting");
+  assert.deepEqual((await backend.harness.commit(tx => tx.scanConversations({ ownerTaskId: taskId }, 2), ctx)).items, []);
+  assert.deepEqual(startedBriefs(provider), [q.assignments[0].brief]);
+  if (missing) {
+    ok(await stop(a, id, receipt.workers[1].handle));
+    await waitFor(a, "The worker was stopped.");
+    assert.deepEqual((await info(a, q)).workers.map(w => w.state), ["unresolved", "cancelled"]);
+  } else {
+    finishFirst.resolve();
+    await waitFor(a, "OPEN_GATE_Slow_REPORT");
+    assert.deepEqual((await info(a, q)).workers.map(w => w.state), ["succeeded", "succeeded"]);
+  }
+});
+
+for (const duplicate of [false, true]) test(`${duplicate ? "duplicate task candidates cannot free a slot" : "a wrong row pointer cannot hide an orphan task"}`, { timeout: 10_000 }, async t => {
+  const env = await layout(t);
+  const provider = await reviewProvider(t, env, (turn, input) =>
+    turn.results.length ? "Finished." : [call("hush_review_report", { report: `TASK_IDENTITY_${input.name}_REPORT` })]);
+  const backend = await env.boot(provider.model);
+  let a = await env.peer(1, { workerActivity: [1] });
+  const { id } = ok(await a.send("thread.new", {}));
+  await state(a, id);
+  const one = query(id, "first-task"), two = query(id, "other-task", { assignments: [parallel.assignments[1]] });
+  const [first] = ok(await start(a, one)).workers;
+  await waitFor(a, "TASK_IDENTITY_First_REPORT");
+  const [second] = ok(await start(a, two)).workers;
+  await waitFor(a, "TASK_IDENTITY_Slow_REPORT");
+  const { originalTask, otherTask } = await backend.harness.commit(async tx => {
+    const { cohorts } = await tx.doc(ledger, Number(id));
+    const [row] = cohorts[0].rows, { task: otherTask } = cohorts.pop().rows[0];
+    const originalTask = row.task;
+    if (!duplicate) row.task = otherTask;
+    return { originalTask, otherTask };
+  }, ctx);
+  if (duplicate) {
+    await backend.close();
+    const sqlite = new DatabaseSync(join(env.config.dataDir, "history.sqlite"));
+    try {
+      const { input } = JSON.parse(sqlite.prepare("select record from tasks where id=?").get(originalTask).record);
+      assert.equal(sqlite.prepare("update tasks set record=json_set(record, '$.input', json(?)) where id=?")
+        .run(JSON.stringify(input), otherTask).changes, 1);
+    } finally { sqlite.close(); }
+    await env.boot(provider.model);
+    a = await env.peer(1, { workerActivity: [1] });
+    deny(await start(a, query(id, "refill")), "limit");
+    deny(await a.send("ext.workerActivity.inspect", { threadId: id, handle: first.handle }), "invalid_request");
+    assert.deepEqual(workerStates((await info(a, one)).workers), [{ ...first, state: "unresolved" }]);
+  } else {
+    deny(await start(a, query(id, "refill")), "invalid_request");
+    assert.deepEqual(await rosterWorkers(a, id), [
+      { ...first, state: "unresolved", activity: "" },
+      { handle: second.handle, name: "Missing review receipt", state: "unresolved", activity: "" },
+    ]);
+  }
+});
+
+test("a surviving parent input prevents replacement after receipt and task loss", { timeout: 12_000 }, async t => {
+  const env = await layout(t), prompt = "Launch the reviewer and join its report.";
+  const provider = await reviewProvider(t, env, (turn, input) => {
+    if (input) return turn.results.length ? "Finished." : [call("hush_review_report", { report: "ORIGINAL_RECEIPT_REPORT" })];
+    assert.equal(turn.text, prompt);
+    if (!turn.results.length) return [call(spawnName)];
+    if (turn.results.length === 1) return [call(joinName, { handles: JSON.parse(turn.results[0].content).workers.map(w => w.handle) })];
+    return "Finished the original parent turn.";
+  });
+  const backend = await env.boot(provider.model), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {})), q = query(id, "lost-admission", { prompt });
+  const receipt = ok(await start(a, q));
+  const original = ok(await a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId }));
+  assert.equal(original.status, "done");
+  assert.equal((await info(a, q)).workers[0].state, "succeeded");
+  const requests = provider.requests.length;
+  const taskId = await backend.harness.commit(async tx => {
+    const { cohorts } = await tx.doc(ledger, Number(id));
+    const [{ task }] = cohorts[0].rows;
+    await tx.retireDoc(ledger, Number(id));
+    // Bury the surviving request beyond the first history page.
+    for (let i = 0; i < 130; i++) await tx.appendEntry(Number(id), { kind: "fixture.history" });
+    return task;
+  }, ctx);
+  await backend.close();
+  const sqlite = new DatabaseSync(join(env.config.dataDir, "history.sqlite"));
+  try { assert.equal(sqlite.prepare("delete from tasks where id=?").run(taskId).changes, 1); }
+  finally { sqlite.close(); }
+  const reopened = await env.boot(provider.model), after = await env.peer();
+  const entries = await reopened.harness.commit(tx => tx.scanEntries({ conversationId: Number(id), order: "ascending" }, 16), ctx);
+  assert.equal(entries.items.filter(e => e.kind === "hush.review.request" && e.data.requestId === q.requestId).length, 1);
+  deny(await after.send("ext.delegation.get", { threadId: id, requestId: q.requestId }), "invalid_request");
+  for (const retry of [q, { ...q, prompt: undefined }, query(id, "new-key", parallel)]) {
+    const rejected = await start(after, retry);
+    deny(rejected, "invalid_request");
+    assert.match(rejected.error.message, /original review receipt is unresolved/i);
+  }
+  assert.equal(provider.requests.length, requests);
+  assert.equal(entries.items.filter(e => e.kind === notices).length, 1);
+});
+
+for (const fault of ["live phase", "restart phase", "restart expiry", "restart deadline"]) test(`worker recovery does not fabricate a timeout: ${fault}`, { timeout: 12_000 }, async t => {
+  const restart = fault !== "live phase";
+  const env = await layout(t), recorded = env.hold(), finish = env.hold(), report = "ON_TIME_REPORT";
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    assert.ok(input);
+    if (!turn.results.length) return [call("hush_review_report", { report })];
+    assert.match(turn.results[0].content, /Advisory report recorded/);
+    recorded.resolve();
+    await finish.promise;
+    return "Finished before the deadline.";
+  });
+  const process = restart && await processBackend(env, provider.model, "child-settled");
+  const backend = !restart && await env.boot(provider.model);
+  const a = await env.peer(), { id } = ok(await a.send("thread.new", {}));
+  await state(a, id);
+  const q = query(id, "premature-timeout", { workerTimeoutMs: 120_000 });
+  ok(await start(a, q));
+  await recorded.promise;
+  let after = a;
+  if (process) {
+    finish.resolve();
+    assert.deepEqual(await process.exit, [null, "SIGKILL"], process.error());
+    const sqlite = new DatabaseSync(join(env.config.dataDir, "history.sqlite"));
+    let taskId;
+    try {
+      const { id, record } = sqlite.prepare(`select id, record from tasks where kind=json_quote('hush.review-worker')`).get();
+      taskId = id;
+      const { checkpoint } = JSON.parse(record).state;
+      assert.equal(checkpoint.phase, "settle");
+      assert.ok(checkpoint.deadline > Date.now());
+      if (fault === "restart phase") {
+        assert.equal(sqlite.prepare(`update tasks set record=json_set(record, '$.state.checkpoint.phase', 'timeout') where id=?`).run(id).changes, 1);
+      } else if (fault === "restart deadline") {
+        assert.equal(sqlite.prepare(`update tasks set record=json_set(record, '$.state.checkpoint.deadline', ?) where id=?`).run(checkpoint.deadline + 1, id).changes, 1);
+      } else {
+        assert.equal(sqlite.prepare(`update document_revisions set content=json_set(content, '$.worker.expiredAt', ?)
+          where kind='base' and seq=(select max(r.seq) from document_revisions r join documents d on d.id=r.document_id
+            where d.kind=json_quote('hush.review-child-progress') and d.owner_id=?)
+          and document_id=(select id from documents where kind=json_quote('hush.review-child-progress') and owner_id=?)`)
+          .run(checkpoint.deadline, checkpoint.child, checkpoint.child).changes, 1);
+      }
+    } finally { sqlite.close(); }
+    await waitForTaskTerminal(await env.boot(provider.model), taskId);
+    after = await env.peer();
+  } else {
+    const taskId = await backend.harness.commit(async tx => {
+      const task = await tx.task((await tx.doc(ledger, Number(id))).cohorts[0].rows[0].task);
+      const { checkpoint } = task.state;
+      assert.equal(checkpoint.phase, "settle");
+      assert.ok(checkpoint.deadline > Date.now());
+      tx.setTask({ ...task, state: { ...task.state, checkpoint: { ...checkpoint, phase: "timeout" } } });
+      return task.id;
+    }, ctx);
+    finish.resolve();
+    await waitForTaskTerminal(backend, taskId);
+  }
+  const [worker] = (await info(after, q)).workers;
+  const contradictory = fault === "restart expiry" || fault === "restart deadline";
+  assert.equal(worker.state, contradictory ? "unresolved" : "succeeded");
+  assert.equal(worker.report, contradictory ? undefined : report);
+  assert.deepEqual(await noticeIds(after, id), contradictory ? [] : [worker.noticeId]);
+  assert.deepEqual(startedBriefs(provider), [q.assignments[0].brief]);
+});
+
+for (const legacy of [false, true]) test(legacy ? "an unverifiable legacy timeout stays unresolved on restart" :
+  "restart after a committed expiry recovers one timeout without restarting the worker", { timeout: 12_000 }, async t => {
+  const env = await layout(t), begun = env.hold(), finish = env.hold();
+  const provider = await reviewProvider(t, env, async (_turn, input) => {
+    assert.ok(input);
+    begun.resolve();
+    await finish.promise;
+    return "Too late.";
+  });
+  const crashed = await processBackend(env, provider.model, "timeout-decision"), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {})), q = query(id, "committed-expiry", { workerTimeoutMs: 1_600 });
+  const receipt = ok(await start(a, q));
+  await begun.promise;
+  assert.deepEqual(await crashed.exit, [null, "SIGKILL"], crashed.error());
+  finish.resolve();
+  if (legacy) {
+    const sqlite = new DatabaseSync(join(env.config.dataDir, "history.sqlite"));
+    try {
+      const { id, record } = sqlite.prepare(`select id, record from tasks where kind=json_quote('hush.review-worker')`).get();
+      const { child } = JSON.parse(record).state.checkpoint;
+      const { id: doc } = sqlite.prepare(`select id from documents where kind=json_quote('hush.review-child-progress') and owner_id=?`).get(child);
+      sqlite.exec("begin");
+      assert.equal(sqlite.prepare(`update tasks set record=json_remove(record, '$.state.checkpoint.expiredAt') where id=?`).run(id).changes, 1);
+      assert.equal(sqlite.prepare(`update entries set record=json_remove(record, '$.data.progress') where conversation_id=?
+        and json_extract(record, '$.kind')='hush.review.assignment'`).run(child).changes, 1);
+      assert.ok(sqlite.prepare("delete from document_revisions where document_id=?").run(doc).changes);
+      assert.equal(sqlite.prepare("delete from documents where id=?").run(doc).changes, 1);
+      sqlite.exec("commit");
+    } finally { sqlite.close(); }
+  }
+  const backend = await env.boot(provider.model), after = await env.peer();
+  const taskId = (await backend.harness.snapshot(ledger, Number(id), ctx)).cohorts[0].rows[0].task;
+  await waitForTaskTerminal(backend, taskId);
+  assert.deepEqual(ok(await start(after, q)), receipt);
+  const [worker] = (await info(after, q)).workers;
+  assert.equal(worker.state, legacy ? "unresolved" : "timed_out");
+  assert.deepEqual(await noticeIds(after, id), legacy ? [] : [worker.noticeId]);
+  assert.deepEqual(startedBriefs(provider), [q.assignments[0].brief]);
+});
+
+for (const changeDeadline of [false, true]) test(changeDeadline ? "a changed checkpoint cannot publish a timeout after drain" :
+  "Stop during drain preserves a previously committed worker expiry", { timeout: 10_000 }, async t => {
+  const env = await layout(t), begun = env.hold(), finish = env.hold(), expired = Promise.withResolvers(), draining = Promise.withResolvers();
+  const backend = await env.boot(), faux = fauxProvider();
+  faux.setResponses([async () => { begun.resolve(); await finish.promise; return fauxAssistantMessage("Too late."); }]);
+  backend.runtime.setProvider(faux.provider);
+  const a = await env.peer();
+  const { id } = ok(await a.send("thread.new", { model: { provider: "faux", modelId: "faux-1" } }));
+  let child;
+  const observation = backend.harness.observeCommits({ advance({ changes }) {
+    for (const { type, value: task } of changes) {
+      if (type !== "task") continue;
+      const checkpoint = task.state.checkpoint;
+      if (task.conversationId === Number(id) && task.kind === "hush.review-worker" && checkpoint?.phase === "timeout" &&
+          checkpoint.expiredAt !== undefined) {
+        child = checkpoint.child;
+        expired.resolve(task.id);
+      }
+      if (task.conversationId === child && task.abortRequested) draining.resolve();
+    }
+  }, end() {} });
+  t.after(() => observation.detach());
+  await state(a, id);
+  const q = query(id, "stop-after-expiry", { workerTimeoutMs: 1_200 }), receipt = ok(await start(a, q));
+  await begun.promise;
+  const taskId = await expired.promise;
+  if (changeDeadline) {
+    await draining.promise;
+    await backend.harness.commit(async tx => {
+      const task = await tx.task(taskId), { checkpoint } = task.state;
+      assert.equal(task.state.status, "running");
+      assert.equal(checkpoint.phase, "timeout");
+      tx.setTask({ ...task, state: { ...task.state, checkpoint: { ...checkpoint, deadline: checkpoint.deadline + 1 } } });
+    }, ctx);
+  } else {
+    const worker = ok(await stop(a, id, receipt.workers[0].handle)).worker;
+    assert.equal(worker.state, "stopping");
+    assert.equal(worker.noticeId, undefined);
+    assert.equal((await backend.harness.getTask(taskId, ctx)).abortRequested, true);
+  }
+  finish.resolve();
+  await waitForTaskTerminal(backend, taskId);
+  const [settled] = (await info(a, q)).workers;
+  assert.equal(settled.state, changeDeadline ? "unresolved" : "timed_out");
+  assert.deepEqual(await noticeIds(a, id), changeDeadline ? [] : [settled.noticeId]);
+});
+
+test("a copied report body cannot be published for the wrong assignment", { timeout: 12_000 }, async t => {
+  const env = await layout(t), bothReports = Promise.withResolvers(), finish = env.hold(), recorded = new Set();
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    assert.ok(input);
+    if (!turn.results.length) return [call("hush_review_report", { summary: `Review by ${input.name}`, findings: [], checks: [], limitations: ["Scripted fixture only."] })];
+    assert.match(turn.results.at(-1).content, /Advisory report recorded/);
+    recorded.add(input.name);
+    if (recorded.size === 2) bothReports.resolve();
+    await finish.promise;
+    return "Finished.";
+  });
+  const backend = await env.boot(provider.model), a = await env.peer(1, { reviewEvidence: [1] });
+  const { id } = ok(await a.send("thread.new", {}));
+  const q = query(id, "copied-report", { ...parallel, assessment: { checks: [{ id: "scope", description: "Check the original review scope" }] } });
+  ok(await start(a, q));
+  await bothReports.promise;
+  const tasks = await backend.harness.commit(async tx => {
+    const [first, second] = (await tx.doc(ledger, Number(id))).cohorts[0].rows;
+    assert.match(first.report, /Review by Fast/);
+    assert.match(second.report, /Review by Slow/);
+    assert.notEqual(first.reportKey, second.reportKey);
+    first.report = second.report;
+    return [first.task, second.task];
+  }, ctx);
+  finish.resolve();
+  await Promise.all(tasks.map(id => waitForTaskTerminal(backend, id)));
+  const [first, second] = (await info(a, q)).workers;
+  assert.equal(first.state, "unresolved");
+  assert.equal(first.report, undefined);
+  assert.equal(first.noticeId, undefined);
+  assert.equal(second.state, "succeeded");
+  assert.match(second.report, /Review by Slow/);
+  assert.deepEqual(await noticeIds(a, id), [second.noticeId]);
+});
+
+test("a held worker cannot start or be joined on the strength of a release flag alone", { timeout: 12_000 }, async t => {
+  const env = await layout(t), tryJoin = env.hold(), parked = Promise.withResolvers();
+  let handle, result;
+  const provider = await reviewProvider(t, env, async (turn, input) => {
+    if (input) return "The held worker must not start.";
+    if (!turn.results.length) { await tryJoin.promise; return [call(joinName, { handles: [handle] })]; }
+    result = turn.results[0].content;
+    return "Done without releasing the worker.";
+  });
+  const backend = await env.boot(provider.model), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {})), owner = Number(id);
+  const q = query(id, "forged-release", { prompt: "Wait without launching a reviewer." });
+  observeParentCommits(t, backend, id, (type, task) => {
+    if (type === "task" && atReviewFence(task, q.requestId)) parked.resolve(task.id);
+  });
+  const receipt = ok(await start(a, q));
+  handle = receipt.workers[0].handle;
+  const taskId = await parked.promise;
+  await backend.harness.commit(async tx => {
+    const [cohort] = (await tx.doc(ledger, owner)).cohorts;
+    assert.equal(cohort.released, false);
+    cohort.released = true;
+  }, ctx);
+  tryJoin.resolve();
+  assert.equal(ok(await a.send("submission.wait", { threadId: id, submissionId: receipt.submissionId })).status, "done");
+  assert.match(result, /Only launched review handles/);
+  // Model the launch timer waking the held gate without a release signal.
+  await backend.harness.commit(async tx => {
+    const task = await tx.task(taskId);
+    tx.setTask({ ...task, state: { status: "pending", checkpoint: task.state.checkpoint, wake: { reason: "timer" } } });
+  }, ctx);
+  backend.harness.resume();
+  await waitForTaskTerminal(backend, taskId);
+  assert.equal((await info(a, q)).workers[0].state, "unresolved");
+  assert.deepEqual((await backend.harness.commit(tx => tx.scanConversations({ ownerTaskId: taskId }, 2), ctx)).items, []);
+  assert.deepEqual(startedBriefs(provider), []);
+  assert.deepEqual(await noticeIds(a, id), []);
+});
+
+for (const boundary of ["reservation", "release-decision"]) test(`restart at ${boundary} keeps the original release decision`, { timeout: 12_000 }, async t => {
+  const env = await layout(t);
+  const provider = await reviewProvider(t, env, (turn, input) => {
+    assert.equal(input, undefined, "the pre-crash worker was not replayed");
+    return turn.results.length ? "Finished without replay." : [call(spawnName)];
+  });
+  const crashed = await processBackend(env, provider.model, boundary), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {})), q = query(id, `crash-${boundary}`, { prompt: "Release the reserved reviewer." });
+  const original = start(a, q).catch(() => null);
+  assert.deepEqual(await crashed.exit, [null, "SIGKILL"], crashed.error());
+  const observed = await original;
+  const backend = await env.boot(provider.model), after = await env.peer();
+  const receipt = ok(await start(after, q));
+  if (observed) assert.deepEqual(receipt, ok(observed));
+  const owner = Number(id), decision = (await backend.harness.snapshot(releases, owner, ctx))?.byHandle[receipt.workers[0].handle];
+  if (boundary === "reservation") assert.equal(decision, undefined);
+  else assert.match(decision, /^[a-f0-9]{64}$/);
+  const [cohort] = (await backend.harness.snapshot(ledger, owner, ctx)).cohorts;
+  await waitForTaskTerminal(backend, cohort.rows[0].task);
+  assert.deepEqual(startedBriefs(provider), []);
+  assert.equal((await info(after, q)).workers[0].state, "failed");
+  assert.ok((await noticeIds(after, id)).length <= 1);
+});
+
+test("a plan task label cannot expose an owned code reviewer", { timeout: 12_000 }, async t => {
+  const env = await layout(t);
+  const provider = await reviewProvider(t, env, turn =>
+    turn.results.length ? "Finished." : [call("hush_review_report", { report: "PRIVATE_REVIEW" })]);
+  const backend = await env.boot(provider.model), a = await env.peer();
+  const { id } = ok(await a.send("thread.new", {}));
+  await state(a, id);
+  ok(await start(a, query(id, "private-kind")));
+  await waitFor(a, "PRIVATE_REVIEW");
+  const { child, task } = (await backend.harness.snapshot(ledger, Number(id), ctx)).cohorts[0].rows[0];
+  await backend.close();
+  const sqlite = new DatabaseSync(join(env.config.dataDir, "history.sqlite"));
+  try {
+    assert.equal(sqlite.prepare(`update tasks set kind=json_quote('hush.plan-review'), record=json_set(record, '$.kind', 'hush.plan-review') where id=?`)
+      .run(task).changes, 1);
+  } finally { sqlite.close(); }
+  await env.boot(provider.model);
+  const after = await env.peer(), threadId = String(child);
+  deny(await after.send("history", { threadId, range: { kind: "before", beforeEntryId: null }, limit: 10 }), "not_found");
+  assert.ok(!(ok(await after.send("thread.list", { limit: 100 })).threads.some(row => row.id === threadId)));
 });

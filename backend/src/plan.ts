@@ -696,6 +696,10 @@ export async function checkPlanWorktree(read: DocumentReader, owner: Conversatio
   }
 }
 
+export async function isPublicPlanFixture(tx: Tx, child: ConversationId) {
+  return Array.isArray((await tx.doc(Work, child)).checks);
+}
+
 export async function isPlanWorker(h: Harness, owner: ConversationId, ctx: Context) {
   // Ownership is immutable. Do not grant authority even if the worker's
   // extension, assignment or invocation-private profile changed on reopen.

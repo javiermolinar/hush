@@ -155,7 +155,7 @@ func (m *Model) openWorkers(r ownerRoute) tea.Cmd {
 	d := &dialog{route: r, token: m.token(), worker: &workerPanel{}}
 	rows := m.workers.rows
 	d.selected = slices.IndexFunc(rows, func(w sdk.ReviewWorkerActivity) bool {
-		return workerCanStop(w.State) || w.State == "stopping" || w.State == "unresolved"
+		return workerCanStop(w.State) || w.State == "stopping"
 	})
 	if d.selected < 0 {
 		d.selected = max(0, len(rows)-1)
@@ -257,7 +257,15 @@ func workerInspectionText(v sdk.ReviewInspection) string {
 	return out.String()
 }
 
-func workerCanStop(state string) bool { return state == "running" || state == "reserved" }
+func workerCanStop(state string) bool {
+	// The backend checks identity even when the roster cannot resolve the outcome.
+	return state == "running" || state == "reserved" || state == "unresolved"
+}
+
+func (m *Model) canRequestWorkerStop(d *dialog, state string) bool {
+	return m.workers.owner == d.route.owner && m.workers.ready && !m.workers.failed && !d.worker.transcript &&
+		!d.worker.stopping && workerCanStop(state)
+}
 
 func workerStateLabel(state string) (icon, label string, tone x.Tone) {
 	switch state {
@@ -300,10 +308,15 @@ func (m *Model) workerKey(d *dialog, chord string) tea.Cmd {
 		case "up", "k", "down", "j", "pgup", "pgdown", "home", "end":
 			delta := map[string]int{"up": -1, "k": -1, "down": 1, "j": 1, "pgup": -5, "pgdown": 5, "home": -d.selected, "end": len(rows)}[chord]
 			d.selected = max(0, min(len(rows)-1, d.selected+delta))
-		case "enter", "tab":
-			if d.selected < len(rows) {
+		case "enter", "tab", "x":
+			if d.selected >= 0 && d.selected < len(rows) {
 				w := rows[d.selected]
-				return m.openWorkerInspection(d, w.Handle, w.Name, false)
+				if chord != "x" {
+					return m.openWorkerInspection(d, w.Handle, w.Name, false)
+				}
+				if m.canRequestWorkerStop(d, w.State) {
+					return m.stopOneWorker(d, w.Handle)
+				}
 			}
 		}
 		return nil
@@ -316,8 +329,8 @@ func (m *Model) workerKey(d *dialog, chord string) tea.Cmd {
 			return m.openWorkerInspection(d, p.handle, p.name, true)
 		}
 	case "x":
-		if p.ready && !p.transcript && !p.stopping && !m.workers.failed && workerCanStop(m.workerCurrentState(p)) {
-			return m.stopOneWorker(d)
+		if p.ready && m.canRequestWorkerStop(d, m.workerCurrentState(p)) {
+			return m.stopOneWorker(d, p.handle)
 		}
 	case "o":
 		if p.ready && p.transcript && m.options.OpenReviewPane != nil && m.workerCurrentState(p) != "unresolved" {
@@ -361,29 +374,37 @@ func (m *Model) workerClick(d *dialog, target, col, row int) tea.Cmd {
 	return nil
 }
 
-func (m *Model) stopOneWorker(d *dialog) tea.Cmd {
+func (m *Model) stopOneWorker(d *dialog, handle string) tea.Cmd {
 	backend, ok := m.backend.(workerActivityBackend)
 	if !ok || !m.menuFeaturesFromBackend.Has(x.WorkerActivity) {
 		return nil
 	}
 	p := d.worker
 	p.stopping, p.note = true, ""
-	owner, handle := d.route.owner, p.handle
+	owner := d.route.owner
 	budget := maxEffects
 	return m.startWork(d.route, func(ctx context.Context) (any, error) {
 		call, cancel := context.WithTimeout(ctx, menuTimeout)
 		defer cancel()
 		return backend.StopReviewWorker(call, owner, handle)
-	}, func(_ any, err error, _ *int) tea.Cmd {
+	}, func(value any, err error, _ *int) tea.Cmd {
 		if !slices.Contains(m.overlays, d) {
 			return nil
 		}
 		p.stopping = false
-		if err != nil {
+		result, ok := value.(sdk.ReviewWorker)
+		if err != nil || !ok || workerCanStop(result.State) {
 			p.note = "Stop was not confirmed; check worker activity"
 			return nil
 		}
-		return m.fetchWorkerInspection(d)
+		if result.State == "stopping" {
+			p.note = "Stop requested; check worker activity"
+			return nil
+		}
+		if p.handle != "" {
+			return m.fetchWorkerInspection(d)
+		}
+		return nil
 	}, &budget)
 }
 
@@ -460,7 +481,7 @@ func (m *Model) workerDetailHints(d *dialog) []string {
 		if p.transcript && m.options.OpenReviewPane != nil && m.workerCurrentState(p) != "unresolved" {
 			keys = append(keys, "o Rex pane")
 		}
-		if !p.transcript && !p.stopping && !m.workers.failed && workerCanStop(m.workerCurrentState(p)) {
+		if m.canRequestWorkerStop(d, m.workerCurrentState(p)) {
 			keys = append(keys, "x stop worker")
 		}
 	}
@@ -486,11 +507,23 @@ func (m *Model) workerRosterRows(d *dialog, w, n int) menuFrame {
 	}
 	sel := max(0, min(len(f.rows)-1, d.selected))
 	c.consequence = menuLine{m.menuAction("Inspect worker", "Read brief, evidence, and report"), workerPrimaryTarget}
+	if m.canRequestWorkerStop(d, f.rows[sel].State) {
+		c.keys = menuLine{m.menuKeys(w, "↑↓ move", "x stop worker", "tab details", d.zoomKey()), workerKeysTarget}
+	}
 	if f.failed {
 		c.scope = "Last observed · disconnected"
 	}
 	return m.menuShell(w, n, c, func(h int) menuFrame {
-		return m.menuColumns(w, h, func(width, height int) []string {
+		var out menuFrame
+		if p := d.worker; h > 1 && (p.stopping || p.note != "") {
+			if p.stopping {
+				out.add(m.quiet("Requesting Stop for this worker…"), -1)
+			} else {
+				out.add(m.paint(x.Warning, ansi.Truncate(p.note, w, "…")), -1)
+			}
+			h--
+		}
+		out.appendBody(m.menuColumns(w, h, func(width, height int) []string {
 			row := f.rows[sel]
 			_, label, _ := workerStateLabel(row.State)
 			if row.Activity != "" {
@@ -509,6 +542,7 @@ func (m *Model) workerRosterRows(d *dialog, w, n int) menuFrame {
 				list.add(m.menuRow(width, 10, menuItem{title: row.Name, icon: icon, state: label, tone: tone, focus: i == sel}), i)
 			}
 			return list
-		})
+		}))
+		return out
 	})
 }

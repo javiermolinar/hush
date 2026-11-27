@@ -28,10 +28,10 @@ import { Scheduling } from "./scheduling.js";
 import { CheckpointService } from "./checkpoints.js";
 import { GitDiffService } from "./git-diff.js";
 import { WorkspaceFiles, workspaceFileHelper } from "./workspace-files.js";
-import { Plans, checkPlanWorktree, fixtureExtensions, isPlanWorker, planChatExecution, planFixtureTaskKind,
+import { Plans, checkPlanWorktree, fixtureExtensions, isPlanWorker, isPublicPlanFixture, planChatExecution, planFixtureTaskKind,
   recoverPlanGeneration, scopedPlanExecution, scopedRecovery } from "./plan.js";
 import { checkPlanAdmission, foregroundPlan, PlanForeground } from "./plan-turn.js";
-import { PlanReviews, planReviewExtension, planReviewTaskKind } from "./plan-review.js";
+import { PlanReviews, isPublicPlanReviewer, planReviewExtension, planReviewTaskKind } from "./plan-review.js";
 import { planAuthor } from "./plan-author.js";
 import { ToolPolicy } from "./tool-policy.js";
 import { ReviewSnapshots } from "./review-snapshot.js";
@@ -241,8 +241,6 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     for (const extension of base) registry.install(extension);
     if (fauxPlan) for (const extension of fixtureExtensions) registry.install(protect(extension));
     if (planEnabled) registry.install(planReviewExtension);
-    const reviewSnapshotExtension = reviewSnapshots && protect(reviewSnapshots.extension());
-    if (reviewSnapshotExtension) registry.install(reviewSnapshotExtension);
     if (schedules) registry.install(schedules.extension);
     if (checkpoints) registry.install(checkpoints.extension);
     if (manifest?.format === 1) {
@@ -292,8 +290,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     if (scopedPlans) registry.install(scopedPlans.extension);
     else if (planEnabled) registry.install(scopedRecovery);
     const validateSelection = nativeSelectionValidator(runtime, requireModel);
-    const delegation: Delegation | undefined = reviewSnapshots && reviewSnapshotExtension && trust && policy
-      ? new Delegation(() => h!, reviewSnapshots, reviewSnapshotExtension, cwd => resources.directory(cwd), storeIdentity,
+    const delegation: Delegation | undefined = reviewSnapshots && trust && policy
+      ? new Delegation(() => h!, reviewSnapshots, cwd => resources.directory(cwd), storeIdentity,
         validateSelection, () => selection) : undefined;
     if (delegation) {
       const tools = protect(delegation.parent);
@@ -301,18 +299,20 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       // implementation installed; the exact placed submission gates dispatch.
       base.push(tools);
       registry.install(tools);
+      registry.install(protect(delegation.snapshotReader));
       registry.install(protect(delegation.reviewer));
     }
     const host: NativeHost = {
       defaults, requireModel, checkAdmission: planAdmission, validateSelection,
       privateConversation: policy && ((id, ctx) => h!.commit(async tx => {
-        const owner = (await tx.conversation(id))?.owner;
-        if (!owner) return false;
-        // Only the existing plan-owned transcripts are public. Missing policy
-        // or task data must never move a code reviewer into native history.
+        const child = await tx.conversation(id), owner = child?.owner;
+        if (!child || !owner) return false;
+        // A task kind alone does not make an owned conversation public.
         const task = await tx.task(owner.taskId);
-        return !task || task.conversationId !== owner.conversationId || task.owner !== undefined ||
-          task.kind !== planReviewTaskKind && task.kind !== planFixtureTaskKind;
+        if (child.parent || !task || task.conversationId !== owner.conversationId || task.owner !== undefined) return true;
+        if (task.kind === planReviewTaskKind) return !await isPublicPlanReviewer(tx, child, task.input);
+        if (task.kind === planFixtureTaskKind) return !await isPublicPlanFixture(tx, id);
+        return true;
       }, ctx)),
       async checkMutation(conv, ctx) {
         if (planEnabled && await isPlanWorker(h!, conv.id, ctx)) throw new WireError("not_found");

@@ -28,6 +28,7 @@ type workerBackendFixture struct {
 	version     uint64
 	inspected   []string
 	stopped     []string
+	stopReply   string
 	transcripts int
 }
 
@@ -68,7 +69,11 @@ func (b *workerBackendFixture) InspectReviewWorker(_ context.Context, owner sdk.
 
 func (b *workerBackendFixture) StopReviewWorker(_ context.Context, owner sdk.ID, handle string) (sdk.ReviewWorker, error) {
 	b.stopped = append(b.stopped, string(owner)+"/"+handle)
-	return sdk.ReviewWorker{State: "stopping"}, nil
+	state := b.stopReply
+	if state == "" {
+		state = "stopping"
+	}
+	return sdk.ReviewWorker{State: state}, nil
 }
 
 func TestReviewWorkersActionsAndScope(t *testing.T) {
@@ -231,6 +236,49 @@ func TestReviewWorkerWatchRebaselinesAfterClosure(t *testing.T) {
 				t.Fatal("a second failure retried without new connection evidence")
 			}
 		})
+	}
+}
+
+func TestReviewWorkerRosterRequestsStopWithoutInspection(t *testing.T) {
+	m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m.menuFeaturesFromBackend |= x.WorkerActivity
+	b := &workerBackendFixture{Backend: inertBackend{}, stopReply: "unresolved"}
+	m.backend = b
+	rows := []sdk.ReviewWorkerActivity{workerRowsFixture[2], {ReviewHandle: workerRowsFixture[0].ReviewHandle, State: "unresolved"}}
+	m.workers = workerFeed{feedLease: feedLease{owner: m.active}, ready: true, rows: rows}
+	m.openWorkers(m.route(m.active, coreID))
+	d := m.focusedDialog()
+	assertFrame(t, m)
+	if cmd := press(m, 'x', 0); cmd != nil {
+		m.Update(cmd())
+	} else {
+		t.Fatal("roster has no keyboard Stop")
+	}
+	if !strings.Contains(ansi.Strip(assertFrame(t, m)), "Stop was not confirmed") {
+		t.Fatal("an unresolved reply did not leave Stop unconfirmed")
+	}
+	press(m, tea.KeyDown, 0)
+	assertFrame(t, m)
+	clicked := false
+	for y, line := range m.frame.rows {
+		plain := ansi.Strip(line)
+		if x := strings.Index(plain, "x stop worker"); x >= 0 {
+			_, cmd := m.Update(tea.MouseClickMsg(tea.Mouse{X: stringWidth(plain[:x]), Y: y, Button: tea.MouseLeft}))
+			if cmd == nil {
+				t.Fatal("the rendered Stop hint has no mouse action")
+			}
+			m.Update(cmd())
+			clicked = true
+			break
+		}
+	}
+	if !clicked || !slices.Equal(b.stopped, []string{"1/" + rows[0].Handle, "1/" + rows[1].Handle}) || len(b.inspected) != 0 || m.focusedDialog() != d {
+		t.Fatalf("wrong Stop targets or inspection: %v, %v", b.stopped, b.inspected)
+	}
+	m.workers.failed = true
+	if strings.Contains(ansi.Strip(assertFrame(t, m)), "x stop worker") || press(m, 'x', 0) != nil {
+		t.Fatal("Stop was offered from a disconnected roster")
 	}
 }
 

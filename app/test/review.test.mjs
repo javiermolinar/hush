@@ -180,3 +180,74 @@ test("Hush inspects overlapping pinned reviews, reattaches during join and synth
     try { await result; } finally { await backend?.close(); await rm(dir, { force: true, recursive: true }); }
   }
 });
+
+test("the narrow worker roster requests Stop by keyboard and mouse without resolving a dossier", { timeout: 15_000 }, async t => {
+  const dir = await realpath(await mkdtemp("/tmp/hush-review-stop-"));
+  const cwd = join(dir, "repo"), agentDir = join(dir, ".hush"), dataDir = join(dir, "db"), socket = join(dataDir, "hush.sock");
+  const env = { HOME: dir, PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", TERM: "xterm-256color", LANG: "C.UTF-8" };
+  const finishParent = Promise.withResolvers(), held = Promise.withResolvers(), bothEnded = Promise.withResolvers();
+  const tasks = new Set(), ended = new Set();
+  let backend, wire, observation, result, pty;
+  try {
+    await mkdir(cwd); await mkdir(agentDir, { mode: 0o700 });
+    const git = (...args) => execFileSync("git", args, { cwd, env });
+    git("init", "-q"); git("config", "user.email", "fixture@example.test"); git("config", "user.name", "Fixture");
+    await writeFile(join(cwd, "settings.txt"), "default=base\n"); git("add", "."); git("commit", "-qm", "base");
+    await new WorkspaceTrust(agentDir).change(cwd, "grant", t.signal);
+    const prompt = "Hold these workers for review.";
+    const provider = await planProvider(t, agentDir, async turn => {
+      assert.equal(turn.text, prompt, "no worker submission was started");
+      await finishParent.promise;
+      return "Finished without launching workers.";
+    });
+    backend = await startBackend({ cwd, agentDir, dataDir, socket, model: provider.model, ephemeral: false, faux: false, idleMs: 60_000 });
+    wire = await dial(socket);
+    ok(await wire.send("hello", { versions: [1], capabilities: { delegation: [1], workerActivity: [1] } }));
+    const { id } = ok(await wire.send("thread.new", {})), owner = Number(id);
+    observation = backend.harness.observeCommits({ advance({ changes }) {
+      for (const { type, value } of changes) {
+        if (type !== "task" || value.kind !== "hush.review-worker" || value.conversationId !== owner) continue;
+        if (value.state.status === "sleeping" && value.state.checkpoint.phase === "gate") {
+          tasks.add(value.id);
+          if (tasks.size === 2) held.resolve();
+        } else if (value.state.status === "terminal") {
+          ended.add(value.id);
+          if (ended.size === 2) bothEnded.resolve();
+        }
+      }
+    }, end() {} });
+    const receipt = ok(await wire.send("ext.delegation.start", { threadId: id, requestId: "stop-with-unresolved-evidence",
+      scope: { tracked: ["settings.txt"], untracked: [] }, prompt,
+      assignments: [{ name: "First worker", brief: "Inspect the first path" }, { name: "Second worker", brief: "Inspect the second path" }] }));
+    await held.promise;
+    const byHandle = await backend.harness.commit(async tx => {
+      const records = await Promise.all([...tasks].map(id => tx.task(id)));
+      for (const task of records) tx.setTask({ ...task, state: { ...task.state, checkpoint: { phase: "open" } } });
+      return Object.fromEntries(records.map(task => [task.input.handle, task.id]));
+    }, ctx);
+    const [first, second] = receipt.workers.map(w => byHandle[w.handle]);
+    assert.deepEqual(ok(await wire.send("ext.workerActivity.wait", { threadId: id })).workers.map(w => w.state), ["unresolved", "unresolved"]);
+    let stderr = "";
+    const script = fileURLToPath(new URL("./review-pty.py", import.meta.url));
+    pty = spawn("python3", [script, binary, socket, id, "stop"], { cwd, env, signal: t.signal });
+    pty.stderr.setEncoding("utf8").on("data", text => { stderr += text; });
+    result = once(pty, "close");
+    const lines = createInterface({ input: pty.stdout })[Symbol.asyncIterator]();
+    assert.equal((await lines.next()).value, "keyboard stop", stderr);
+    assert.equal((await backend.harness.getTask(first, ctx)).state.status, "terminal");
+    assert.equal((await backend.harness.getTask(second, ctx)).state.status, "sleeping");
+    pty.stdin.write("next\n");
+    assert.equal((await lines.next()).value, "mouse stop", stderr);
+    await Promise.race([bothEnded.promise, result.then(() => assert.fail(`PTY closed before mouse Stop: ${stderr}`))]);
+    assert.equal((await backend.harness.getTask(second, ctx)).state.status, "terminal");
+    pty.stdin.end("done\n");
+    assert.deepEqual(await result, [0, null], stderr);
+    const history = ok(await wire.send("history", { threadId: id, range: { kind: "before", beforeEntryId: null }, limit: 20 }));
+    assert.ok(history.entries.every(e => e.kind !== "hush.worker.notice"));
+    assert.equal(provider.requests.length, 1);
+  } finally {
+    finishParent.resolve(); observation?.detach(); wire?.close();
+    if (pty && pty.exitCode === null && pty.signalCode === null) pty.kill();
+    try { await result; } finally { await backend?.close(); await rm(dir, { force: true, recursive: true }); }
+  }
+});

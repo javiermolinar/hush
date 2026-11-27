@@ -16,7 +16,7 @@
     ✗ Unavailable reader      Failed     │
 
   ↵ Inspect worker  Read brief, evidence, and report
-  ↑↓ move  tab details  f full  esc back
+  ↑↓ move  x stop worker  tab details  f full  esc back
 
   ────────────────────────────────────────────────────────────────── 6 workers
   you › Unsent draft

@@ -6,7 +6,7 @@ import { AgentDoc, defineDocFamily, defineExtension, defineTool, type Conversati
 import { allowedExecutionPath, bindExecutionWorkspace, executionFileLimit, executionPath, readExecutionText, requireExecutionWorkspace,
   type ExecutionWorkspace } from "./execution-workspace.js";
 import { checkPlanWorktree } from "./plan.js";
-import { assignedToolProfile, reviewReadTool } from "./tool-policy.js";
+import { reviewReadTool } from "./tool-policy.js";
 import { workspaceGit, workspaceHasIgnoredPaths, type DirectoryIdentity, type GitWorkspaceIdentity, type WorkspaceTrust } from "./workspace-trust.js";
 
 const pathLimit = 16, snapshotLimit = 256 * 1024, captureMs = 8_000;
@@ -259,24 +259,25 @@ export class ReviewSnapshots {
     }
   }
 
-  extension() {
+  extension(authorize: (tx: Tx, child: ConversationId) => Promise<{ owner: ConversationId; id: string } | undefined>) {
     const tool = defineTool({ name: reviewReadTool, description: "Read the pinned code review manifest or the exact base, staged and working versions of one admitted path. Omit path for the manifest.",
       parameters: { type: "object", additionalProperties: false, properties: { path: { type: "string", maxLength: 1024 } } } as const,
       callers: ["model"], replay: "safe", outputLimits: { maxBytes: snapshotLimit, maxLines: 8 },
       execute: async ({ path }, api, ctx) => {
         try {
-          const permit = await api.commit(async tx => {
-            const child = await tx.conversation(api.conversationId);
-            if (!child?.owner) return;
-            const profile = await assignedToolProfile(tx, child);
-            if (profile?.kind !== "reviewer" || profile.target.kind !== "code") return;
-            return { id: profile.target.snapshotId, owner: child.owner.conversationId, cwd: await this.#ownerCwd(tx, child.owner.conversationId) };
+          const readPermit = () => api.commit(async tx => {
+            const access = await authorize(tx, api.conversationId);
+            return access && { ...access, cwd: await this.#ownerCwd(tx, access.owner) };
           }, ctx);
+          const permit = await readPermit();
           if (!permit) return failure;
           const { id, owner, cwd } = permit;
           const target = await this.#load(owner, id, ctx);
           if (cwd !== target.workspace.cwd) return failure;
           await requireExecutionWorkspace(this.trust, target.workspace, ctx.abortSignal);
+          // Workspace validation awaits the filesystem; recheck the live assignment before returning bytes.
+          const current = await readPermit();
+          if (current?.owner !== owner || current.id !== id || current.cwd !== cwd) return failure;
           const file = path === undefined ? undefined : target.files.find(f => f.path === path);
           if (path !== undefined && !file) return failure;
           const content = file ? { path: file.path, base: file.base, staged: file.staged, working: file.working } : manifest(id, target);
