@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,6 +33,19 @@ func diffFixturePatch(index int) sdk.GitDiffPatch {
 		{Kind: "add", NewLine: 42, Text: "  const lock = await mutex.take(key);"},
 		{Kind: "add", NewLine: 43, Text: "  // output with \x1b[31m and a long path " + strings.Repeat("界", 45)},
 	}}
+}
+
+func longDiffFixturePatch() sdk.GitDiffPatch {
+	patch := diffFixturePatch(0)
+	for i := 44; i <= 80; i++ {
+		text := fmt.Sprintf("  // fixture line %d", i)
+		if i == 75 {
+			text += strings.Repeat(" ../wide/界/fixture", 25)
+		}
+		patch.Lines = append(patch.Lines, sdk.GitDiffLine{Kind: "add", NewLine: i, Text: text})
+	}
+	patch.Truncated = true
+	return patch
 }
 
 type gitDiffFixtureBackend struct{ inertBackend }
@@ -159,6 +173,84 @@ func TestGitDiffScopeWithoutBranch(t *testing.T) {
 	}
 }
 
+func TestGitDiffPatchScrollKeepsPanelFixed(t *testing.T) {
+	m, s := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	enableGitDiffFixture(m, s)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.editor.set("keep this draft")
+	m.openGitDiff(m.route(m.active, coreID))
+	d := m.focusedDialog()
+	d.git.patch, d.git.view = true, newGitPatchView(longDiffFixturePatch())
+	assertFrame(t, m)
+	first := *m.frame
+	body := func(f *frameMemo) []string {
+		start := f.dialogY + f.dialogBodyStart
+		return f.rows[start+1 : start+f.dialogBodyHeight] // exclude the workspace context
+	}
+	start := first.dialogY + first.dialogBodyStart + 1
+	end := first.dialogY + first.dialogBodyStart + first.dialogBodyHeight
+	check := func() []string {
+		t.Helper()
+		assertFrame(t, m)
+		f := m.frame
+		if m.focusedDialog() != d || f.dialogY != first.dialogY || f.dialogHeight != first.dialogHeight || f.ruleY != first.ruleY ||
+			!slices.Equal(f.rows[:start], first.rows[:start]) || !slices.Equal(f.rows[end:], first.rows[end:]) {
+			t.Fatalf("scroll changed rows outside the diff body: panel top %d → %d, height %d → %d", first.dialogY, f.dialogY, first.dialogHeight, f.dialogHeight)
+		}
+		return body(f)
+	}
+	wheel := func(button tea.MouseButton, y int) {
+		m.Update(tea.MouseWheelMsg(tea.Mouse{Button: button, X: first.dialogX + 2, Y: y}))
+	}
+	press(m, tea.KeyDown, 0)
+	afterDown := check()
+	if !slices.Equal(body(&first)[1:], afterDown[:len(afterDown)-1]) {
+		t.Fatal("Down did not scroll one rendered row")
+	}
+	wheel(tea.MouseWheelDown, start)
+	if afterWheel := check(); !slices.Equal(afterDown[3:], afterWheel[:len(afterWheel)-3]) {
+		t.Fatal("wheel did not scroll three rendered rows")
+	}
+	for range 8 {
+		press(m, tea.KeyPgDown, 0)
+		check()
+	}
+	bottom := check()
+	if got := ansi.Strip(bottom[len(bottom)-1]); !strings.Contains(got, "fixture line 80") {
+		t.Fatalf("last row of the patch not visible: %q", got)
+	}
+	press(m, tea.KeyDown, 0)
+	wheel(tea.MouseWheelDown, start)
+	if !slices.Equal(bottom, check()) {
+		t.Fatal("scrolled past the last full page")
+	}
+	wheel(tea.MouseWheelUp, first.ruleY)
+	if !slices.Equal(bottom, check()) {
+		t.Fatal("wheel outside the panel scrolled the diff")
+	}
+	wheel(tea.MouseWheelUp, start)
+	if afterWheel := check(); !slices.Equal(bottom[:len(bottom)-3], afterWheel[3:]) {
+		t.Fatal("wheel did not scroll back three rendered rows")
+	}
+	press(m, tea.KeyPgDown, 0)
+	if !slices.Equal(bottom, check()) {
+		t.Fatal("Page Down did not return to the last page")
+	}
+
+	// A larger viewport must fill from above the old top near the end of the diff.
+	m.Update(tea.WindowSizeMsg{Width: 112, Height: 36})
+	assertFrame(t, m)
+	resized := body(m.frame)
+	if m.frame.dialogHeight != m.height*7/10 || !strings.Contains(ansi.Strip(resized[len(resized)-1]), "fixture line 80") {
+		t.Fatal("resizing at the end did not fill the viewport")
+	}
+	press(m, tea.KeyUp, 0)
+	assertFrame(t, m)
+	if !slices.Equal(resized[:len(resized)-1], body(m.frame)[1:]) {
+		t.Fatal("Up did not scroll from the top of the resized viewport")
+	}
+}
+
 func TestGitDiffFrameGeometry(t *testing.T) {
 	for _, size := range [][2]int{{40, 12}, {64, 16}, {80, 24}, {140, 40}, {200, 60}} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
@@ -175,7 +267,9 @@ func TestGitDiffFrameGeometry(t *testing.T) {
 				t.Fatal("patch changed geometry or lost the prompt")
 			}
 			press(m, tea.KeyPgDown, 0)
-			assertFrame(t, m)
+			if after := assertFrame(t, m); size[1] >= 24 && after != v {
+				t.Fatal("a patch that fits scrolled")
+			}
 		})
 	}
 }
@@ -191,4 +285,11 @@ func TestGitDiffGoldens(t *testing.T) {
 	d := m.focusedDialog()
 	d.git.patch, d.git.view = true, newGitPatchView(diffFixturePatch(0))
 	golden(t, "git-diff-file", m)
+	d.git.view = newGitPatchView(longDiffFixturePatch())
+	assertFrame(t, m)
+	for range 8 {
+		press(m, tea.KeyPgDown, 0)
+		assertFrame(t, m)
+	}
+	golden(t, "git-diff-file-bottom", m)
 }

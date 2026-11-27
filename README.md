@@ -35,6 +35,13 @@ Pass a prompt with `hush --print '...'` or
 as prompts. `--json` formats native command output; Pi's JSON/RPC modes,
 profile, and session files are not supported.
 
+To start a durable thread without waiting for the answer, use `hush -p --no-wait
+--json 'Review the working-tree changes. Do not edit files.'`. The receipt contains
+`threadId`, `submissionId`, and `requestId`. Open that thread with `hush -t ID`
+(`--thread ID`) or find it under `/threads`. The run does not depend on a view
+being open. Use `hush thread list` to list threads and `hush thread archive -t ID`
+or `hush thread unarchive -t ID` to change their archive status.
+
 This is from a run against Hush’s scripted test model. I restarted the backend
 between the first prompt and `thread list`.
 
@@ -59,6 +66,10 @@ You can also press `Ctrl+X N` on a thread in that workspace. If there’s more t
 working directory, choose which one to use. At the prompt, `/new` still uses the launch
 directory. Use `/close` to close the current tab without deleting its thread or stopping
 its run.
+
+At the prompt, `Tab` switches to the next open thread unless it is completing a command
+or path. Use `Ctrl+X` then `←` for the previous open thread. Both wrap in tab-bar order
+and include tabs hidden behind `+N`. `Shift+Tab` still opens the thinking-level picker.
 
 The TUI caches transcript blocks and renders the visible window rather than rewrapping
 the whole thread on each keystroke. Use `/config` to set the default model and thinking effort for new threads, and to show live and
@@ -94,6 +105,24 @@ resolves for the active thread’s next submission. The inspector lists paths,
 not contents. Hush [discovers skills](backend/README.md#standalone-skills) from
 personal roots and trusted workspaces. Use `/skills` to stage one without submitting.
 
+## Open terminal panes
+
+In a verified local Rex or cmux terminal, ask in chat. No slash command is required:
+
+- “Open a new side pane” opens an idle terminal on the right.
+- “Run `npm test` in a pane below” opens a command pane.
+- “Open a fresh Hush thread in a side pane” opens an independent conversation on
+  the same running backend. `/new-pane` (or `ctrl+x i e`) is a direct shortcut.
+
+Hush opens panes in the active thread's trusted working directory. A pane opening
+does not mean its command started or passed. If placement is unconfirmed, inspect
+instead of repeating the request. Threads are not tied to panes. To start work in another thread and open it, ask in
+chat, for example: “Review these changes in a fresh thread and open it on the
+right.” Hush submits the new thread's prompt first, then opens that thread by ID.
+Ask for a tab to open it in the current TUI without switching away. A tab works
+in a verified local Hush TUI without a multiplexer; a split requires an adapter.
+See the [pane contract](docs/pane-contract.md) for supported placements and unavailable-client behavior.
+
 ## Request an independent code review
 
 Use `hush review start` to review exact files in a trusted thread's dirty checkout:
@@ -114,9 +143,11 @@ Pass `--prompt 'Launch the reviewers and join their results before answering'` t
 start an explicit parent turn that can spawn and join the reserved workers.
 Click the worker count or press `ctrl+x i j` in the parent thread to inspect
 briefs, pinned evidence, and advisory reports. Enter opens a read-only transcript
-from the evidence panel. Where Rex is available, `o` opens that transcript in a
-right pane. Use `x` in the evidence panel or `hush review stop HANDLE --thread 7`
-to stop just that worker. Closing a panel or pane does not stop work.
+from the evidence panel. Where local pane control is available, `o` opens that
+transcript in a right pane. You can also ask in the parent chat: “Open review
+HANDLE in a side pane.” If placement is unavailable, the transcript stays in
+Hush. Use `x` in the evidence panel or `hush review stop HANDLE --thread 7` to stop
+just that worker. Opening or closing a pane does not start or stop work.
 Retry a lost launch reply with the same request ID and arguments. Supplied test
 excerpts are not rerun, and review does not verify or approve work. See the
 [native review contract](protocol/v1/delegation.md).

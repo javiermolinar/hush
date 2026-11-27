@@ -12,10 +12,12 @@ import (
 	"github.com/javiermolinar/hush/app/internal/authproviders"
 	"github.com/javiermolinar/hush/app/internal/backendstart"
 	"github.com/javiermolinar/hush/app/internal/headless"
+	"github.com/javiermolinar/hush/app/internal/pane"
 	"github.com/javiermolinar/hush/sdk"
 	"github.com/javiermolinar/hush/tui"
 	"github.com/javiermolinar/hush/tui/examples/inbox"
 	"github.com/javiermolinar/hush/tui/extension"
+	"golang.org/x/term"
 )
 
 func introStatePath() string {
@@ -55,23 +57,66 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 	caps["workerActivity"] = []uint64{sdk.WorkerActivityVersion}
 	caps["subagents"] = []uint64{sdk.SubagentOverviewVersion}
 	environment := detectClientEnvironment(ctx)
-	target := backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, RequireWorkTrust: true}
-	client, err := backendstart.NewClient(ctx, target, sdk.ClientOptions{Capabilities: caps})
+	target := backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, AttachOnly: o.PaneEpoch != "", RequireWorkTrust: true}
+	clientOptions := sdk.ClientOptions{Capabilities: caps, ExpectedEpoch: o.PaneEpoch}
+	var adapter pane.Adapter
+	var executable string
+	var tabs *tui.ThreadTabs
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		adapter = pane.Detect(ctx)
+		if adapter != nil {
+			executable, _ = os.Executable()
+		}
+		tabs = tui.NewThreadTabs()
+		openTab := func(ctx context.Context, id sdk.ID) pane.Outcome {
+			err := tabs.Open(ctx, id)
+			switch {
+			case err == nil:
+				return pane.Confirmed
+			case errors.Is(err, tui.ErrPaneOpenUnknown):
+				return pane.Unknown
+			default:
+				return pane.Rejected
+			}
+		}
+		clientOptions.NewPaneHandler = func() sdk.PaneHandler { return pane.NewThreadHandler(adapter, executable, openTab) }
+	}
+	client, err := backendstart.NewClient(ctx, target, clientOptions)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	m, err := tui.New(ctx, client, tui.Options{
+	if o.PaneEpoch != "" {
+		attach, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if o.Thread.Valid() {
+			_, err = client.Hello(attach)
+		} else {
+			var thread sdk.Thread
+			thread, err = client.NewThread(attach, sdk.NewThread{CWD: cwd})
+			o.Thread = thread.ID
+		}
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	options := tui.Options{
 		ThreadID: o.Thread, NewThread: sdk.NewThread{CWD: cwd}, WorkspaceLocal: local,
 		Fills: tui.FillMode(o.Fills), Images: tui.ImageMode(o.Images), ThemeName: o.Theme,
 		ReducedMotion: !o.Motion, CustomModels: true,
-		Extensions:        []extension.Registration{inbox.New()},
-		ProviderLogin:     localProviderLogin(o),
-		WorkspaceTrust:    workspaceTrustOptions(o),
-		Intro:             &tui.IntroOptions{StatePath: introStatePath()},
-		ClientEnvironment: environment,
-		OpenReviewPane:    reviewPaneOpener(ctx, target, environment.Multiplexer),
-	})
+		Extensions:            []extension.Registration{inbox.New()},
+		ProviderLogin:         localProviderLogin(o),
+		WorkspaceTrust:        workspaceTrustOptions(o),
+		Intro:                 &tui.IntroOptions{StatePath: introStatePath()},
+		ClientEnvironment:     environment,
+		PaneCommands:          adapter != nil,
+		PaneCommandsAvailable: client.PaneCommandsAvailable,
+		ThreadTabs:            tabs,
+	}
+	if views := newPaneWorkflows(adapter, client, cwd, executable); views != nil {
+		options.OpenThreadPane, options.OpenReviewPane = views.openThread, views.openReview
+	}
+	m, err := tui.New(ctx, client, options)
 	if err != nil {
 		return err
 	}

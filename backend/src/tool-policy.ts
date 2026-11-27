@@ -9,8 +9,11 @@ import { allowedExecutionPath, bindExecutionWorkspace, readExecutionText, requir
   type ExecutionWorkspace } from "./execution-workspace.js";
 import { draftInput, draftPrompt, draftProposalTool, isPlanDraftTool, LegacyDraftTurn, readPlanTool, type DraftMode } from "./plan-draft-intent.js";
 import { allowsPlanFileTool, isPlanFileTool, planTurnScope } from "./plan-turn.js";
-import { planFixtureTaskKind, planReportName } from "./plan.js";
+import { checkPlanWorktree, matchesPlanCheckout, planFixtureTaskKind, planReportName } from "./plan.js";
 import { workspaceFileError } from "./workspace-file.js";
+import { isPaneTool } from "./pane-contract.js";
+import { isPaneLaunchEntry, paneOnlyTurn } from "./pane-intent.js";
+import { StartedThread, threadStartName, threadStartRequest } from "./thread-start.js";
 import type { WorkspaceTrust } from "./workspace-trust.js";
 
 export const reviewReadTool = "hush_review_read", reviewReportTool = "hush_review_report";
@@ -60,6 +63,7 @@ function pinned({ mode, workspace }: TurnPin): Profile {
 }
 
 export function allowsTool(profile: Profile, name: string, nested: boolean, chatAssignment = true) {
+  if (isPaneTool(name) || name === threadStartName) return profile.kind === "default" && !nested && profile.workspace !== null;
   switch (profile.kind) {
     case "disabled": return false;
     case "reviewer": return !nested && profile.target.kind === "code" &&
@@ -126,7 +130,7 @@ async function restrictedHistory(tx: Tx, conversation: ConversationRecord, fixtu
       if (last.kind === "pi.reset") return false;
       // Even if the last visible input was a non-drafting steer, a saved
       // planner policy means history alone is not a new admission.
-      return !!saved?.mode || last.kind === planTaskKind || last.kind === planChatKind || !!draftInput(last, last.conversationId, fixture);
+      return !!saved?.mode || last.kind === planTaskKind || last.kind === planChatKind || isPaneLaunchEntry(last) || !!draftInput(last, last.conversationId, fixture);
     }
     if (next) return true;
     if (!current.parent) return false;
@@ -148,6 +152,14 @@ export class ToolPolicy {
     if (pin.owner !== owner || pin.profile.kind !== "subagent-write" || this.directory(cwd) !== pin.profile.workspace.cwd) return null;
     await requireExecutionWorkspace(this.trust, pin.profile.workspace, ctx.abortSignal);
     return pin.profile.workspace;
+  }
+
+  async threadStartEnvironment(owner: ConversationId, cwd: string | undefined, read: Pick<Harness, "snapshot">, ctx: Context) {
+    const pin = (await read.snapshot(StartedThread, owner, ctx))?.first;
+    if (!pin || !(await read.snapshot(LiveDoc, owner, ctx))?.run?.inputs.includes(pin.submission)) return undefined;
+    if (this.directory(cwd) !== pin.workspace.cwd) return null;
+    await requireExecutionWorkspace(this.trust, pin.workspace, ctx.abortSignal);
+    return pin.workspace;
   }
 
   async #decide(tx: Tx, owner: ConversationId, caller: Caller, legacy?: Readonly<{ first?: EntryId }>): Promise<Decision> {
@@ -195,6 +207,11 @@ export class ToolPolicy {
     const mode = prior?.mode ?? await placedDraft(tx, owner, run, this.fixture);
     if (prior && mode === prior.mode) return fixed(pinned(prior), nested);
     if (!prior && run.first !== undefined && legacy?.first === run.first) return fixed(disabled, nested);
+    const launched = source?.type === "input" && source.requestId === threadStartRequest ? (await tx.doc(StartedThread, owner)).first : undefined;
+    if (launched && launched.submission === source?.id) {
+      if (launched.workspace.cwd !== cwd) return fixed(disabled, nested);
+      return { candidate: { ...turn, ...(mode && { mode }) }, workspace: { ...launched.workspace }, nested };
+    }
     return { candidate: { ...turn, ...(mode && { mode }) }, ...(prior && { workspace: prior.workspace && { ...prior.workspace } }), nested };
   }
 
@@ -219,16 +236,19 @@ export class ToolPolicy {
 
   async #authorize(name: string, api: ToolExecutionApi, ctx: Context) {
     const legacy = await this.#legacy(api.conversationId, ctx);
-    const decision = await api.commit(tx => this.#decide(tx, api.conversationId, { tool: api.taskId }, legacy), ctx);
+    const decide = async (tx: Tx) => !isPaneTool(name) && await paneOnlyTurn(tx, api.conversationId) ? fixed(disabled) :
+      this.#decide(tx, api.conversationId, { tool: api.taskId }, legacy);
+    const decision = await api.commit(decide, ctx);
     // A legacy default call may resume under its normal environment, but
     // durably bind that environment before any new execution. A missing
     // planner pin, including a just-placed steer, never admits a proposal.
     let profile: Profile = "profile" in decision ? decision.profile : disabled;
-    if ("candidate" in decision && !decision.candidate.mode && decision.workspace === undefined) {
-      const workspace = await bindExecutionWorkspace(this.trust, decision.candidate.cwd, ctx.abortSignal).catch(() => null);
+    if ("candidate" in decision && !decision.candidate.mode) {
+      const workspace = decision.workspace === undefined
+        ? await bindExecutionWorkspace(this.trust, decision.candidate.cwd, ctx.abortSignal).catch(() => null) : decision.workspace;
       ctx.abortSignal?.throwIfAborted();
       profile = await api.commit(async tx => {
-        const now = await this.#decide(tx, api.conversationId, { tool: api.taskId }, legacy);
+        const now = await decide(tx);
         if ("profile" in now) return now.profile;
         if (now.candidate.mode || !sameTurn(now.candidate, decision.candidate) || now.candidate.cwd !== decision.candidate.cwd) return disabled;
         const pin = { ...now.candidate, workspace };
@@ -251,6 +271,31 @@ export class ToolPolicy {
     return { profile } as const;
   }
 
+  async threadStartWorkspace(api: ToolExecutionApi, ctx: Context) {
+    const decision = await this.#authorize(threadStartName, api, ctx);
+    return decision.profile?.kind === "default" ? decision.profile.workspace : undefined;
+  }
+
+  async confirmWorkspace(tx: Tx, owner: ConversationId, workspace: ExecutionWorkspace, ctx: Context) {
+    const { root, device, inode, birth } = workspace;
+    if (!await matchesPlanCheckout(tx, owner, root, `${device}:${inode}:${birth}`)) return false;
+    try {
+      await requireExecutionWorkspace(this.trust, workspace, ctx.abortSignal);
+      return true;
+    } catch { ctx.abortSignal?.throwIfAborted(); return false; }
+  }
+
+  // The durable pin is necessary, but revocation doesn't modify it. Check
+  // the live grant and worktree binding again at the final admission point.
+  async confirmDefaultWorkspace(tx: Tx, api: ToolExecutionApi, expected: ExecutionWorkspace, ctx: Context) {
+    return await this.matchesDefaultWorkspace(tx, api, expected) && await this.confirmWorkspace(tx, api.conversationId, expected, ctx);
+  }
+
+  async bindThreadWorkspace(cwd: string, ctx: Context) {
+    try { return await bindExecutionWorkspace(this.trust, this.directory(cwd), ctx.abortSignal); }
+    catch { ctx.abortSignal?.throwIfAborted(); }
+  }
+
   // Subagents consume the actual authorized binding, not a new grant for
   // whatever directory happens to occupy the cwd when the tool runs.
   async subagentWorkspace(api: ToolExecutionApi, ctx: Context) {
@@ -258,7 +303,23 @@ export class ToolPolicy {
     return decision.profile?.kind === "default" ? decision.profile.workspace : undefined;
   }
 
+  async paneWorkspace(name: string, api: ToolExecutionApi, ctx: Context) {
+    if (!isPaneTool(name)) return;
+    const decision = await this.#authorize(name, api, ctx);
+    const workspace = decision.profile?.kind === "default" ? decision.profile.workspace : undefined;
+    if (!workspace) return;
+    try {
+      await checkPlanWorktree(this.harness(), api.conversationId, workspace.root, ctx);
+      await requireExecutionWorkspace(this.trust, workspace, ctx.abortSignal);
+      return workspace;
+    } catch { ctx.abortSignal?.throwIfAborted(); }
+  }
+
   async matchesSubagentWorkspace(tx: Tx, api: ToolExecutionApi, expected: ExecutionWorkspace) {
+    return !await paneOnlyTurn(tx, api.conversationId) && this.matchesDefaultWorkspace(tx, api, expected);
+  }
+
+  async matchesDefaultWorkspace(tx: Tx, api: ToolExecutionApi, expected: ExecutionWorkspace) {
     const value = await this.#decide(tx, api.conversationId, { tool: api.taskId });
     return !value.nested && "profile" in value && value.profile.kind === "default" && !!value.profile.workspace &&
       sameExecutionWorkspace(value.profile.workspace, expected);

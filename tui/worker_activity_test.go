@@ -78,9 +78,10 @@ func (b *workerBackendFixture) StopReviewWorker(_ context.Context, owner sdk.ID,
 
 func TestReviewWorkersActionsAndScope(t *testing.T) {
 	var panes []string
+	var paneErr error
 	m, s := demo(t, Options{Fills: FillOff, ReducedMotion: true, OpenReviewPane: func(_ context.Context, parent sdk.ID, handle string) error {
 		panes = append(panes, string(parent)+"/"+handle)
-		return nil
+		return paneErr
 	}})
 	s.info.Status = x.Parked
 	b := &workerBackendFixture{Backend: inertBackend{}}
@@ -134,10 +135,29 @@ func TestReviewWorkersActionsAndScope(t *testing.T) {
 	if b.transcripts != 1 || len(panes) != 0 || !strings.Contains(ansi.Strip(assertFrame(t, m)), "Only public activity") {
 		t.Fatal("transcript did not stay in the dock until explicit pane open")
 	}
-	m.Update(press(m, 'o', 0)())
+	open := press(m, 'o', 0)
+	if open == nil || press(m, 'o', 0) != nil {
+		t.Fatal("repeated open while placement is pending")
+	}
+	m.Update(open())
 	if !slices.Equal(panes, []string{"1/" + workerRowsFixture[1].Handle}) {
 		t.Fatalf("wrong pane target: %v", panes)
 	}
+	paneErr = sdk.ErrPaneUnavailable
+	rejected := press(m, 'o', 0)
+	if rejected == nil {
+		t.Fatal("confirmed placement blocked another open")
+	}
+	m.Update(rejected())
+	if b.transcripts != 1 || len(b.stopped) != 0 || !strings.Contains(ansi.Strip(assertFrame(t, m)), "the transcript is still here") {
+		t.Fatal("pane failure did not preserve the transcript and worker")
+	}
+	paneErr = nil
+	retry := press(m, 'o', 0)
+	if retry == nil {
+		t.Fatal("rejected placement blocked another open")
+	}
+	m.Update(retry())
 	press(m, tea.KeyEscape, 0)
 	if m.focusedDialog() != details {
 		t.Fatal("Escape from transcript did not go back one level")
@@ -173,6 +193,89 @@ func TestReviewWorkersActionsAndScope(t *testing.T) {
 	press(m, 'j', 0)
 	if d := m.focusedDialog(); d == nil || d.worker == nil || d.worker.handle != "" {
 		t.Fatal("leader chord did not open the roster")
+	}
+}
+
+func TestGoldenReviewWorkerPaneReentry(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		replyWhileClosed bool
+	}{
+		{name: "pending on return"},
+		{name: "unknown on return", replyWhileClosed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first, second := workerRowsFixture[0], workerRowsFixture[1]
+			var panes []string
+			m, _ := demo(t, Options{Fills: FillOff, ReducedMotion: true, OpenReviewPane: func(_ context.Context, owner sdk.ID, handle string) error {
+				panes = append(panes, string(owner)+"/"+handle)
+				if owner == "1" && handle == first.Handle {
+					return ErrPaneOpenUnknown
+				}
+				return nil
+			}})
+			b := &workerBackendFixture{Backend: inertBackend{}}
+			m.backend = b
+			m.menuFeaturesFromBackend |= x.WorkerActivity
+			m.workers = workerFeed{feedLease: feedLease{owner: m.active}, ready: true, rows: workerRowsFixture}
+			m.editor.set("Unsent draft")
+			m.openWorkers(m.route(m.active, coreID))
+			runKey := func(k rune) tea.Msg {
+				t.Helper()
+				cmd := press(m, k, 0)
+				if cmd == nil {
+					t.Fatalf("key %q did not dispatch", k)
+				}
+				return cmd()
+			}
+			checkBlocked := func(label string) {
+				t.Helper()
+				if press(m, 'o', 0) != nil {
+					t.Fatalf("duplicate pane open dispatched while %q", label)
+				}
+				frame := ansi.Strip(assertFrame(t, m))
+				if !strings.Contains(frame, label) || !strings.Contains(frame, "Only public activity") || strings.Contains(frame, "o open pane") {
+					t.Fatalf("pane state or transcript not shown correctly:\n%s", frame)
+				}
+			}
+
+			m.Update(runKey(tea.KeyEnter)) // evidence
+			m.Update(runKey(tea.KeyEnter)) // transcript
+			result := runKey('o')
+			press(m, tea.KeyEscape, 0)
+			if tc.replyWhileClosed {
+				m.Update(result)
+			}
+			m.Update(runKey(tea.KeyEnter)) // a new dialog for the same transcript
+			if !tc.replyWhileClosed {
+				checkBlocked("Opening transcript pane…")
+				m.Update(result)
+			}
+			const unknown = "Pane opening was not confirmed; check your terminal"
+			checkBlocked(unknown)
+			m.Update(runKey('r'))
+			checkBlocked(unknown)
+			if tc.replyWhileClosed {
+				golden(t, "review-worker-pane-unknown", m)
+			}
+
+			press(m, tea.KeyEscape, 0)
+			press(m, tea.KeyEscape, 0)
+			press(m, tea.KeyDown, 0)
+			m.Update(runKey(tea.KeyEnter))
+			m.Update(runKey(tea.KeyEnter))
+			m.Update(runKey('o'))
+
+			m.switchThread("2")
+			m.workers.rows, m.workers.ready = workerRowsFixture, true
+			m.openWorkers(m.route(m.active, coreID))
+			m.Update(runKey(tea.KeyEnter))
+			m.Update(runKey(tea.KeyEnter))
+			m.Update(runKey('o'))
+			if !slices.Equal(panes, []string{"1/" + first.Handle, "1/" + second.Handle, "2/" + first.Handle}) || len(b.stopped) != 0 {
+				t.Fatalf("unexpected pane or worker actions: opened %v, stopped %v", panes, b.stopped)
+			}
+		})
 	}
 }
 

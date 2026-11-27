@@ -801,3 +801,25 @@ func TestParseServiceStatusJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestPaneEpochIsOnlyForExactAttachOnlyViews(t *testing.T) {
+	base := []string{"--socket", "/tmp/backend.sock", "--pane-epoch", "backend-epoch"}
+	for _, tail := range [][]string{nil, {"--local"}, {"-t", "7"}, {"review", "transcript", "0123456789abcdef0123456789abcdef", "--thread", "7"}} {
+		o, err := parse(append(base, tail...))
+		if err != nil || o.paneEpoch != "backend-epoch" || len(tail) < 2 && (!o.uiFlags || !o.interactive(true, true) || o.ui.PaneEpoch != o.paneEpoch) ||
+			len(tail) > 2 && (o.command != reviewCommand || o.review.action != "transcript") {
+			t.Fatalf("valid pane launch %v: %+v, %v", tail, o, err)
+		}
+	}
+	if o, err := parse(append(base, "-t", "7")); err != nil || o.ui.Thread != "7" {
+		t.Fatalf("expected an exact existing-thread attach: %s, %v", o.ui.Thread, err)
+	}
+	for _, tail := range [][]string{{"--thread", "0"}, {"-t", "7", "--", "prompt"}, {"--print"}, {"--backend", "/tmp/bundle"}, {"--no-session"}, {"--mode", "protocol"}, {"review", "start", "--thread", "7"}} {
+		if _, err := parse(append(base, tail...)); err == nil {
+			t.Fatalf("accepted a non-view action %v", tail)
+		}
+	}
+	if _, err := parse([]string{"--pane-epoch", "backend-epoch"}); err == nil {
+		t.Fatal("attachment could use or start the default backend")
+	}
+}

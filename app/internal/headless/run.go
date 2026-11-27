@@ -123,7 +123,7 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		_, err = fmt.Fprintln(out, line)
 		return report(err)
 	}
-	var sdkOpts sdk.ClientOptions
+	sdkOpts := sdk.ClientOptions{ExpectedEpoch: o.paneEpoch}
 	if o.command >= listThreads && o.command < localAuth {
 		sdkOpts.Capabilities = map[string][]uint64{"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}}
 	}

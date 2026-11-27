@@ -52,7 +52,15 @@ type Options struct {
 	OpenFile       func(context.Context, string, int) error
 	EditPrompt     func(context.Context, string) (string, error)
 	CopyText       func(context.Context, string) error
-	// OpenReviewPane optionally opens an explicit read-only transcript in the host terminal.
+	// PaneCommands enables the explicit /pane input in a local terminal frontend.
+	PaneCommands bool
+	// PaneCommandsAvailable optionally supplies live command-menu availability.
+	// It must not perform I/O or block the update loop.
+	PaneCommandsAvailable func() bool
+	// ThreadTabs receives background tab requests from the command connection.
+	ThreadTabs *ThreadTabs
+	// Optional local terminal actions. The callbacks verify the backend and origin.
+	OpenThreadPane func(context.Context, sdk.ID) error
 	OpenReviewPane func(context.Context, sdk.ID, string) error
 }
 
@@ -245,7 +253,7 @@ func (m *Model) Init() tea.Cmd {
 	if m.intro != nil {
 		feed = startBeforePaint(m.ctx, feed)
 	}
-	commands := []tea.Cmd{feed, m.editor.area.Focus(), terminalQueries(), terminalKeymap(m.ctx),
+	commands := []tea.Cmd{feed, m.editor.area.Focus(), terminalQueries(), terminalKeymap(m.ctx), m.options.ThreadTabs.wait(m.ctx),
 		m.menuProbe(), m.beginIntro(), m.probeImages(), waitImageScreen(m.ctx, m.images.output), waitImagePaint(m.ctx, m.images.output)}
 	if m.intro == nil || m.intro.options.Watch != nil {
 		commands = append(commands, m.beginBackendReport())
@@ -319,6 +327,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var scanImages bool
 	switch v := msg.(type) {
+	case tabOpenMsg:
+		return m, m.openThreadTab(v)
 	case imageCapability:
 		m.images.capable = bool(v)
 		m.images.revision++
@@ -792,6 +802,9 @@ func (m *Model) eligibleFor(a registeredAction, owner sdk.ID, target string) boo
 	if a.action.ID == pasteImageID {
 		return m.images.capable
 	}
+	if a.action.ID == previousOpenTabID || a.action.ID == nextOpenTabID {
+		return owner == m.active && m.adjacentTab(1).Valid()
+	}
 	if a.action.ID == openPlanRunID {
 		return owner == m.active && m.currentPlanRun(m.threads[owner]) != nil
 	}
@@ -1022,6 +1035,10 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 		}
 	case openThreadPickerOp:
 		return m.openThreadPicker(r, e.Text == "all", budget)
+	case openThreadPaneOp:
+		return m.openThreadPane(r, budget)
+	case stagePaneCommandOp:
+		return m.stagePaneCommand(r)
 	case retryFailureOp, dismissFailureOp:
 		return m.recoverRun(r, e, budget)
 	case providerLoginOp:
@@ -1035,6 +1052,16 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 	case extension.OpenPalette:
 		if m.foreground(r) {
 			return m.openPalette(r, budget)
+		}
+	case previousOpenTabOp, nextOpenTabOp:
+		if r.extension == footerID && m.foreground(r) {
+			direction := 1
+			if e.Op == previousOpenTabOp {
+				direction = -1
+			}
+			if id := m.adjacentTab(direction); id.Valid() {
+				return m.switchThread(id)
+			}
 		}
 	case extension.CloseTab:
 		if m.foreground(r) {

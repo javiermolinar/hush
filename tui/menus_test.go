@@ -384,6 +384,8 @@ func TestSlashCompletionUsesUTF8ByteCursorAcrossWrap(t *testing.T) {
 			}},
 		}},
 	}}})
+	m.ensureThread("2")
+	m.openedTab("2")
 	m.Update(tea.WindowSizeMsg{Width: 40, Height: 18})
 	const command = "/fixture  "
 	for _, prefix := range []string{"e\u0301界", strings.Repeat("wide 界 ", 6) + "e\u0301界"} {
@@ -395,8 +397,8 @@ func TestSlashCompletionUsesUTF8ByteCursorAcrossWrap(t *testing.T) {
 			t.Fatalf("completion got %+v, want byte offset %d in %q", request, len(prefix), args)
 		}
 		want := command + strings.TrimSuffix(prefix, "界") + "済suffix"
-		if m.editor.value() != want || m.editor.cursorByte() != len(strings.TrimSuffix(want, "suffix")) {
-			t.Fatalf("expected edit at the cursor, got %q", m.editor.value())
+		if m.active != "1" || m.editor.value() != want || m.editor.cursorByte() != len(strings.TrimSuffix(want, "suffix")) {
+			t.Fatalf("expected edit at the cursor, got %q in thread %q", m.editor.value(), m.active)
 		}
 	}
 }

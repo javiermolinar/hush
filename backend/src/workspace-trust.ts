@@ -105,6 +105,8 @@ async function directory(path: string): Promise<DirectoryIdentity> {
   } catch { throw failure("workspace"); }
 }
 
+export { directory as workspaceDirectoryIdentity };
+
 const sameDirectory = (a: DirectoryIdentity, b: DirectoryIdentity) =>
   a.path === b.path && a.device === b.device && a.inode === b.inode && a.birth === b.birth;
 const sameWorkspace = (a: GitWorkspaceIdentity, b: GitWorkspaceIdentity) =>

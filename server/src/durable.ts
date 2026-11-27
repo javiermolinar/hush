@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { Cursors, SealedCursors } from "./cursor.js";
 import { environmentEntry, environmentInputKind, type ClientEnvironment } from "./client-environment.js";
+import { threadStartNoticeKind, type PaneDirectory, type SelectPaneAdmission } from "./pane-control.js";
 import { projectImageBytes, type ImageRef, type ImagesHost, type ImageSubmission } from "./images.js";
 import { planReviewKind } from "./plan-review.js";
 import { reviewParentKind, workerNoticeKind } from "./delegation.js";
@@ -18,6 +19,12 @@ import { checkpointKind, effectKind } from "./checkpoints.js";
 import type { CatalogCreation } from "./model-catalog.js";
 import { cleanJSON, durableID, encode, entryShape, object, stateEnvelopeShape, WireError,
   type CoreRequest, type ExplicitRange, type Params } from "./wire.js";
+
+function inputEntry(environment: ClientEnvironment | undefined, pane?: SelectPaneAdmission) {
+  const admission = pane?.();
+  if (admission === false) throw new WireError("invalid_request");
+  return environmentEntry(environment, admission);
+}
 
 const id = String;
 const maybeID = (value: number | undefined) => value === undefined ? undefined : id(value);
@@ -78,7 +85,7 @@ const projectEntry = (entry: EntryRecord) => ({
   kind: entry.kind === environmentInputKind || entry.kind === reviewParentKind ? "pi.user" : entry.kind,
   messages: (entry.kind === scheduleReportKind || entry.kind === checkpointKind || entry.kind === effectKind ||
     entry.kind === planRunKind || entry.kind === planTaskKind || entry.kind === planChatKind || entry.kind === planResultKind || entry.kind === planReviewKind ||
-    entry.kind === planPreviewKind || entry.kind === planPreviewSavedKind || entry.kind === workerNoticeKind) &&
+    entry.kind === planPreviewKind || entry.kind === planPreviewSavedKind || entry.kind === workerNoticeKind || entry.kind === threadStartNoticeKind) &&
     object(entry.data) && typeof entry.data.text === "string" && typeof entry.data.timestampMs === "number" ? [{ role: "assistant", timestampMs: entry.data.timestampMs,
       stopReason: "stop", blocks: [{ type: "text", text: entry.data.text }] }] :
     (entry.model ?? []).map(projectMessage),
@@ -233,10 +240,13 @@ export interface NativeHost {
   privateConversation?(id: ConversationId, context: Context): Promise<boolean>;
   /** Guard native input and settings admission. Manual compaction is checked before asking Durable to start it. */
   checkAdmission?(tx: Tx, threadId: ConversationId, operation: "input" | "continue" | "configure" | "compact" | "reset"): Promise<void>;
+  /** Admit a Continue and any host-private restrictions in the same transaction. */
+  submitContinue?(tx: Tx, conv: Conversation): Promise<SubmissionId>;
   prepare?(input: Readonly<{ threadId?: string; cwd?: string; text?: string; skillToken?: string }>, context: Context):
     Promise<{ text?: string; agent?: AgentChange; confirm?: (signal?: AbortSignal) => Promise<void> }>;
   /** Check the selected model outside the transaction. Never resolve or carry request credentials. */
   requireModel?(model: AgentState["model"]): Promise<void>;
+  paneWorkspace?(owner: ConversationId, cwd: string | undefined, context: Context): Promise<PaneDirectory>;
   validateSelection?(model: AgentState["model"], level: NonNullable<AgentState["thinkingLevel"]>): Promise<void>;
 }
 
@@ -327,7 +337,8 @@ export class DurableAdapter {
     return { id: id(conv.id) };
   }
 
-  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment, skillToken?: string, delegation = false): Promise<Admission> {
+  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment, skillToken?: string, delegation = false,
+      pane?: SelectPaneAdmission): Promise<Admission> {
     switch (request.method) {
       case "thread.new": return { result: await this.#createThread(request.params, ctx) };
       case "thread.list": {
@@ -425,9 +436,10 @@ export class DurableAdapter {
       }
       case "submit": {
         const { requestId, text, whenBusy } = request.params;
-        const draft = { type: "input", content: text, requestId, whenBusy, entry: environmentEntry(environment) } as const;
+        const draft = { type: "input", content: text, requestId, whenBusy } as const;
         if (skillToken && !this.host?.prepare) throw new WireError("unsupported_capability", "workspaceSkills");
-        if (!this.host?.prepare && !this.host?.checkAdmission) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
+        if (!this.host?.prepare && !this.host?.checkAdmission && !pane)
+          return { result: { submissionId: id((await conv.submit({ ...draft, entry: inputEntry(environment) }, ctx)).id) } };
         // Return the saved receipt before loading resources or running host admission hooks.
         const previous = await conv.commit(tx => tx.submissionByRequest(conv.id, requestId), ctx);
         if (previous) return { result: { submissionId: id(previous.id) } };
@@ -442,26 +454,41 @@ export class DurableAdapter {
           await this.host?.checkAdmission?.(tx, conv.id, "input");
           if (prepared?.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
           if (prepared?.agent) await configure(tx, conv.id, prepared.agent);
-          return conv.submit(tx, { ...draft, content: prepared?.text ?? text });
+          return conv.submit(tx, { ...draft, content: prepared?.text ?? text, entry: inputEntry(environment, pane) });
         }, ctx);
         this.harness.resume(); // transactional admission does not resume the scheduler
         return { result: { submissionId: id(submission) } };
       }
       case "continue": {
         const draft = { type: "continue" } as const;
-        if (!this.host?.prepare && !this.host?.checkAdmission) return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
+        if (!this.host?.prepare && !this.host?.checkAdmission && !this.host?.submitContinue)
+          return { result: { submissionId: id((await conv.submit(draft, ctx)).id) } };
         const prepared = this.host?.prepare ? await this.#prepare(conv, ctx) : undefined;
         await prepared?.confirm?.(ctx.abortSignal);
         const submission = await conv.commit(async tx => {
           await this.host?.checkAdmission?.(tx, conv.id, "continue");
           if (prepared?.verify) prepared.verify(await tx.doc(AgentDoc, conv.id));
           if (prepared?.agent) await configure(tx, conv.id, prepared.agent);
-          return conv.submit(tx, draft);
+          return this.host?.submitContinue ? this.host.submitContinue(tx, conv) : conv.submit(tx, draft);
         }, ctx);
         this.harness.resume();
         return { result: { submissionId: id(submission) } };
       }
     }
+  }
+
+  async paneWorkspace(id: string, ctx: Context): Promise<PaneDirectory> {
+    if (!this.host?.paneWorkspace) throw new WireError("unsupported_capability", "paneControl");
+    const conv = await this.#get(id, ctx);
+    const cwd = () => conv.commit(async tx => {
+      const row = await tx.conversation(conv.id);
+      if (!row || row.owner) throw notFound();
+      return (await tx.doc(AgentDoc, conv.id)).cwd;
+    }, ctx);
+    const before = await cwd();
+    const workspace = await this.host.paneWorkspace(conv.id, before, ctx);
+    if (before !== await cwd()) throw new WireError("busy");
+    return workspace;
   }
 
   async getImage(ref: ImageRef, ctx: Context) {
@@ -477,7 +504,7 @@ export class DurableAdapter {
   }
 
   async submitImages(input: ImageSubmission, imagesHost: ImagesHost, signal: AbortSignal, ctx: Context,
-      environment?: ClientEnvironment, skillToken?: string) {
+      environment?: ClientEnvironment, skillToken?: string, pane?: SelectPaneAdmission) {
     if (skillToken && !this.host?.prepare) throw new WireError("unsupported_capability", "workspaceSkills");
     const conv = await this.#get(input.threadId, ctx);
     await this.host?.checkMutation?.(conv, ctx);
@@ -508,7 +535,7 @@ export class DurableAdapter {
       if (model?.provider !== start.model?.provider || model?.modelId !== start.model?.modelId) throw new WireError("busy");
       if (prepared?.agent) await configure(tx, conv.id, prepared.agent);
       return conv.submit(tx, {
-        type: "input", whenBusy, requestId, entry: environmentEntry(environment),
+        type: "input", whenBusy, requestId, entry: inputEntry(environment, pane),
         content: [...(body ? [{ type: "text" as const, text: body }] : []), ...fitted.images, ...(fitted.notes ?? [])],
       });
     }, ctx);

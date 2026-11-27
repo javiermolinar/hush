@@ -16,6 +16,10 @@ import (
 
 const footerID = "hush/footer"
 const activateTabID x.ActionID = footerID + ".activate"
+const previousOpenTabID x.ActionID = footerID + ".previous-open-tab"
+const nextOpenTabID x.ActionID = footerID + ".next-open-tab"
+const previousOpenTabOp x.LocalOp = "tab.previous"
+const nextOpenTabOp x.LocalOp = "tab.next"
 const usageID x.ActionID = footerID + ".usage"
 const openUsageOp x.LocalOp = "usage.open"
 const switcherID x.ActionID = "hush/menus.switch"
@@ -105,7 +109,7 @@ func footerRegistration() x.Registration {
 		return x.Line{{Text: text, Tone: tone, Action: x.ActionRef{ID: usageID}, Hint: "show usage details"}}
 	}
 	return x.Registration{ID: footerID, APIVersion: x.APIVersion, Actions: []x.Action{
-		{ID: activateTabID, Title: "Previous tab", Binding: x.Binding{Direct: "ctrl+[", Leader: "["}, Available: func(ctx x.Context) bool { return ctx.ActiveThreadID != "" }, Run: func(ctx x.Context, v x.Invocation) x.Outcome {
+		{ID: activateTabID, Title: "Last active thread", Binding: x.Binding{Direct: "ctrl+[", Leader: "["}, Available: func(ctx x.Context) bool { return ctx.ActiveThreadID != "" }, Run: func(ctx x.Context, v x.Invocation) x.Outcome {
 			id := sdk.ID(v.Target)
 			if id == "" {
 				id = ctx.PreviousThreadID
@@ -114,6 +118,12 @@ func footerRegistration() x.Registration {
 				return nil
 			}
 			return x.Outcome{x.Client{Op: x.Switch{ThreadID: id}}}
+		}},
+		{ID: previousOpenTabID, Title: "Previous open thread", Binding: x.Binding{Leader: "left"}, Run: func(x.Context, x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: previousOpenTabOp}}
+		}},
+		{ID: nextOpenTabID, Title: "Next open thread", Description: "Tab switches threads when not completing a command or path", Binding: x.Binding{Leader: "right"}, Run: func(x.Context, x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: nextOpenTabOp}}
 		}},
 		{ID: usageID, Title: "Usage details", Binding: x.Binding{Leader: "i u"}, Slash: &x.Slash{Name: "usage"},
 			Available: func(c x.Context) bool { return c.Thread.ID.Valid() }, Run: func(x.Context, x.Invocation) x.Outcome {
@@ -530,6 +540,17 @@ func (m *Model) desktopStatus(id sdk.ID, before, after x.ThreadStatus) tea.Cmd {
 		return tea.Raw("\x1b]9;" + oneLine(threadTitle(t.info)+" · "+string(after)) + "\x07")
 	}
 	return nil
+}
+
+// adjacentTab walks the full tab order, including tabs hidden by overflow.
+// direction is -1 for previous or +1 for next.
+func (m *Model) adjacentTab(direction int) sdk.ID {
+	if n := len(m.tabs); n > 1 {
+		if i := slices.Index(m.tabs, m.active); i >= 0 {
+			return m.tabs[(i+direction+n)%n]
+		}
+	}
+	return ""
 }
 
 func (m *Model) openedTab(id sdk.ID) {

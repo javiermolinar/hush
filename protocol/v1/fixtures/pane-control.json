@@ -1,0 +1,35 @@
+{
+  "intent": [
+    ["/pane run it", true],
+    ["/pane\trun\nit", true],
+    ["/pane \r\nrun it", true],
+    ["/pane \u0085\u00a0\ufeffrun it", true],
+    ["/pane", false],
+    ["/pane \t\r\n", false],
+    ["/pane \ufeff", false],
+    ["/pane \u0085\u00a0\u1680\u2000\u2028\u202f\u205f\u3000", false],
+    ["/pane \u200b", true],
+    ["/pane\nrun it", false],
+    ["/pane\u00a0run it", false],
+    [" /pane run it", false],
+    ["/panes run it", false]
+  ],
+  "capabilityCases": [
+    {
+      "caps": {"left": false, "above": false, "tabs": false, "read": false},
+      "placements": ["right", "below"], "launches": ["argv", "shell"], "threadViews": [], "native": true, "read": false
+    },
+    {
+      "caps": {"left": true, "above": true, "tabs": true, "read": true, "views": true, "threadTabs": true},
+      "placements": ["right", "below", "left", "above", "tab"], "launches": ["argv", "shell", "terminal", "hush", "review"], "threadViews": ["tab", "split"], "native": true, "read": true
+    },
+    {
+      "caps": {"left": false, "above": true, "tabs": false, "read": true, "threadTabs": true},
+      "placements": ["right", "below", "above"], "launches": ["argv", "shell"], "threadViews": ["tab"], "native": true, "read": true
+    },
+    {
+      "caps": {"left": false, "above": false, "tabs": false, "read": false, "threadTabs": true, "noPanes": true},
+      "placements": [], "launches": [], "threadViews": ["tab"], "native": false, "read": false
+    }
+  ]
+}

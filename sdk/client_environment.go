@@ -48,6 +48,7 @@ func (v ClientEnvironment) normalized() ClientEnvironment {
 type submissionRoute struct {
 	method      string
 	environment bool
+	pane        string
 }
 
 func (c *Client) submitInput(ctx context.Context, input Input, route *submissionRoute) (Receipt, error) {
@@ -57,9 +58,20 @@ func (c *Client) submitInput(ctx context.Context, input Input, route *submission
 	}
 	if route.method == "" {
 		route.environment = input.Environment != (ClientEnvironment{}) && s.hello.Capabilities[clientEnvironmentCapability] == ClientEnvironmentVersion
+		if input.PaneControl {
+			route.pane = s.paneForInput(ctx, PaneLaunchPrompt(input.Text))
+		}
+		if err := ctx.Err(); err != nil {
+			return Receipt{}, err
+		}
+		if input.PaneControl && PaneLaunchPrompt(input.Text) && route.pane == "" {
+			return Receipt{}, ErrPaneUnavailable
+		}
 		// Pin the method and payload for this attempt and any same-store retry.
 		// Capability fallback is allowed only before the first write.
 		switch {
+		case route.pane != "":
+			route.method = paneSubmit
 		case input.SkillToken != "":
 			route.method = workspaceSkillsSubmit
 		case route.environment:
@@ -74,7 +86,27 @@ func (c *Client) submitInput(ctx context.Context, input Input, route *submission
 		return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: "images"}
 	}
 	var params any = input
-	if route.method == workspaceSkillsSubmit {
+	if route.method == paneSubmit {
+		if !supportedPaneControl(s.hello.Capabilities[paneControlCap]) {
+			return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: paneControlCap}
+		}
+		if input.SkillToken != "" && !supportedWorkspaceSkills(s.hello.Capabilities[workspaceSkillsCapability]) {
+			return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: workspaceSkillsCapability}
+		}
+		v := struct {
+			Input       Input              `json:"input"`
+			Route       string             `json:"route"`
+			Token       string             `json:"token,omitempty"`
+			Environment *ClientEnvironment `json:"environment,omitempty"`
+		}{Input: input, Route: route.pane, Token: input.SkillToken}
+		if route.environment {
+			if s.hello.Capabilities[clientEnvironmentCapability] != ClientEnvironmentVersion {
+				return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: clientEnvironmentCapability}
+			}
+			v.Environment = &input.Environment
+		}
+		params = v
+	} else if route.method == workspaceSkillsSubmit {
 		if !supportedWorkspaceSkills(s.hello.Capabilities[workspaceSkillsCapability]) {
 			return Receipt{}, &ServerError{Code: "unsupported_capability", Message: "Capability was not negotiated", Capability: workspaceSkillsCapability}
 		}

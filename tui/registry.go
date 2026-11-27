@@ -160,7 +160,7 @@ func makeRegistry(options Options) (registry, error) {
 		intercepted[normalizeChord(key)] = true
 	}
 	ids := make(map[string]bool)
-	for _, reg := range append([]extension.Registration{builtins(options.WorkspaceTrust != nil), footerRegistration(), activityRegistration(), menusRegistration(options.ProviderLogin)}, options.Extensions...) {
+	for _, reg := range append([]extension.Registration{builtins(options.WorkspaceTrust != nil), footerRegistration(), activityRegistration(), menusRegistration(options)}, options.Extensions...) {
 		fail := func(what string) (registry, error) {
 			return registry{}, fmt.Errorf("tui extension %q: %s", reg.ID, what)
 		}

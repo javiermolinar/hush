@@ -200,6 +200,17 @@ func TestReleaseFrames(t *testing.T) {
 			if body := shot("git-diff-scope"); !strings.Contains(body, "/work/project/src  ⎇ feature/review") {
 				t.Fatal("Git review did not show its workspace and branch")
 			}
+			g := m.focusedDialog().git
+			g.patch, g.view = true, newGitPatchView(longDiffFixturePatch())
+			shot("git-diff-file-top")
+			for range 8 {
+				press(m, tea.KeyPgDown, 0)
+				assertFrame(t, m)
+			}
+			if body := shot("git-diff-file-bottom"); !strings.Contains(body, "fixture line 80") {
+				t.Fatal("Git review did not show the end of the patch")
+			}
+			press(m, tea.KeyEscape, 0)
 			press(m, tea.KeyEscape, 0)
 			m.backend = deniedGitDiffFixture{}
 			s.gitDiff = gitDiffSnapshot(sdk.GitDiffSummary{}, gitTrustDenied)

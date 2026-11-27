@@ -1,0 +1,24 @@
+  See the docs and app/main.go:12.                                             │
+                                                                               │
+  ── go  copy     ────────────────────────                                     ┃
+    func main() { println(42) }                                                ┃
+  ────────────────────────────────────────                                     ┃
+  Thought ▸                                                                    ┃
+  Leader · ctrl+x ────────────────────────────────────────────────── 20 chords
+  left      Previous open thread
+  right     Next open thread
+  p         Command palette
+  o         Toggle details
+  e         Edit prompt
+  y         Copy last answer
+  c         Copy last code block
+  q         Recall queued messages
+  w         Close tab
+  d         Quit
+
+  type a chord  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  Workspace workspace · ◌ connecting
+  › ○ First: Reviewing a large workspace…    ○ Untitled thread  +2

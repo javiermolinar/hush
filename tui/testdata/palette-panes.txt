@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+  Commands ───────────────────────────────────────────────────────── 1 command
+  › new hush pane
+  › Open a new Hush pane                 │ Open a new Hush pane
+                                         │ Open an independent thread in this
+                                         │ directory on the same backend
+                                         │ ctrl+x i e
+                                         │ /new-pane
+
+  ↵ Run  Open a new Hush pane
+  ↑↓ move  type to filter  ↵ run  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  Workspace workspace
+  › ○ workspace

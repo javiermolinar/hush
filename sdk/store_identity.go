@@ -51,7 +51,7 @@ func (c *Client) changedStore() bool {
 func (c *Client) verifyStore(ctx, lifetime context.Context, s *session, h Hello, proof storeProof) error {
 	c.storeMu.Lock()
 	defer c.storeMu.Unlock()
-	if c.changedStore() {
+	if c.changedStore() || c.epoch != "" && c.epoch != h.Epoch {
 		return ErrStoreChanged
 	}
 	if err := ctx.Err(); err != nil {

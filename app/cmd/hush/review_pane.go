@@ -2,54 +2,77 @@ package main
 
 import (
 	"context"
-	"os"
-	"os/exec"
+	"errors"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/javiermolinar/hush/app/internal/backendstart"
+	"github.com/javiermolinar/hush/app/internal/pane"
 	"github.com/javiermolinar/hush/sdk"
+	"github.com/javiermolinar/hush/tui"
 )
 
-// A Rex block is optional and only opened by the explicit transcript action.
-// Pin the same socket and anchor block. Never start a Rex or Hush service on
-// behalf of the pane, and do not send commands through an interactive shell.
-func reviewPaneOpener(ctx context.Context, target backendstart.Options, multiplexer string) func(context.Context, sdk.ID, string) error {
-	block := os.Getenv("REX_BLOCK")
-	if block == "" || multiplexer != "" && multiplexer != "rex" {
-		return nil
-	}
-	rex, err := exec.LookPath("rex")
-	if err != nil {
-		dir := os.Getenv("REX_BIN_DIR")
-		if !filepath.IsAbs(dir) {
-			return nil
-		}
-		if rex, err = exec.LookPath(filepath.Join(dir, "rex")); err != nil {
-			return nil
-		}
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return nil
-	}
-	target.AttachOnly = true
-	socket, err := backendstart.Resolve(ctx, target)
-	if err != nil {
-		return nil
-	}
-	socket, err = filepath.Abs(socket)
-	if err != nil {
-		return nil
-	}
-	return func(ctx context.Context, parent sdk.ID, handle string) error {
-		call, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		return exec.CommandContext(call, rex, reviewPaneArgs(block, exe, socket, parent, handle)...).Run()
-	}
+type paneHost interface {
+	PaneAttachment(context.Context) (sdk.PaneAttachment, error)
+	PaneWorkspace(context.Context, sdk.ID) (sdk.PaneAttachment, sdk.PaneDirectory, error)
 }
 
-func reviewPaneArgs(block, exe, socket string, parent sdk.ID, handle string) []string {
-	return []string{"--autostart=false", "split", "--block=" + block, "--split=right", "--focus=false", "--keep-open",
-		"--shell=none", "--label=Review transcript", "--", exe, "review", "transcript", handle, "--thread", string(parent), "--socket", socket}
+type paneWorkflows struct {
+	adapter pane.Adapter
+	host    paneHost
+	exe     string
+	cwd     string
+}
+
+func newPaneWorkflows(adapter pane.Adapter, host paneHost, cwd, exe string) *paneWorkflows {
+	if adapter == nil || !filepath.IsAbs(exe) {
+		return nil
+	}
+	return &paneWorkflows{adapter: adapter, host: host, exe: exe, cwd: cwd}
+}
+
+func (p *paneWorkflows) openThread(ctx context.Context, parent sdk.ID) error {
+	if !parent.Valid() {
+		return sdk.ErrProtocol
+	}
+	call, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	attach, w, err := p.host.PaneWorkspace(call, parent)
+	if err != nil {
+		return err
+	}
+	// The child creates its own new thread after verifying hello. Failure to
+	// place the pane cannot leave an unused thread on the parent backend.
+	return p.open(call, attach, w.Dir, &w.Directory, sdk.PaneLaunch{Mode: "hush"})
+}
+
+func (p *paneWorkflows) openReview(ctx context.Context, parent sdk.ID, handle string) error {
+	if !parent.Valid() || len(handle) != 32 || strings.Trim(handle, "0123456789abcdef") != "" {
+		return sdk.ErrProtocol
+	}
+	call, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	attach, err := p.host.PaneAttachment(call)
+	if err != nil {
+		return err
+	}
+	// Only place a read-only view; never start or manage a worker. Use the
+	// local launch directory even if the reviewed checkout is now missing.
+	return p.open(call, attach, p.cwd, nil, sdk.PaneLaunch{Mode: "review", ThreadID: parent, Handle: handle})
+}
+
+func (p *paneWorkflows) open(ctx context.Context, attach sdk.PaneAttachment, dir string, identity *sdk.PaneFileIdentity, view sdk.PaneLaunch) error {
+	launch, err := pane.ViewLaunch(p.exe, attach, view)
+	if err != nil {
+		return err
+	}
+	result := p.adapter.Open(ctx, pane.OpenRequest{Placement: pane.Right, Dir: dir, Directory: identity, Launch: launch})
+	switch result.Outcome() {
+	case pane.Confirmed:
+		return nil
+	case pane.Rejected:
+		return errors.New("the terminal refused the pane request before dispatch")
+	default:
+		return tui.ErrPaneOpenUnknown
+	}
 }

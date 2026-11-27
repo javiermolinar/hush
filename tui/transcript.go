@@ -25,6 +25,8 @@ type threadState struct {
 	gitDiff                                                  gitDiffState
 	plan, chatPlan                                           planView
 	planDraft                                                planDraftState
+	openingPane                                              bool
+	workerPanes                                              map[string]workerPaneStatus // by review handle
 	life, revision                                           uint64
 	info                                                     extension.Thread
 	ids, shown                                               []sdk.ID

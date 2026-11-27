@@ -547,6 +547,18 @@ export class Delegation implements DelegationHost {
     } finally { observation.detach(); }
   }
 
+  // A pane launch only needs proof of the exact readable assignment. The
+  // attach-only child fetches the public transcript and freshness itself.
+  async requireTranscript({ threadId, handle }: WorkerKey, ctx: Context) {
+    const owner = thread(threadId), h = this.h();
+    if (!await h.snapshot(Reviews, owner, ctx)) throw new WireError("not_found");
+    await h.commit(async tx => {
+      const member = this.#memberFor(await this.#parentRow(tx, owner), handle);
+      if (!member || !this.#sameStore(member.cohort.pin, owner) || (await this.#classify(tx, owner, member)).view.state === "unresolved")
+        throw new WireError("not_found");
+    }, ctx);
+  }
+
   async inspect({ threadId, handle, transcript }: WorkerInspectionQuery, signal: AbortSignal): Promise<WorkerInspection> {
     const owner = thread(threadId), ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
     const h = this.h();

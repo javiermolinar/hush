@@ -696,6 +696,13 @@ export async function checkPlanWorktree(read: DocumentReader, owner: Conversatio
   }
 }
 
+// The caller has already bound the physical directory and can compare the
+// plan's immutable allocation without a nested Harness snapshot/commit.
+export async function matchesPlanCheckout(tx: Tx, owner: ConversationId, cwd: string, directory: string) {
+  const { allocation } = await tx.doc(WorktreeLaunch, owner);
+  return !allocation || allocation.cwd === cwd && allocation.identity?.directory === directory;
+}
+
 export async function isPublicPlanFixture(tx: Tx, child: ConversationId) {
   return Array.isArray((await tx.doc(Work, child)).checks);
 }

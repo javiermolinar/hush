@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { Harness } from "@earendil-works/pi-durable";
 import { DurableAdapter, nativeStopVersion, parseStop, projectView, requestError, visibleEntry, type NativeHost, type StructuralView } from "./durable.js";
 export type { NativeHost } from "./durable.js";
 import { clientEnvironment, clientEnvironmentVersion, type ClientEnvironment } from "./client-environment.js";
+import { paneControlVersion, paneFileIdentity, paneLaunchInput, parsePaneCapabilities, threadViewVersion,
+  type PaneFileIdentity, type SelectPaneAdmission, type PaneRoute, type PaneRoutes } from "./pane-control.js";
 import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, modelCatalogVersion,
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
@@ -32,7 +35,7 @@ import { checkThreadDirectoryReply, parseThreadArchive, parseThreadCreation, par
   threadDirectoryVersion, threadManagementVersion, threadWorkspaceSearchVersion, threadWorkspaceVersion,
   type ThreadDirectoryHost, type ThreadDirectoryVersion, type ThreadWorkspaceVersion } from "./thread-directory.js";
 import {
-  MAX_RECORD, encode, cleanJSON, identity, isCoreMethod, object, parseRecord, patchShape,
+  MAX_RECORD, durableID, encode, cleanJSON, identity, isCoreMethod, object, parseRecord, patchShape,
   successShape, token, validRequest, WireError, type Envelope, type Params,
 } from "./wire.js";
 
@@ -46,6 +49,7 @@ export type HostCapabilities = Readonly<{
   intro?: IntroHost; threadDirectory?: ThreadDirectoryHost; images?: ImagesHost;
   hushProfile?: 1; nativeStop?: 1; modelCatalog?: ModelCatalogHost; storeIdentity?: StoreIdentity; clientEnvironment?: 1;
   runtime?: RuntimeHost;
+  paneControl?: PaneRoutes;
   plan?: PlanHost;
   planChat?: PlanChatHost;
   planWorktree?: PlanWorktreeHost;
@@ -233,17 +237,22 @@ class Peer {
   #settings?: SettingsHost;
   #nativeStop = false;
   #clientEnvironment = false;
+  #paneControl?: PaneRoutes;
+  #paneVersion = paneControlVersion;
+  #paneRoute?: PaneRoute;
   #introPending = false;
   #feed?: Feed;
   #waiting = 0;
 
   constructor(private readonly socket: Socket, private readonly adapter: DurableAdapter, private readonly epoch: string,
       private readonly pendingObservations: number, private readonly capabilities: HostCapabilities | undefined,
-      private readonly readOnlyReason?: string) {
+      private readonly readOnlyReason?: string, private readonly paneSocket?: PaneFileIdentity) {
     this.#context = adapter.context(this.#abort.signal);
     socket.on("error", () => socket.destroy());
+    socket.on("end", () => this.#paneRoute?.close());
     socket.on("close", () => {
       this.#abort.abort();
+      this.#paneRoute?.close();
       this.#feed?.close();
       this.#seen.clear();
     });
@@ -289,16 +298,69 @@ class Peer {
     }
   }
 
-  async #submitInput(req: Envelope, input: Record<string, unknown>, hints?: ClientEnvironment, skillToken?: string) {
+  async #submitInput(req: Envelope, input: Record<string, unknown>, hints?: ClientEnvironment, skillToken?: string,
+      pane?: SelectPaneAdmission) {
     if (Object.hasOwn(input, "images")) {
       if (!this.#images) throw new WireError("unsupported_capability", "images");
-      return this.adapter.submitImages(parseImageSubmit(input), this.#images, this.#abort.signal, this.#context, hints, skillToken);
+      return this.adapter.submitImages(parseImageSubmit(input), this.#images, this.#abort.signal, this.#context, hints, skillToken, pane);
     }
     const call = { ...req, method: "submit", params: input };
     if (!validRequest(call) || call.method !== "submit") throw new WireError("invalid_request");
-    const admission = await this.adapter.admit(call, this.#context, !!this.#modelCatalog, hints, skillToken);
+    const admission = await this.adapter.admit(call, this.#context, !!this.#modelCatalog, hints, skillToken, false, pane);
     if (!("result" in admission)) throw new WireError("internal");
     return admission.result;
+  }
+
+  async #paneOperation(req: Envelope, operation: string) {
+    const params = req.params;
+    if (!object(params)) throw new WireError("invalid_request");
+    switch (operation) {
+      case "bind": {
+        if (Object.keys(params).length !== 1) throw new WireError("invalid_request");
+        const caps = parsePaneCapabilities(params.capabilities, this.#paneVersion);
+        const previous = this.#paneRoute;
+        // V2 permits one downgrade after revoking native authority. The new
+        // tab-only route has a fresh label; previously placed inputs remain inert.
+        if (previous && (this.#paneVersion !== threadViewVersion || previous.live || previous.capabilities.noPanes || !caps.noPanes))
+          throw new WireError("invalid_request");
+        const route = this.#paneRoute = this.#paneControl!.bind(caps, call => this.#write(encode(call)), this.#abort.signal);
+        return { route: route.key, socket: this.paneSocket };
+      }
+      case "submit": {
+        const { input, route, environment, token: skill } = params;
+        if (!object(input) || !token(route) || Object.keys(params).some(k => !["input", "route", "environment", "token"].includes(k))) {
+          throw new WireError("invalid_request");
+        }
+        if (environment !== undefined && !this.#clientEnvironment) throw new WireError("unsupported_capability", "clientEnvironment");
+        if (skill !== undefined && !this.#workspaceSkills) throw new WireError("unsupported_capability", "workspaceSkills");
+        const skillToken = skill === undefined ? undefined : parseWorkspaceSkillSubmit({ input, token: skill }).token;
+        // Replay can recover an admitted receipt on a new connection, but
+        // only the issuing live connection can commit a new routed input.
+        const current = this.#paneRoute;
+        return this.#submitInput(req, input, clientEnvironment(environment), skillToken, () => {
+          if (current?.key !== route) return false;
+          const explicitPane = paneLaunchInput(input.text);
+          if (explicitPane && (!current.live || current.capabilities.noPanes)) return false;
+          return current.live ? current.admission(input.text) : undefined;
+        });
+      }
+      case "workspace": {
+        if (Object.keys(params).length !== 1 || !durableID(params.threadId) || !this.#paneRoute ||
+            this.#paneVersion === paneControlVersion && !this.#paneRoute.live) throw new WireError("invalid_request");
+        return this.adapter.paneWorkspace(params.threadId, this.#context);
+      }
+      case "result": {
+        if (!this.#paneRoute || !token(params.callId) || !Object.hasOwn(params, "result") || Object.keys(params).length !== 2)
+          throw new WireError("invalid_request");
+        this.#paneRoute.reply(params.callId, params.result);
+        return {};
+      }
+      case "unbind":
+        if (!this.#paneRoute || Object.keys(params).length !== 0) throw new WireError("invalid_request");
+        this.#paneRoute.close();
+        return {};
+      default: throw new WireError("unknown_method");
+    }
   }
 
   #metadata(req: Envelope, capability: string, call: () => Promise<object>) {
@@ -596,6 +658,11 @@ class Peer {
             default: throw new WireError("unknown_method");
           }
         }
+        if (parts[1] === "paneControl" && this.#paneControl) {
+          const result = await this.#paneOperation(req, parts[2]!);
+          this.#write(encode({ ...identity(req), ok: true, result }));
+          return;
+        }
         if (parts[1] === "clientEnvironment" && this.#clientEnvironment) {
           if (parts[2] !== "submit") throw new WireError("unknown_method");
           const { input, environment } = req.params;
@@ -713,6 +780,13 @@ class Peer {
             req.params.capabilities?.clientEnvironment?.includes(clientEnvironmentVersion)) {
           capabilities.clientEnvironment = clientEnvironmentVersion;
           this.#clientEnvironment = true;
+        }
+        if (this.capabilities?.paneControl && this.paneSocket && !this.readOnlyReason) {
+          const version = [threadViewVersion, paneControlVersion].find(v => req.params.capabilities?.paneControl?.includes(v));
+          if (version !== undefined) {
+            capabilities.paneControl = this.#paneVersion = version;
+            this.#paneControl = this.capabilities.paneControl;
+          }
         }
         if (this.capabilities?.nativeStop === nativeStopVersion && req.params.capabilities?.nativeStop?.includes(nativeStopVersion)) {
           capabilities.nativeStop = nativeStopVersion;
@@ -911,12 +985,13 @@ export function createCoreServer(harness: Harness, options: ServerOptions = {}) 
     if (!Number.isSafeInteger(bound) || bound < 1) throw new RangeError("Invalid server limit");
   }
   let closing: Promise<void> | undefined;
+  let paneSocket: PaneFileIdentity | undefined;
   const changed = () => options.onConnections?.(peers.size);
   const listener = createServer(socket => {
     if (closing || peers.size >= maxConnections) { socket.destroy(); return; }
     peers.add(socket);
     socket.once("close", () => { peers.delete(socket); changed(); });
-    const peer = new Peer(socket, adapter, epoch, pendingObservations, capabilities, options.readOnlyReason);
+    const peer = new Peer(socket, adapter, epoch, pendingObservations, capabilities, options.readOnlyReason, paneSocket);
     changed();
     void peer.run();
   });
@@ -927,7 +1002,16 @@ export function createCoreServer(harness: Harness, options: ServerOptions = {}) 
       return new Promise((resolve, reject) => {
         if (closing || listener.listening) { reject(new Error("Server cannot listen again")); return; }
         const onError = (error: Error) => { listener.off("listening", onListening); reject(error); };
-        const onListening = () => { listener.off("error", onError); resolve(); };
+        const onListening = () => {
+          listener.off("error", onError);
+          if (capabilities?.paneControl) {
+            try {
+              const info = lstatSync(path, { bigint: true });
+              if (info.isSocket()) paneSocket = paneFileIdentity(info);
+            } catch { /* Without a socket identity, only ordinary chat is available. */ }
+          }
+          resolve();
+        };
         listener.once("error", onError);
         listener.once("listening", onListening);
         listener.listen(path);

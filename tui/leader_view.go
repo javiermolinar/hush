@@ -31,7 +31,7 @@ func (m *Model) advanceLeader(chord string) tea.Cmd {
 func (m *Model) leaderRows(w, limit int) []displayRow {
 	prefix := strings.TrimSpace(m.leader)
 	type shortcut struct{ key, title string }
-	var shortcuts []shortcut
+	var shortcuts, tabNavigation []shortcut
 	seen := make(map[string]bool)
 	for _, a := range m.host.actions {
 		seq := a.action.Binding.Leader
@@ -53,8 +53,15 @@ func (m *Model) leaderRows(w, limit int) []displayRow {
 		if branch {
 			title = "More actions"
 		}
-		shortcuts = append(shortcuts, shortcut{key, title})
+		entry := shortcut{key, title}
+		if a.action.ID == previousOpenTabID || a.action.ID == nextOpenTabID {
+			tabNavigation = append(tabNavigation, entry)
+		} else {
+			shortcuts = append(shortcuts, entry)
+		}
 	}
+	// Keep thread navigation visible when the leader dock cannot fit every action.
+	shortcuts = append(tabNavigation, shortcuts...)
 	scope := "ctrl+x"
 	if prefix != "" {
 		scope += " " + prefix

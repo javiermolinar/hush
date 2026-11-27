@@ -13,6 +13,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createCoreServer, type NativeHost } from "../../server/src/index.js";
+import { PaneRoutes } from "../../server/src/pane-control.js";
 import { WireError } from "../../server/src/wire.js";
 import { joinReviewsName, spawnReviewsName } from "../../server/src/delegation.js";
 import { subagentToolName } from "../../server/src/subagents.js";
@@ -35,6 +36,11 @@ import { checkPlanAdmission, foregroundPlan, PlanForeground } from "./plan-turn.
 import { PlanReviews, isPublicPlanReviewer, planReviewExtension, planReviewTaskKind } from "./plan-review.js";
 import { planAuthor } from "./plan-author.js";
 import { ToolPolicy } from "./tool-policy.js";
+import { PaneRouting } from "./pane-routing.js";
+import { submitPaneAwareContinue } from "./pane-intent.js";
+import { isPaneTool } from "./pane-contract.js";
+import { paneTools } from "./pane-tools.js";
+import { threadStart, threadStartName } from "./thread-start.js";
 import { ReviewSnapshots } from "./review-snapshot.js";
 import { Delegation } from "./delegation.js";
 import { Subagents } from "./subagents.js";
@@ -46,7 +52,7 @@ import { skillUnavailable, StandaloneSkills } from "./workspace-skills.js";
 import { readStandaloneSettings, StandaloneSettingsHost, standaloneModelDefault, standaloneSettingsView } from "./standalone-settings.js";
 import type { workspaceCodemode } from "./codemode.js";
 import { ThreadWorktrees } from "./worktrees.js";
-import { runWorkspaceTrustCommand, WorkspaceTrust } from "./workspace-trust.js";
+import { runWorkspaceTrustCommand, workspaceDirectoryIdentity, WorkspaceTrust } from "./workspace-trust.js";
 import { ImageFitter } from "./images.js";
 import { WasmAssets } from "./wasm-assets.js";
 import { BackendError, parseConfig, type BackendConfig } from "./config.js";
@@ -60,7 +66,7 @@ import { checkSocket } from "./store-socket.js";
 import { LocalEnvironment, StandaloneResources, type Warn } from "./resources.js";
 
 const codingOrder = ["read", "bash", "edit", "write"];
-const workspaceWriters = new Set(["write", "edit", "bash"]);
+const workspaceWriters = new Set(["write", "edit", "bash", "pane_open"]);
 const coding: Extension = { ...CodingTools, tools: [...(CodingTools.tools ?? [])]
   .sort((a, b) => codingOrder.indexOf(a.name) - codingOrder.indexOf(b.name))
   .map(tool => tool.name === "edit" ? { ...tool, description: "Replace exact text in one file. Keep replacements small." } : tool),
@@ -204,11 +210,23 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const resources = new StandaloneResources(config.cwd, config.agentDir, workspaceSkills);
     const authorizeWork = trust && ((cwd: string | undefined, ctx: Context) =>
       trust.require(resources.directory(cwd), ctx.abortSignal));
+    const planEnabled = !!config.dataDir && !config.ephemeral && manifest?.format !== 1;
+    const fauxPlan = planEnabled && config.faux;
+    const protectedDirs = planEnabled ? await Promise.all([config.agentDir, config.dataDir!].map(dir => realpath(dir))) : [];
+    const policy = planEnabled && trust ? new ToolPolicy(() => h!, trust, cwd => resources.directory(cwd), protectedDirs, fauxPlan) : undefined;
+    const paneRouting = policy && !modelIssue ? new PaneRouting(new PaneRoutes()) : undefined;
+    const reviewSnapshots = policy && trust && !fauxPlan && !modelIssue
+      ? new ReviewSnapshots(() => h!, trust, cwd => resources.directory(cwd), protectedDirs) : undefined;
+    let delegation: Delegation | undefined;
     const prompt = resources.extension(() => h, !!trust);
     // Use the existing prompt extension name so persisted threads get the
     // hook too. Observe every write-capable result, including failed tools
     // that may have changed files before reporting the failure.
-    const withWorkspaceChanges: Extension = trust ? { ...prompt, hooks: [...prompt.hooks ?? [], hook(ToolTask, {
+    const withWorkspaceChanges: Extension = trust ? { ...prompt, hooks: [...prompt.hooks ?? [],
+      ...(paneRouting && policy ? [paneRouting.gate(() => h!, async (owner, task, ctx) => {
+        const profile = await policy.prepare(owner, task, ctx);
+        return profile.kind === "default" && profile.workspace !== null;
+      }, !!reviewSnapshots)] : []), hook(ToolTask, {
       afterTool: call => {
         if (!workspaceWriters.has(call.name)) return;
         // Tool results don't identify all destinations. Shell commands and
@@ -220,26 +238,24 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     if (config.dataDir && localSettings.codemode === true) {
       codemode = (await import("./codemode.js")).workspaceCodemode(wasm);
     }
-    const planEnabled = !!config.dataDir && !config.ephemeral && manifest?.format !== 1;
-    const fauxPlan = planEnabled && config.faux;
     const browser = trust && config.dataDir ? await workspaceFileHelper() : undefined;
     const planFiles = planEnabled && !config.faux && !modelIssue && browser && trust && config.dataDir
       ? await PlanFiles.open(browser, trust, [config.agentDir, config.dataDir], () => {
         gitDiff?.invalidate();
         workspaceFiles?.invalidateSearch();
       }) : undefined;
-    const protectedDirs = planEnabled ? await Promise.all([config.agentDir, config.dataDir!].map(dir => realpath(dir))) : [];
-    const policy = planEnabled && trust ? new ToolPolicy(() => h!, trust, cwd => resources.directory(cwd), protectedDirs, fauxPlan) : undefined;
     const author = policy && planAuthor(() => h!, cwd => resources.directory(cwd), fauxPlan, policy, planFiles);
     const protect = (ext: Extension) => policy?.protect(ext) ?? ext;
-    const reviewSnapshots = policy && trust && !fauxPlan && !modelIssue
-      ? new ReviewSnapshots(() => h!, trust, cwd => resources.directory(cwd), protectedDirs) : undefined;
     const codingTools = protect(coding);
     const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, codingTools];
     if (!config.ephemeral) {
       if (codemode) base.push(protect(codemode.extension));
       if (config.faux) base.push(protect(fauxTools));
       if (author) base.push(protect(author));
+      if (paneRouting && policy) {
+        base.push(paneTools(paneRouting, policy, () => delegation),
+          threadStart(() => h!, policy, (cwd, ctx) => defaults(cwd, ctx), () => requireModel));
+      }
     }
     const subagents = policy && trust && !config.faux && !modelIssue
       ? new Subagents(() => h!, trust, policy, withWorkspaceChanges, codingTools) : undefined;
@@ -301,7 +317,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     if (scopedPlans) registry.install(scopedPlans.extension);
     else if (planEnabled) registry.install(scopedRecovery);
     const validateSelection = nativeSelectionValidator(runtime, requireModel);
-    const delegation: Delegation | undefined = reviewSnapshots && trust && policy
+    delegation = reviewSnapshots && trust && policy
       ? new Delegation(() => h!, reviewSnapshots, cwd => resources.directory(cwd), storeIdentity,
         validateSelection, () => selection) : undefined;
     if (delegation) {
@@ -315,6 +331,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }
     const host: NativeHost = {
       defaults, requireModel, checkAdmission: planAdmission, validateSelection,
+      submitContinue: policy ? submitPaneAwareContinue : undefined,
       privateConversation: policy && ((id, ctx) => h!.commit(async tx => {
         const child = await tx.conversation(id), owner = child?.owner;
         if (!child || !owner) return false;
@@ -325,6 +342,12 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
         if (task.kind === planFixtureTaskKind) return !await isPublicPlanFixture(tx, id);
         return true;
       }, ctx)),
+      async paneWorkspace(owner, cwd, ctx) {
+        if (!cwd) throw new WireError("invalid_request");
+        const { path: dir, device, inode, birth } = await workspaceDirectoryIdentity(resources.directory(cwd));
+        await checkPlanWorktree(h!, owner, dir, ctx);
+        return { dir, directory: { device: String(device), inode: String(inode), birth: String(birth) } };
+      },
       async checkMutation(conv, ctx) {
         if (planEnabled && await isPlanWorker(h!, conv.id, ctx)) throw new WireError("not_found");
       },
@@ -354,6 +377,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       env: async ({ cwd, conversationId, read }, ctx) => {
         const assigned = await policy?.assignedEnvironment(conversationId, cwd, read, ctx);
         if (assigned !== undefined) return assigned ? new LocalEnvironment(assigned.root, assigned.cwd) : undefined;
+        const started = await policy?.threadStartEnvironment(conversationId, cwd, read, ctx);
+        if (started !== undefined) return started ? new LocalEnvironment(started.root, started.cwd) : undefined;
         // Scoped tools use the file helper, not the normal work environment.
         // A terminal reservation left by a fault must not restrict later chat.
         const run = planAdmission && (await read.snapshot(PlanForeground, conversationId, ctx))?.run;
@@ -397,9 +422,9 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     if (!config.ephemeral) {
       const tools = base.flatMap(ext => ext.tools ?? [])
         .filter(tool => tool.name !== spawnReviewsName && tool.name !== joinReviewsName && tool.name !== subagentToolName &&
-          !tool.deferred && (tool.callers === undefined || tool.callers.includes("model")));
+          !isPaneTool(tool.name) && tool.name !== threadStartName && !tool.deferred && (tool.callers === undefined || tool.callers.includes("model")));
       intro = new IntroReports(harness, root, resources, runtime, startedAtMs, () => ({ ...defaultModel(), tools }),
-        host.prepare!, host.requireModel, planAdmission);
+        host.prepare!, host.requireModel, planAdmission, host.submitContinue);
     }
     const worktrees = config.dataDir && trust ? new ThreadWorktrees(config.dataDir, trust) : undefined;
     if (worktrees) {
@@ -429,7 +454,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
       schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
       plan: plans, planChat: chatPlans && plans, planWorktree: plans?.worktrees, planDraft: planDrafts, planReview: planReviews, delegation, subagents,
       gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
-      workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
+      workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, paneControl: paneRouting?.routes, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });
     await server.listen(config.socket);
     await chmod(config.socket, 0o600);

@@ -406,11 +406,7 @@ func (m *Model) gitDiffKey(d *dialog, chord string) tea.Cmd {
 		case "up", "down", "pgup", "pgdown":
 			step := 1
 			if chord == "pgup" || chord == "pgdown" {
-				step = m.frame.dialogBodyHeight
-				if m.gitReviewCWD(d) != "" || g.list.Branch != "" {
-					step-- // workspace context row
-				}
-				step = max(1, step)
+				step = m.gitPatchPageSize(d)
 			}
 			if chord == "pgup" || chord == "up" {
 				step = -step
@@ -470,9 +466,16 @@ func (m *Model) scrollGitDiff(d *dialog, delta int) {
 		return
 	}
 	if v := d.git.view; v != nil && m.dialogVisible(d) {
-		w := m.frame.dialogWidth
-		v.move(w, delta)
+		v.move(m.frame.dialogWidth, m.gitPatchPageSize(d), delta)
 	}
+}
+
+func (m *Model) gitPatchPageSize(d *dialog) int {
+	h := m.frame.dialogBodyHeight
+	if h >= 2 && (m.gitReviewCWD(d) != "" || d.git.list.Branch != "") {
+		h-- // the workspace context is pinned above the patch
+	}
+	return h
 }
 
 func (m *Model) gitReviewCWD(d *dialog) string {
@@ -596,9 +599,11 @@ func (m *Model) gitReviewRows(d *dialog, w, h int) menuFrame {
 type gitPatchView struct {
 	lines     []sdk.GitDiffLine
 	truncated bool
-	top, part int
+	top       gitPatchAnchor
 	cache     *gitPatchLayout
 }
+
+type gitPatchAnchor struct{ line, part int }
 
 type gitPatchLayout struct {
 	width   int
@@ -632,36 +637,67 @@ func (v *gitPatchView) parts(i, width int) []string {
 	return p
 }
 
-func (v *gitPatchView) move(width, delta int) {
-	if len(v.lines) == 0 {
-		return
-	}
-	v.part = min(v.part, len(v.parts(v.top, width))-1)
+func (v *gitPatchView) shift(at gitPatchAnchor, width, delta int) gitPatchAnchor {
 	for ; delta > 0; delta-- {
-		if v.part+1 < len(v.parts(v.top, width)) {
-			v.part++
-		} else if v.top+1 < len(v.lines) {
-			v.top++
-			v.part = 0
+		if at.part+1 < len(v.parts(at.line, width)) {
+			at.part++
+		} else if at.line+1 < len(v.lines) {
+			at.line++
+			at.part = 0
+		} else {
+			break
 		}
 	}
 	for ; delta < 0; delta++ {
-		if v.part > 0 {
-			v.part--
-		} else if v.top > 0 {
-			v.top--
-			v.part = len(v.parts(v.top, width)) - 1
+		if at.part > 0 {
+			at.part--
+		} else if at.line > 0 {
+			at.line--
+			at.part = len(v.parts(at.line, width)) - 1
+		} else {
+			break
 		}
 	}
+	return at
+}
+
+// Keep the last page full rather than letting the dock shrink as more of the
+// patch scrolls out of view. Count wrapped rows only when close to the end.
+func (v *gitPatchView) clampTop(at gitPatchAnchor, width, height int) gitPatchAnchor {
+	if at.part > 0 {
+		at.part = min(at.part, len(v.parts(at.line, width))-1)
+	}
+	if at == (gitPatchAnchor{}) || len(v.lines)-at.line >= height {
+		return at
+	}
+	last := len(v.lines) - 1
+	end := gitPatchAnchor{last, len(v.parts(last, width)) - 1}
+	bottom := v.shift(end, width, 1-height)
+	if at.line > bottom.line || at.line == bottom.line && at.part > bottom.part {
+		return bottom
+	}
+	return at
+}
+
+func (v *gitPatchView) move(width, height, delta int) {
+	if len(v.lines) == 0 || height <= 0 {
+		return
+	}
+	top := v.clampTop(v.top, width, height)
+	v.top = v.clampTop(v.shift(top, width, delta), width, height)
 }
 
 func (m *Model) gitPatchRows(v *gitPatchView, width, height int) []string {
+	if len(v.lines) == 0 || height <= 0 {
+		return nil
+	}
 	rows := make([]string, 0, height)
-	for i := v.top; i < len(v.lines) && len(rows) < height; i++ {
+	top := v.clampTop(v.top, width, height)
+	for i := top.line; i < len(v.lines) && len(rows) < height; i++ {
 		line, parts := v.lines[i], v.parts(i, width)
 		part := 0
-		if i == v.top {
-			part = min(v.part, len(parts)-1)
+		if i == top.line {
+			part = top.part
 		}
 		for ; part < len(parts) && len(rows) < height; part++ {
 			text := parts[part]

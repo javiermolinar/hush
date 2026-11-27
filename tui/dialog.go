@@ -423,21 +423,27 @@ func (m *Model) acceptChoice(d *dialog) tea.Cmd {
 	}
 	if d.palette {
 		if item := d.paletteItems[d.filtered[d.selected]]; len(item.keys) != 0 {
-			// The palette has focus, so close it before dispatching a shell key.
-			// Stop is exceptional: arm the normal two-Esc confirmation, never
-			// synthesize both presses behind the dialog.
+			// Return focus to the prompt before running its action.
 			cmd := m.closeDialog(d, nil, false)
 			if !m.foreground(d.route) || item.group == palettePrompt && d.promptRevision != m.editor.revision {
 				return cmd // an asynchronous edit must not change the meaning of the selected key
 			}
-			if c.ID == "shell:stop" {
-				return tea.Batch(cmd, m.stopKey())
-			}
-			if c.ID == "shell:open-activity" {
+			switch c.ID {
+			case "shell:stop":
+				return tea.Batch(cmd, m.stopKey()) // arm the two-Esc confirmation; do not synthesize both presses
+			case "shell:open-activity":
 				b := maxEffects
 				return tea.Batch(cmd, m.invoke(d.route, x.ActionRef{ID: expandRowID, Target: d.activityTarget}, &b))
+			case "shell:complete":
+				// Completion can disappear without changing the draft. Do not replay Tab's fallback actions.
+				if _, _, open := m.fileSuggestions(); open {
+					return tea.Batch(cmd, m.replaceFile(""))
+				}
+				m.completeSlash()
+				return cmd
+			default:
+				return tea.Batch(cmd, m.promptKey(paletteShellKey(item.keys[0])))
 			}
-			return tea.Batch(cmd, m.promptKey(paletteShellKey(item.keys[0])))
 		}
 		b := maxEffects
 		if i, exists := m.host.byID[x.ActionID(c.ID)]; exists && m.eligible(m.host.actions[i], d.route.owner) {

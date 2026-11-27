@@ -115,6 +115,86 @@ func TestFitTitleAtWordBoundaries(t *testing.T) {
 	}
 }
 
+func TestOpenThreadTabNavigationGolden(t *testing.T) {
+	m, first := demo(t, Options{Fills: FillOff, ReducedMotion: true})
+	first.info.Title = "First: Reviewing a large workspace change"
+	thought := entry(3, "assistant", "")
+	thought.Messages[0].Blocks = []sdk.Block{{Type: "thinking", Text: "Visible thought"}}
+	first.merge([]sdk.Entry{thought})
+	second := m.ensureThread("2")
+	second.info.Title, second.draft.text = "Second: Tracking a long build configuration change", "second draft"
+	for _, id := range []sdk.ID{"2", "3", "4"} {
+		m.ensureThread(id)
+		m.openedTab(id)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	assertFrame(t, m)
+	row := ansi.Strip(m.frame.rows[m.height-1])
+	if !strings.Contains(row, "+") || strings.Contains(row, "Second:") || m.frame.toggleThought == "" {
+		t.Fatalf("fixture needs a hidden next tab and a visible thought: %q", row)
+	}
+	check := func(want sdk.ID) {
+		t.Helper()
+		if m.active != want {
+			t.Fatalf("active thread = %q, want %q", m.active, want)
+		}
+	}
+	press(m, tea.KeyTab, 0)
+	check("2")
+	if m.editor.value() != "second draft" || first.entries["3"].reasoningDetails(first) {
+		t.Fatal("Tab did not restore the hidden tab's draft, or it expanded the old thought")
+	}
+	m.editor.set("updated second draft")
+	for _, want := range []sdk.ID{"3", "4", "1"} {
+		press(m, tea.KeyTab, 0)
+		check(want)
+	}
+	press(m, 'x', tea.ModCtrl)
+	golden(t, "footer-thread-navigation", m)
+	press(m, tea.KeyLeft, 0)
+	check("4")
+	for _, want := range []sdk.ID{"3", "2"} {
+		press(m, 'x', tea.ModCtrl)
+		press(m, tea.KeyLeft, 0)
+		check(want)
+	}
+	if m.editor.value() != "updated second draft" {
+		t.Fatal("cycling back did not restore the edited draft")
+	}
+	press(m, 'x', tea.ModCtrl)
+	press(m, tea.KeyRight, 0)
+	check("3")
+	press(m, 'x', tea.ModCtrl)
+	press(m, '[', 0)
+	check("2")
+}
+
+func TestThreadTabKeepsFileCompletionAndShiftTabThinking(t *testing.T) {
+	m, _ := demo(t, Options{Services: MenuServices{
+		Files: func(context.Context, x.ListFiles) ([]x.File, string, error) {
+			return []x.File{{Path: "main.go"}}, "", nil
+		},
+		Models: func(context.Context) ([]x.CatalogModel, error) { return nil, nil },
+	}})
+	m.ensureThread("2")
+	m.openedTab("2")
+	m.editor.set("Read @ma")
+	load := m.refreshFilePicker()
+	press(m, tea.KeyTab, 0)
+	if m.active != "1" || m.editor.value() != "Read @ma" {
+		t.Fatal("Tab switched threads while file completion was loading")
+	}
+	m.finishWork(reply[workMsg](t, load))
+	press(m, tea.KeyTab, 0)
+	if m.active != "1" || m.editor.value() != "Read @main.go " {
+		t.Fatalf("Tab did not complete the file: thread %q, draft %q", m.active, m.editor.value())
+	}
+	press(m, tea.KeyTab, tea.ModShift)
+	if m.active != "1" || m.sheet == nil || m.sheet.title != "Thinking level" {
+		t.Fatal("Shift+Tab did not open the thinking picker in the current thread")
+	}
+}
+
 func TestMouseSwitchesTabs(t *testing.T) {
 	m, _ := demo(t, Options{Fills: FillOff})
 	m.ensureThread("2").info.Title = "Second thread"

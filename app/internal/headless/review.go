@@ -47,7 +47,7 @@ func (r *reviewOptions) parse(f *pflag.FlagSet, thread sdk.ID, key string, args 
 	f.Visit(func(flag *pflag.Flag) {
 		name := flag.Name
 		if !slices.Contains([]string{"thread", "socket", "backend", "profile", "json"}, name) &&
-			!(name == "request-id" && (r.action == "start" || r.action == "status")) && !(r.action == "start" && slices.Contains(reviewFlags, name)) {
+			!(name == "pane-epoch" && r.action == "transcript") && !(name == "request-id" && (r.action == "start" || r.action == "status")) && !(r.action == "start" && slices.Contains(reviewFlags, name)) {
 			bad = name
 		}
 	})

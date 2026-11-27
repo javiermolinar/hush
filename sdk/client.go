@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -25,6 +26,11 @@ type ClientOptions struct {
 	// background replacements for canceled metadata calls. The SDK owns
 	// hello and independently verifies store continuity across connections.
 	DialUnix func(context.Context, string) (net.Conn, error)
+	// NewPaneHandler is for the interactive command connection only. Return
+	// nil when no verified local multiplexer binding is available.
+	NewPaneHandler func() PaneHandler
+	// ExpectedEpoch pins every connection to one running backend, for attach-only children.
+	ExpectedEpoch string
 }
 
 type Client struct {
@@ -32,10 +38,12 @@ type Client struct {
 	offered  map[string][]uint64
 	required map[string]uint64
 	dialUnix func(context.Context, string) (net.Conn, error)
+	newPane  func() PaneHandler
+	epoch    string
 	life     context.Context
 	close    context.CancelFunc
 	gate     chan struct{}
-	session  *session // guarded by gate
+	session  atomic.Pointer[session] // replacement guarded by gate; UI may read availability
 	metadata metadataPool
 
 	storeMu      sync.Mutex
@@ -48,6 +56,7 @@ type Client struct {
 // It can be shared across goroutines. Close cancels its transport and state feeds.
 func NewClient(socketPath string, options ClientOptions) *Client {
 	c := &Client{path: socketPath, required: maps.Clone(options.RequiredCapabilities), dialUnix: options.DialUnix,
+		newPane: options.NewPaneHandler, epoch: options.ExpectedEpoch,
 		gate: make(chan struct{}, 1), metadata: newMetadataPool(), storeInvalid: make(chan struct{})}
 	if c.required["hushProfile"] == 1 {
 		if _, explicit := c.required[storeIdentityCap]; !explicit {
@@ -84,18 +93,40 @@ func (c *Client) connect(ctx context.Context) (*session, error) {
 	if c.changedStore() {
 		return nil, ErrStoreChanged
 	}
-	if c.session != nil {
+	if s := c.session.Load(); s != nil {
 		select {
-		case <-c.session.done:
+		case <-s.done:
 		default:
-			return c.session, nil
+			return s, nil
 		}
 	}
-	s, err := c.dial(ctx, c.life, c.offered, nil)
+	var handler PaneHandler
+	if c.newPane != nil {
+		handler = c.newPane()
+	}
+	offered := c.offered
+	if handler != nil {
+		offered = make(map[string][]uint64, len(c.offered)+1)
+		maps.Copy(offered, c.offered)
+		offered[paneControlCap] = []uint64{PaneControlVersion}
+		if caps := handler.Capabilities(); caps.ThreadTabs {
+			offered[paneControlCap] = []uint64{ThreadViewVersion}
+			if !caps.NoPanes {
+				offered[paneControlCap] = append(offered[paneControlCap], PaneControlVersion)
+			}
+		}
+	}
+	s, err := c.dial(ctx, c.life, offered, nil)
 	if err != nil {
 		return nil, err
 	}
-	c.session = s
+	if handler != nil && supportedPaneControl(s.hello.Capabilities[paneControlCap]) {
+		if err := s.bindPane(ctx, c.path, handler); err != nil {
+			s.fail(err)
+			return nil, err
+		}
+	}
+	c.session.Store(s)
 	return s, nil
 }
 
@@ -366,6 +397,7 @@ type Input struct {
 	Images      []Image           `json:"images,omitempty"` // requires images:1; bytes, never paths
 	Environment ClientEnvironment `json:"-"`                // optional; sent only through clientEnvironment:1
 	SkillToken  string            `json:"-"`                // selected standalone skill; requires workspaceSkills
+	PaneControl bool              `json:"-"`                // opt in only for direct interactive user input
 }
 
 // Submit makes at most one automatic retry after a connection loss and only if

@@ -176,6 +176,19 @@ func (p *promptEditor) atEnd() bool {
 	return p.area.Line() == len(p.lines)-1 && p.area.Column() == p.tailColumn
 }
 
+// History starts only when there is no more draft in the direction of travel.
+func (p *promptEditor) hasVerticalNeighbor(up bool) bool {
+	line := p.area.Line()
+	if up && line > 0 || !up && line+1 < len(p.lines) {
+		return true
+	}
+	info := p.area.LineInfo()
+	if up {
+		return info.RowOffset > 0
+	}
+	return info.RowOffset+1 < info.Height
+}
+
 func (p *promptEditor) cursorByte() int {
 	if p.atEnd() {
 		return len(p.text)
@@ -443,6 +456,9 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 			return m.sendPrompt(sdk.Steer)
 		}
 		text := m.editor.value()
+		if paneSlashWithSeparator(text) || text == "/pane" && !m.options.paneCommandsAvailable() {
+			return m.sendPrompt(sdk.Steer)
+		}
 		if strings.HasPrefix(text, "/skill:") && (m.menuFeatures().Has(extension.Skills) || t.stagedSkill.token != "") {
 			if m.nativeSkills && t.stagedSkill.token == "" {
 				if list := m.slashMatches(); len(list) > 0 {
@@ -478,10 +494,12 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		m.editor.newline()
 		m.editor.resetHistory()
 		m.slashHidden = false
-	case key.Matches(k, shellKeys.older):
-		m.recallHistory(true)
-	case key.Matches(k, shellKeys.newer):
-		m.recallHistory(false)
+	case key.Matches(k, shellKeys.older, shellKeys.newer):
+		up := key.Matches(k, shellKeys.older)
+		if m.editor.hasVerticalNeighbor(up) {
+			return m.updatePrompt(k)
+		}
+		m.recallHistory(up)
 	case key.Matches(k, shellKeys.up):
 		return m.scroll(-1)
 	case key.Matches(k, shellKeys.down):
@@ -535,13 +553,17 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		m.quitting = true
 		return tea.Quit
 	case key.Matches(k, shellKeys.complete):
-		// File and slash completion retain Tab. An empty prompt has nothing
-		// to complete, so it can disclose the thought shown in the frame.
+		if m.completeSlash() {
+			return nil
+		}
+		if id := m.adjacentTab(1); id.Valid() {
+			return m.switchThread(id)
+		}
+		// With no other open tab, keep the empty-prompt thought shortcut.
 		if m.editor.value() == "" && len(t.attachments) == 0 && !t.attaching && m.currentFrame() && m.frame.toggleThought != "" {
 			b := maxEffects
 			return m.invoke(m.route(m.active, coreID), extension.ActionRef{ID: expandRowID, Target: m.frame.toggleThought}, &b)
 		}
-		m.completeSlash()
 	case len(m.editor.pastes) != 0 && key.Matches(k, m.editor.area.KeyMap.CopySelection):
 		if start, end, ok := m.editor.selectionBytes(); ok {
 			start, end = m.editor.coverPastes(start, end)
@@ -667,10 +689,11 @@ func byteBoundary(s string, i int) bool {
 	return i >= 0 && i <= len(s) && (i == len(s) || utf8.RuneStart(s[i]))
 }
 
-func (m *Model) completeSlash() {
+// completeSlash reports whether a command name or argument completer owns Tab.
+func (m *Model) completeSlash() bool {
 	text := m.editor.value()
 	if !strings.HasPrefix(text, "/") || strings.Contains(text, "\n") {
-		return
+		return false
 	}
 	if list := m.slashMatches(); len(list) > 0 {
 		a := list[min(m.slashIndex, len(list)-1)]
@@ -683,12 +706,12 @@ func (m *Model) completeSlash() {
 			m.editor.set("/" + a.action.Slash.Name + " ")
 		}
 		m.slashIndex = 0
-		return
+		return true
 	}
 	_, args, start := slashParts(text)
 	complete := m.slashCompleter()
 	if complete == nil {
-		return
+		return false
 	}
 	cursor := m.editor.cursorByte()
 	for j, item := range complete(m.contextFor(m.active), extension.CompletionRequest{Args: args, Cursor: cursor - start, Limit: 20}) {
@@ -698,9 +721,10 @@ func (m *Model) completeSlash() {
 		e := item.Replace
 		if e.Start <= e.End && byteBoundary(args, e.Start) && byteBoundary(args, e.End) && utf8.ValidString(e.Text) && !strings.ContainsAny(e.Text, "\r\n") && len(text)-(e.End-e.Start)+len(e.Text) <= maxPromptBytes {
 			m.editor.replace(start+e.Start, start+e.End, e.Text)
-			return
+			break
 		}
 	}
+	return true
 }
 
 type sendResult struct {
@@ -742,6 +766,14 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 	text := draft.expanded()
 	r := m.route(m.active, coreID)
 	t := m.threads[r.owner]
+	if text == "/pane" || paneSlashWithSeparator(text) {
+		if !m.options.PaneCommands || !sdk.PaneLaunchPrompt(text) && !m.options.paneCommandsAvailable() {
+			return m.notifyRoute(r, "Command panes are unavailable in this terminal", extension.Warning)
+		}
+		if !sdk.PaneLaunchPrompt(text) {
+			return m.notifyRoute(r, "Describe what to run in the pane", extension.Warning)
+		}
+	}
 	if t.attaching {
 		return m.notifyRoute(r, "Wait for the pending attachment", extension.Warning)
 	}
@@ -786,6 +818,15 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 	return m.startWork(r, func(ctx context.Context) (any, error) {
 		out := sendResult{id: r.owner}
 		if out.id == "" {
+			if sdk.PaneLaunchPrompt(text) {
+				if host, ok := backend.(interface {
+					CheckPaneCommand(context.Context) error
+				}); ok {
+					if err := host.CheckPaneCommand(ctx); err != nil {
+						return out, err
+					}
+				}
+			}
 			id, err := createDraftThread(ctx, backend, options, model, thinking)
 			if err != nil {
 				return out, err
@@ -799,6 +840,7 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 		out.key = submissionKey()
 		out.receipt, err = backend.Submit(ctx, sdk.Input{
 			ThreadID: out.id, RequestID: out.key, Text: text, WhenBusy: mode, Images: images, Environment: environment, SkillToken: skill.token,
+			PaneControl: true,
 		})
 		if err == nil && !out.receipt.SubmissionID.Valid() {
 			err = &sdk.TransportError{Err: sdk.ErrProtocol, Indeterminate: true}

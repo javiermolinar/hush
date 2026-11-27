@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+  Worker transcript · API reader ────────────────────────────── Stale snapshot
+  Pane opening was not confirmed; check your terminal
+  Running · advisory only
+
+  Reviewer
+  Only public activity.
+
+  Read-only · advisory
+  r refresh  ↑↓ scroll  f full  esc back
+
+  ────────────────────────────────────────────────────────────────── 6 workers
+  you › Unsent draft
+  Workspace workspace
+  › ○ workspace

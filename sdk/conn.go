@@ -32,10 +32,13 @@ type session struct {
 	done chan struct{}
 	gate chan struct{} // serializes writes and deadline changes
 
-	mu      sync.Mutex
-	cause   error
-	next    uint64
-	pending map[string]pendingCall
+	mu          sync.Mutex
+	cause       error
+	next        uint64
+	pending     map[string]pendingCall
+	pane        *paneSession      // guarded by mu; only present on the interactive command connection
+	paneBackend *localPaneBackend // guarded by mu; socket/epoch evidence, independent of the route
+	paneGate    chan struct{}     // serializes native probe, revocation, and v2 downgrade
 
 	hello    Hello // set before publishing the session
 	verified bool  // guarded by mu; events are forbidden during the handshake
@@ -68,7 +71,7 @@ func (c *Client) dial(ctx, lifetime context.Context, offered map[string][]uint64
 		return nil, ErrProtocol
 	}
 	s := &session{wire: conn, done: make(chan struct{}), gate: make(chan struct{}, 1),
-		pending: make(map[string]pendingCall), event: event}
+		paneGate: make(chan struct{}, 1), pending: make(map[string]pendingCall), event: event}
 	release := context.AfterFunc(lifetime, func() { s.fail(ErrClosed) })
 	go func() { s.read(); release(); c.untrack(s) }()
 	defer func() {
@@ -138,6 +141,9 @@ func (s *session) fail(err error) {
 		return
 	}
 	s.cause = err
+	if s.pane != nil {
+		s.pane.cancel()
+	}
 	close(s.done)
 	_ = s.wire.Close()
 }
@@ -173,6 +179,12 @@ func (s *session) read() {
 
 func (s *session) receive(f map[string]any) error {
 	typ, _ := f["type"].(string)
+	if typ == "pane_call" {
+		return s.receivePaneCall(f)
+	}
+	if typ == "pane_cancel" {
+		return s.receivePaneCancel(f)
+	}
 	if typ == "patch" || typ == "state_end" {
 		s.mu.Lock()
 		verified := s.verified
@@ -353,14 +365,34 @@ func (s *session) receive(f map[string]any) error {
 				return err
 			}
 		}
-	} else if ok && method == environmentSubmit {
+	} else if ok && (method == paneBind || method == paneResult || method == paneUnbind || method == paneWorkspace) {
 		s.mu.Lock()
-		version := s.hello.Capabilities[clientEnvironmentCapability]
+		version := s.hello.Capabilities[paneControlCap]
 		s.mu.Unlock()
-		if version != ClientEnvironmentVersion || len(f) != 5 || !keys(f, "type", "id", "method", "ok", "result") {
-			return fmt.Errorf("%w: client environment envelope or negotiation", ErrProtocol)
+		if !supportedPaneControl(version) {
+			return ErrProtocol
 		}
-		// The extension returns the exact core submit receipt under its own method.
+		if err := optionalEnvelope(f, version, version); err != nil {
+			return err
+		}
+	} else if ok && (method == environmentSubmit || method == paneSubmit) {
+		capability, expected := clientEnvironmentCapability, uint64(ClientEnvironmentVersion)
+		if method == paneSubmit {
+			capability = paneControlCap
+		}
+		s.mu.Lock()
+		version := s.hello.Capabilities[capability]
+		s.mu.Unlock()
+		if method == paneSubmit {
+			if !supportedPaneControl(version) {
+				return ErrProtocol
+			}
+			expected = version
+		}
+		if err := optionalEnvelope(f, version, expected); err != nil {
+			return err
+		}
+		// Both extensions return the exact core submit receipt under their own method.
 		if err := schemaCheck("success", map[string]any{
 			"type": f["type"], "id": f["id"], "method": "submit", "ok": true, "result": f["result"],
 		}); err != nil {

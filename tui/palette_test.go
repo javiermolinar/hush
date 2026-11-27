@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -51,6 +52,73 @@ func TestPaletteShowsAndRunsAvailableScrollKeys(t *testing.T) {
 	m.acceptChoice(d)
 	if !s.following || m.focusedDialog() != nil {
 		t.Fatal("choosing Resume did not follow the transcript")
+	}
+}
+
+func TestPaletteShowsHistoryKeysAtDraftEdges(t *testing.T) {
+	m, s := demo(t, Options{ReducedMotion: true})
+	s.history = []promptDraft{{text: "older prompt"}, {text: "first line\nsecond line"}}
+	has := func(id string) bool {
+		return slices.ContainsFunc(m.shellPaletteItems(s), func(p paletteItem) bool { return p.ID == "shell:"+id })
+	}
+	press(m, tea.KeyUp, 0) // recall the last prompt; its cursor starts at the bottom
+	if has("older") || !has("newer") {
+		t.Fatal("only the newer history key should be shown at the bottom of a multiline draft")
+	}
+	press(m, tea.KeyUp, 0) // move to its first row
+	if !has("older") || has("newer") {
+		t.Fatal("only the older history key should be shown at the top of a multiline draft")
+	}
+}
+
+func TestPaletteCompleteDoesNotSwitchThreads(t *testing.T) {
+	const draft = "Read @ma"
+	for _, tc := range []struct {
+		name   string
+		revoke bool
+		want   string
+	}{
+		{name: "available", want: "Read @main.go "},
+		{name: "revoked", revoke: true, want: draft},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := demo(t, Options{ReducedMotion: true})
+			openBrowseScope(t, m, fileScopeFixture{capable: true, scope: sdk.WorkspaceFileScope{Workspace: true},
+				list: func(context.Context, sdk.WorkspaceFileTarget, string, string, int, string) (sdk.WorkspaceFilePage, error) {
+					return sdk.WorkspaceFilePage{Entries: []sdk.WorkspaceFileEntry{{Name: "main.go"}}}, nil
+				}})
+			m.editor.set(draft)
+			pathCompletionPage(t, m, m.refreshFilePicker())
+			m.ensureThread("2").draft.text = "second draft"
+			m.openedTab("2")
+			press(m, 'x', tea.ModCtrl)
+			press(m, 'p', 0)
+			d := m.focusedDialog()
+			if d == nil || !d.palette {
+				t.Fatal("command palette did not open")
+			}
+			d.query = "complete current command or file"
+			d.filter()
+			if choice, ok := d.choice(); !ok || choice.ID != "shell:complete" {
+				t.Fatal("palette did not offer file completion")
+			}
+			if tc.revoke {
+				m.Update(fileScopeMsg{generation: m.fileScope.generation})
+				if _, _, open := m.fileSuggestions(); open || m.focusedDialog() != d || m.editor.revision != d.promptRevision {
+					t.Fatal("scope revocation did not leave a stale palette item for the unchanged draft")
+				}
+			}
+			press(m, tea.KeyEnter, 0)
+			if m.active != "1" || m.editor.value() != tc.want || m.focusedDialog() != nil {
+				t.Fatalf("completion left thread %q with draft %q or kept the palette open", m.active, m.editor.value())
+			}
+			if tc.revoke {
+				press(m, tea.KeyTab, 0)
+				if m.active != "2" || m.editor.value() != "second draft" {
+					t.Fatal("keyboard Tab no longer switches threads without completion")
+				}
+			}
+		})
 	}
 }
 

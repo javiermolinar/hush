@@ -15,7 +15,7 @@
     Compact the context                          │
     Reset the context                            │
     Close tab                                    │
-    Previous tab                                 │
+    Last active thread                           │
   Prompt                                         │
     Edit prompt                                  │
     Recall queued messages                       │

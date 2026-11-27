@@ -1,13 +1,13 @@
   ── go  copy     ────────────────────────                                             │
     func main() { println(42) }                                                        │
   ────────────────────────────────────────                                             ┃
-  Leader · ctrl+x ────────────────────────────────────────────────────────── 18 chords
+  Leader · ctrl+x ────────────────────────────────────────────────────────── 20 chords
+  left      Previous open thread
+  right     Next open thread
   p         Command palette
   o         Toggle details
   e         Edit prompt
   y         Copy last answer
-  c         Copy last code block
-  q         Recall queued messages
   type a chord  esc back
   ◌ Working ──────────────────────────────────────────────────────────── model-v1 high
   steer ›

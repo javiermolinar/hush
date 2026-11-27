@@ -15,7 +15,7 @@ import (
 )
 
 const usage = `Usage:
-  hush [--backend BUNDLE | --socket PATH] [--thread ID] [--local] [--theme NAME] [--fills auto|on|off] [--images auto|kitty|blocks|none] [--motion=false]
+  hush [--backend BUNDLE | --socket PATH] [--thread ID | -t ID] [--local] [--theme NAME] [--fills auto|on|off] [--images auto|kitty|blocks|none] [--motion=false]
   hush (--print | --mode text) [--socket PATH] [--thread ID] [--request-id KEY] [PROMPT...]
   hush [--socket PATH] [--thread ID] [--request-id KEY] -- PROMPT...
   hush --no-wait [--json] [--thread ID] [--request-id KEY] [PROMPT...]
@@ -90,7 +90,8 @@ const (
 type InteractiveOptions struct {
 	Socket, Bundle, Fills, Images, Theme string
 	Thread                               sdk.ID
-	Local                                *bool // nil: infer from socket selection
+	PaneEpoch                            string // private attach-only pane launch
+	Local                                *bool  // nil: infer from socket selection
 	Motion                               bool
 }
 
@@ -98,6 +99,7 @@ type options struct {
 	command                 command
 	prompt                  []string
 	socket, bundle, key     string
+	paneEpoch               string
 	thread, submission      sdk.ID
 	forcePrint, help, json  bool
 	implicitPrompt          bool
@@ -134,11 +136,13 @@ func parse(args []string) (options, error) {
 	f.BoolVarP(&o.forcePrint, "print", "p", false, "")
 	f.BoolVarP(&o.help, "help", "h", false, "")
 	f.StringVar(&o.socket, "socket", "", "")
+	f.StringVar(&o.paneEpoch, "pane-epoch", "", "")
+	_ = f.MarkHidden("pane-epoch")
 	f.StringVar(&o.bundle, "backend", "", "")
 	f.StringVar(&o.storeFrom, "from", "", "")
 	// Retain the old standalone spelling, not a profile selector.
 	f.StringVar(&profile, "profile", "", "")
-	f.StringVar(&thread, "thread", "", "")
+	f.StringVarP(&thread, "thread", "t", "", "")
 	f.StringVar(&o.create.CWD, "cwd", "", "")
 	f.StringVar(&o.trustScope, "scope", "", "")
 	f.StringVar(&o.create.Title, "title", "", "")
@@ -175,6 +179,14 @@ func parse(args []string) (options, error) {
 		return o, errors.New("only the Hush backend is supported")
 	}
 	rest := f.Args()
+	if f.Changed("pane-epoch") {
+		review := len(rest) == 3 && rest[0] == "review" && rest[1] == "transcript" && f.ArgsLenAtDash() != 0
+		view := len(rest) == 0 && (!f.Changed("thread") || sdk.ID(thread).Valid()) && !o.noWait && !o.ephemeral && !o.forcePrint && mode == "" && o.key == ""
+		if (!review && !view) || o.socket == "" || f.Changed("backend") || len(o.paneEpoch) == 0 || len(o.paneEpoch) > 160 ||
+			strings.Trim(o.paneEpoch, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != "" {
+			return o, errors.New("pane attachment requires an explicit socket and a valid backend epoch")
+		}
+	}
 	if f.Changed("theme") {
 		if o.ui.Theme == "" {
 			return o, errors.New("--theme must not be empty")
@@ -380,8 +392,8 @@ func parse(args []string) (options, error) {
 		return o, fmt.Errorf("--%s must not be empty", emptyFlag)
 	}
 	o.thread, o.submission, o.atEntry = sdk.ID(thread), sdk.ID(submission), sdk.ID(atEntry)
-	o.ui.Socket, o.ui.Bundle, o.ui.Thread = o.socket, o.bundle, o.thread
-	o.uiFlags = f.Changed("local") || f.Changed("fills") || f.Changed("images") || f.Changed("motion") || f.Changed("theme")
+	o.ui.Socket, o.ui.Bundle, o.ui.Thread, o.ui.PaneEpoch = o.socket, o.bundle, o.thread, o.paneEpoch
+	o.uiFlags = o.paneEpoch != "" || f.Changed("local") || f.Changed("fills") || f.Changed("images") || f.Changed("motion") || f.Changed("theme")
 	if f.Changed("local") {
 		o.ui.Local = &local
 	}

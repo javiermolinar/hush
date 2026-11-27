@@ -87,7 +87,8 @@ export class IntroReports implements IntroHost {
       private readonly previewAgent: () => PreviewAgent,
       private readonly prepare: NonNullable<NativeHost["prepare"]>,
       private readonly requireModel?: NativeHost["requireModel"],
-      private readonly checkAdmission?: NativeHost["checkAdmission"]) {}
+      private readonly checkAdmission?: NativeHost["checkAdmission"],
+      private readonly submitContinue?: NativeHost["submitContinue"]) {}
 
   #advance = () => {
     this.#revision++;
@@ -198,7 +199,7 @@ export class IntroReports implements IntroHost {
       if (verify) verify(current);
       else if (!this.#modelAvailable(current)) throw new WireError("invalid_request");
       if (agent) await configure(tx, id, agent);
-      return conv.submit(tx, { type: "continue" });
+      return this.submitContinue ? this.submitContinue(tx, conv) : conv.submit(tx, { type: "continue" });
     }, ctx);
     if (submission === undefined) return {};
     this.harness.resume();

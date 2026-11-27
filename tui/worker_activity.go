@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -141,6 +142,14 @@ type workerPanel struct {
 	value          sdk.ReviewInspection
 	viewer         *outputViewer
 }
+
+type workerPaneStatus uint8
+
+const (
+	workerPaneIdle workerPaneStatus = iota
+	workerPanePending
+	workerPaneUnknown
+)
 
 type workerInspectionMsg struct {
 	token, request uint64
@@ -333,9 +342,7 @@ func (m *Model) workerKey(d *dialog, chord string) tea.Cmd {
 			return m.stopOneWorker(d, p.handle)
 		}
 	case "o":
-		if p.ready && p.transcript && m.options.OpenReviewPane != nil && m.workerCurrentState(p) != "unresolved" {
-			return m.openWorkerRexPane(d)
-		}
+		return m.openWorkerPane(d)
 	case "up", "k", "down", "j", "pgup", "pgdown", "home", "end":
 		if v := p.viewer; v != nil {
 			_, h := m.outputSize(d)
@@ -354,7 +361,7 @@ func (m *Model) workerClick(d *dialog, target, col, row int) tea.Cmd {
 	case workerKeysTarget:
 		// Match only the hints actually drawn in this frame.
 		keys := ansi.Strip(ansi.Cut(f.rows[row], f.dialogX, f.dialogX+f.dialogWidth))
-		for _, hint := range []string{"r refresh", "x stop worker", "o Rex pane", d.zoomKey()} {
+		for _, hint := range []string{"r refresh", "x stop worker", "o open pane", d.zoomKey()} {
 			if at := strings.Index(keys, hint); at >= 0 {
 				left := f.dialogX + stringWidth(keys[:at])
 				if col >= left && col < left+stringWidth(hint) {
@@ -408,12 +415,34 @@ func (m *Model) stopOneWorker(d *dialog, handle string) tea.Cmd {
 	}, &budget)
 }
 
-func (m *Model) openWorkerRexPane(d *dialog) tea.Cmd {
-	open, owner, handle := m.options.OpenReviewPane, d.route.owner, d.worker.handle
+func (m *Model) canOpenWorkerPane(d *dialog) bool {
+	p := d.worker
+	return p.ready && p.transcript && m.options.OpenReviewPane != nil && m.foreground(d.route) &&
+		m.threads[d.route.owner].workerPanes[p.handle] == workerPaneIdle && m.workerCurrentState(p) != "unresolved"
+}
+
+func (m *Model) openWorkerPane(d *dialog) tea.Cmd {
+	if !m.canOpenWorkerPane(d) {
+		return nil
+	}
+	p := d.worker
+	open, owner, handle := m.options.OpenReviewPane, d.route.owner, p.handle
+	t := m.threads[owner]
+	if t.workerPanes == nil {
+		t.workerPanes = make(map[string]workerPaneStatus)
+	}
+	t.workerPanes[handle] = workerPanePending
+	p.note = ""
 	budget := maxEffects
 	return m.startWork(d.route, func(ctx context.Context) (any, error) { return nil, open(ctx, owner, handle) }, func(_ any, err error, _ *int) tea.Cmd {
+		if errors.Is(err, ErrPaneOpenUnknown) {
+			// The pane may exist. Keep the guard for this live thread and handle, not the dialog.
+			t.workerPanes[handle] = workerPaneUnknown
+			return nil
+		}
+		delete(t.workerPanes, handle)
 		if err != nil && slices.Contains(m.overlays, d) {
-			d.worker.note = "Could not open the Rex pane; the worker is unchanged"
+			p.note = "Pane unavailable; the transcript is still here"
 		}
 		return nil
 	}, &budget)
@@ -445,10 +474,20 @@ func (m *Model) workerRows(d *dialog, w, n int) menuFrame {
 	c.keys = menuLine{m.menuKeys(w, m.workerDetailHints(d)...), workerKeysTarget}
 	return m.menuShell(w, n, c, func(h int) menuFrame {
 		var out menuFrame
-		if p.note != "" {
+		if p.transcript {
+			switch m.threads[d.route.owner].workerPanes[p.handle] {
+			case workerPanePending:
+				out.add(m.quiet("Opening transcript pane…"), -1)
+				h--
+			case workerPaneUnknown:
+				out.add(m.paint(x.Warning, "Pane opening was not confirmed; check your terminal"), -1)
+				h--
+			}
+		}
+		if h > 0 && p.note != "" {
 			out.add(m.paint(x.Warning, p.note), -1)
 			h--
-		} else if p.loading || p.stopping {
+		} else if h > 0 && (p.loading || p.stopping) {
 			label := "Reading worker evidence…"
 			if p.stopping {
 				label = "Requesting Stop for this worker…"
@@ -478,8 +517,8 @@ func (m *Model) workerDetailHints(d *dialog) []string {
 	keys := []string{"r refresh"}
 	if p.ready {
 		keys = append(keys, "↑↓ scroll")
-		if p.transcript && m.options.OpenReviewPane != nil && m.workerCurrentState(p) != "unresolved" {
-			keys = append(keys, "o Rex pane")
+		if m.canOpenWorkerPane(d) {
+			keys = append(keys, "o open pane")
 		}
 		if m.canRequestWorkerStop(d, m.workerCurrentState(p)) {
 			keys = append(keys, "x stop worker")

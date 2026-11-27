@@ -124,10 +124,10 @@ func (m *Model) shellPaletteItems(t *threadState) []paletteItem {
 	} else if atFrame && m.frame.openActivity != "" {
 		add(paletteView, "open-activity", "Open visible activity details", shellKeys.send.Help().Key)
 	}
-	if len(t.history) != 0 && (draft == "" || m.editor.historyIndex >= 0) {
+	if len(t.history) != 0 && (draft == "" || m.editor.historyIndex >= 0) && !m.editor.hasVerticalNeighbor(true) {
 		add(palettePrompt, "older", "Recall older prompt", shellKeys.older.Help().Key)
 	}
-	if m.editor.historyIndex >= 0 {
+	if m.editor.historyIndex >= 0 && !m.editor.hasVerticalNeighbor(false) {
 		add(palettePrompt, "newer", "Recall newer prompt", shellKeys.newer.Help().Key)
 	}
 	if _, matches, open := m.fileSuggestions(); open && len(matches) > 0 ||

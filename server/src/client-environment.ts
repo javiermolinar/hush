@@ -1,4 +1,5 @@
 import { object } from "./wire.js";
+import type { PaneAdmission } from "./pane-control.js";
 
 export const clientEnvironmentVersion = 1;
 // Internal Durable entry kind. Native v1 projects it as the usual pi.user.
@@ -28,6 +29,7 @@ export function clientEnvironment(value: unknown): ClientEnvironment | undefined
     ...(shell && { shell }), ...(loginShellHint && { loginShellHint }) };
 }
 
-export function environmentEntry(hints: ClientEnvironment | undefined) {
-  return hints === undefined ? undefined : { kind: environmentInputKind, data: { ...hints } };
+export function environmentEntry(hints: ClientEnvironment | undefined, paneAdmission?: PaneAdmission) {
+  return hints === undefined && paneAdmission === undefined ? undefined :
+    { kind: environmentInputKind, data: { ...hints, ...(paneAdmission && { paneAdmission }) } };
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/javiermolinar/hush/app/internal/filelist"
 	"github.com/javiermolinar/hush/app/internal/headless"
 	"github.com/javiermolinar/hush/app/internal/keyring"
+	"github.com/javiermolinar/hush/app/internal/pane"
 )
 
 type signalExit struct{ syscall.Signal }
@@ -17,6 +18,9 @@ type signalExit struct{ syscall.Signal }
 func (s signalExit) Error() string { return s.Signal.String() }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == pane.LaunchGuardArg {
+		os.Exit(pane.RunLaunchGuard(os.Args[2:], os.Stderr))
+	}
 	if len(os.Args) == 2 && os.Args[1] == keyring.HelperArg {
 		if !privatePipe(os.Stdin) || !privatePipe(os.Stdout) {
 			os.Exit(2)

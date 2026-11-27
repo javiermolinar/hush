@@ -547,7 +547,7 @@ func (m *Model) applyMenuResult(op x.Operation, result *x.ClientResult) {
 	}
 }
 
-func menusRegistration(login *ProviderLoginOptions) x.Registration {
+func menusRegistration(options Options) x.Registration {
 	da := func(id, title, direct, leader, slash string, requires x.Features, run func(x.Context, x.Invocation) x.Outcome) x.Action {
 		a := x.Action{ID: x.ActionID(menusID + "." + id), Title: title, Binding: x.Binding{Direct: direct, Leader: leader}, Run: run, Requires: requires}
 		if slash != "" {
@@ -632,9 +632,23 @@ func menusRegistration(login *ProviderLoginOptions) x.Registration {
 			return x.Outcome{x.Local{Op: x.CompleteFile, Text: v.Target}}
 		}),
 	}}
-	if login != nil && login.Command != nil && len(login.Providers) != 0 {
+	if login := options.ProviderLogin; login != nil && login.Command != nil && len(login.Providers) != 0 {
 		r.Actions = append(r.Actions, da("login", "Sign in to a provider", "", "i l", "login", 0, providerLoginMenu(login.Providers)))
 	}
+	if options.OpenThreadPane != nil {
+		a := da("new-pane", "Open a new Hush pane", "", "i e", "new-pane", 0, func(x.Context, x.Invocation) x.Outcome {
+			return x.Outcome{x.Local{Op: openThreadPaneOp}}
+		})
+		a.Available = func(c x.Context) bool { return c.Thread.ID.Valid() }
+		a.Description = "Open an independent thread in this directory on the same backend"
+		r.Actions = append(r.Actions, a)
+	}
+	// Reserve /pane even when the terminal can't offer the action.
+	a := da("pane-command", "Request a command pane", "", "i y", "pane", 0, func(x.Context, x.Invocation) x.Outcome {
+		return x.Outcome{x.Local{Op: stagePaneCommandOp}}
+	})
+	a.Available = func(x.Context) bool { return options.paneCommandsAvailable() }
+	r.Actions = append(r.Actions, a)
 	return r
 }
 

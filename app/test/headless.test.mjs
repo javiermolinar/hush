@@ -997,8 +997,8 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
       assert.equal(prompt.split(text).length, 2, `duplicated: ${text}`);
     }
     const declared = new Map(tools.map(({ function: tool }) => [tool.name, tool]));
-    assert.deepEqual([...declared.keys()].sort(), ["bash", "edit", "read", "subagent", "write"]);
-    assert.doesNotMatch(prompt, /^- (bash|edit|read|subagent|write): /m);
+    assert.deepEqual([...declared.keys()].sort(), ["bash", "edit", "read", "subagent", "thread_start", "write"]);
+    assert.doesNotMatch(prompt, /^- (bash|edit|read|subagent|thread_start|write): /m);
     const edit = declared.get("edit");
     assert.equal(edit.description, "Replace exact text in one file. Keep replacements small.");
     const edits = edit.parameters.properties.edits;
