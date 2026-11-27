@@ -329,7 +329,7 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 			}
 		}
 		slices.Sort(declared)
-		if !slices.Equal(declared, []string{"bash", "edit", "read", "write"}) {
+		if !slices.Equal(declared, []string{"bash", "edit", "read", "subagent", "write"}) {
 			t.Fatalf("unexpected tool declarations: %v", declared)
 		}
 	}

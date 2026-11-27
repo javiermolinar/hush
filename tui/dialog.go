@@ -34,7 +34,7 @@ type dialog struct {
 	input                       *promptEditor
 	custom                      tea.Model
 	output                      *outputViewer
-	review                      bool
+	review, usage               bool
 	modelSearch                 *modelSearchState
 	threadPicker                *threadPicker
 	config                      *configPanel
@@ -47,6 +47,7 @@ type dialog struct {
 	planHistory                 *planHistoryPicker
 	planReview                  *planReviewPicker
 	worker                      *workerPanel
+	subagent                    *subagentPanel
 	result                      func(tea.Model) (any, bool)
 	done                        func(x.Context, any, bool) x.Outcome
 }
@@ -495,6 +496,9 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	}
 	if d.custom != nil {
 		return m.customUpdate(d, msg)
+	}
+	if d.subagent != nil {
+		return m.subagentKey(d, chord)
 	}
 	if d.worker != nil {
 		return m.workerKey(d, chord)

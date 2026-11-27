@@ -356,7 +356,7 @@ test("normal provider drafting is advertised, write-free and revision-checked ac
   const provider = await planProvider(t, config.agentDir, async ({ text, tools, prompt, results }) => {
     assert.match(prompt, /Saving a plan does not authorize implementation/);
     if (text === ordinary) {
-      assert.deepEqual(tools.toSorted(), ["bash", "edit", "read", "write"], "ordinary tools must be unchanged");
+      assert.deepEqual(tools.toSorted(), ["bash", "edit", "read", "subagent", "write"], "ordinary turns retain their coding tools and can delegate");
       assert.doesNotMatch(prompt, /This request is for a draft only/);
       if (!results.length) return [call("write", { path: "plan.txt", content: "ordinary" }), call("hush_plan_propose", draftArgs(2, "Unrequested edit"))];
       assert.ok(results.some(row => row.content.includes("Start your request")), JSON.stringify(results));

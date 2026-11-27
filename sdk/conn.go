@@ -301,6 +301,13 @@ func (s *session) receive(f map[string]any) error {
 		if err := optionalEnvelope(f, version, PlanReviewVersion); err != nil {
 			return err
 		}
+	} else if ok && method == subagentOverview {
+		s.mu.Lock()
+		version := s.hello.Capabilities[subagentsCapability]
+		s.mu.Unlock()
+		if err := optionalEnvelope(f, version, SubagentOverviewVersion); err != nil {
+			return err
+		}
 	} else if ok && (method == workerActivityWait || method == workerActivityInspect) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[workerActivityCapability]

@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"slices"
 	"time"
@@ -14,6 +15,7 @@ type workspaceWatch struct {
 	version            uint64
 	base               string
 	baseVersions       []uint64
+	baselineTimeout    time.Duration // nonzero allows retrying a timed-out passive baseline
 	params             map[string]any
 }
 
@@ -45,7 +47,7 @@ func watchWorkspace[T any](ctx context.Context, c *Client, w workspaceWatch,
 				return
 			}
 			publish(failure(err))
-			if !retryableTransport(err) && !IsCode(err, "limit") {
+			if !retryableTransport(err) && !IsCode(err, "limit") && !(w.baselineTimeout > 0 && !ready && errors.Is(err, context.DeadlineExceeded)) {
 				return
 			}
 			if ready {
@@ -62,7 +64,11 @@ func watchWorkspace[T any](ctx context.Context, c *Client, w workspaceWatch,
 func workspaceWatchConnection[T any](life context.Context, c *Client, w workspaceWatch,
 	decodeReport func(any) (T, string, error), publish func(T),
 ) (ready bool, err error) {
-	ctx, cancel := context.WithTimeout(life, 10*time.Second)
+	timeout := w.baselineTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(life, timeout)
 	defer cancel()
 	s, err := c.dial(ctx, life, c.offered, nil)
 	if err != nil {

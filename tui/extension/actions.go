@@ -162,6 +162,9 @@ const PlanWorktree Features = 1 << 23
 // WorkerActivity enables read-only review worker inspection for the active parent.
 const WorkerActivity Features = 1 << 24
 
+// Subagents enables the native subagent log and spend overview.
+const Subagents Features = 1 << 25
+
 // ClientResult is a detached reply. Err reports failure, including missing
 // features. A submit receipt means admission, not settlement. Fields unused
 // by the operation are zero. Cursor is opaque and empty on the last list page.

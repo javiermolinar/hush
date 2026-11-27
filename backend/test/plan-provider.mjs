@@ -68,7 +68,7 @@ export function scopedReply({ text, tools, results }) {
 
 // Use the non-faux runtime, prompt builder and tool dispatcher. Only the
 // provider's responses are scripted; the ordinary user text goes through Hush.
-export async function planProvider(t, agentDir, answer, { alternate = false } = {}) {
+export async function planProvider(t, agentDir, answer, { alternate = false, usage } = {}) {
   const requests = [], errors = [];
   const provider = createServer(async (req, res) => {
     try {
@@ -91,14 +91,19 @@ export async function planProvider(t, agentDir, answer, { alternate = false } = 
         send({ tool_calls: response.map((fn, index) => ({ index, id: `plan-call-${requests.indexOf(turn)}-${index}`, type: "function", function: fn })) }, null);
         send({}, "tool_calls");
       } else {
-        assert.equal(typeof response, "string");
-        send({ content: response }, null);
+        if (typeof response === "string") send({ content: response }, null);
+        else for await (const content of response) {
+          assert.equal(typeof content, "string");
+          send({ content }, null);
+        }
         send({}, "stop");
       }
+      if (usage) res.write("data: " + JSON.stringify({ choices: [], usage }) + "\n\n");
       res.end("data: [DONE]\n\n");
     } catch (error) {
       errors.push(error);
-      res.writeHead(400).end();
+      if (res.headersSent) res.destroy();
+      else res.writeHead(400).end();
     }
   }).listen(0, "127.0.0.1");
   t.after(async () => {
@@ -112,7 +117,8 @@ export async function planProvider(t, agentDir, answer, { alternate = false } = 
   const auth = Object.fromEntries(entries.map(ref => [ref.provider, { type: "api_key", key: "fixture-not-a-secret" }]));
   const providers = Object.fromEntries(entries.map(ref => [ref.provider, {
     baseUrl: `http://127.0.0.1:${provider.address().port}/v1`, api: "openai-completions",
-    models: [{ id: ref.modelId, name: "Plan fixture " + ref.modelId, reasoning: ref === staged, contextWindow: 100_000, maxTokens: 1_000 }],
+    models: [{ id: ref.modelId, name: "Plan fixture " + ref.modelId, reasoning: ref === staged, contextWindow: 100_000, maxTokens: 1_000,
+      ...(usage && { cost: { input: 2, output: 4, cacheRead: 0, cacheWrite: 0 } }) }],
   }]));
   for (const [file, data] of Object.entries({ "auth.json": auth, "models.json": { providers } })) {
     await writeFile(join(agentDir, file), JSON.stringify(data), { mode: 0o600 });

@@ -126,7 +126,7 @@ test("a placed steer may narrow planning, but restart, fork and two clients cann
   let initial = true;
   const provider = await planProvider(t, agentDir, async ({ text, tools, results }) => {
     if (text === first) {
-      assert.deepEqual(tools.toSorted(), ["bash", "edit", "read", "write"]);
+      assert.deepEqual(tools.toSorted(), ["bash", "edit", "read", "subagent", "write"]);
       if (!results.length) { started.resolve(); await release.promise; return [call("read", { path: "allowed.txt" })]; }
     }
     if (text === steer && initial) {

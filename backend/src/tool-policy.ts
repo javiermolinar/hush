@@ -1,10 +1,11 @@
 import { copyJson } from "@earendil-works/chord/json";
 import type { Context } from "@earendil-works/chord/context";
-import { AgentDoc, defineDoc, LiveDoc, ToolTask, type ConversationId, type ConversationRecord, type EntryId,
+import { AgentDoc, defineDoc, LiveDoc, ResetEntry, ToolTask, type ConversationId, type ConversationRecord, type EntryId,
   type Extension, type Harness, type LiveRun, type SubmissionId, type TaskId, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import { planChatKind, planTaskKind } from "../../server/src/plan.js";
 import { joinReviewsName, spawnReviewsName } from "../../server/src/delegation.js";
-import { allowedExecutionPath, bindExecutionWorkspace, readExecutionText, requireExecutionWorkspace, workspaceChanged,
+import { subagentToolName } from "../../server/src/subagents.js";
+import { allowedExecutionPath, bindExecutionWorkspace, readExecutionText, requireExecutionWorkspace, sameExecutionWorkspace, workspaceChanged,
   type ExecutionWorkspace } from "./execution-workspace.js";
 import { draftInput, draftPrompt, draftProposalTool, isPlanDraftTool, LegacyDraftTurn, readPlanTool, type DraftMode } from "./plan-draft-intent.js";
 import { allowsPlanFileTool, isPlanFileTool, planTurnScope } from "./plan-turn.js";
@@ -17,6 +18,7 @@ export const assignedToolPolicyKind = "hush.assigned-tool-policy";
 const fixtureCheck = "hush_fixture_plan_check";
 export type ReviewTarget = { kind: "plan"; planId: string; revision: number } | { kind: "code"; snapshotId: string; assignment?: string };
 export type AssignedProfile = { kind: "read-only"; workspace: ExecutionWorkspace }
+  | { kind: "subagent-write"; workspace: ExecutionWorkspace }
   | { kind: "worker"; workspace: ExecutionWorkspace; paths: string[] }
   | { kind: "reviewer"; target: ReviewTarget };
 
@@ -68,8 +70,10 @@ export function allowsTool(profile: Profile, name: string, nested: boolean, chat
       if ("fixture" in profile) return !nested && name === fixtureCheck;
       // falls through: read-only tools, with an additional per-path grant.
     case "read-only": return nested ? name === "inspect_file" : name === "read" || name === "codemode";
+    case "subagent-write": return !nested && ["read", "bash", "edit", "write"].includes(name);
     case "default": return !isPlanDraftTool(name) && !isPlanFileTool(name) && name !== reviewReadTool && name !== reviewReportTool && name !== fixtureCheck &&
-      (name !== planReportName || !nested && chatAssignment) && (!nested || name !== spawnReviewsName && name !== joinReviewsName);
+      (name !== planReportName || !nested && chatAssignment) && (!nested || name !== spawnReviewsName && name !== joinReviewsName) &&
+      (name !== subagentToolName || !nested && profile.workspace !== null);
   }
 }
 
@@ -136,10 +140,14 @@ export class ToolPolicy {
   constructor(private readonly harness: () => Harness, private readonly trust: WorkspaceTrust, private readonly directory: (cwd?: string) => string,
     private readonly protectedDirs: readonly string[], private readonly fixture: boolean) {}
 
-  async hidesWorkspace(owner: ConversationId, read: Pick<Harness, "snapshot">, ctx: Context) {
-    // Read/reviewer tools have their own I/O path. Do not construct the
-    // unrestricted environment (or load live workspace context) for them.
-    return !!(await read.snapshot(Assigned, owner, ctx))?.pin;
+  async assignedEnvironment(owner: ConversationId, cwd: string | undefined, read: Pick<Harness, "snapshot">, ctx: Context) {
+    const pin = (await read.snapshot(Assigned, owner, ctx))?.pin;
+    if (!pin) return undefined; // Ordinary environment rules apply.
+    // Restricted file tools have their own I/O path. A writable child may
+    // use the regular tools, but not construct an env with a replaced pin.
+    if (pin.owner !== owner || pin.profile.kind !== "subagent-write" || this.directory(cwd) !== pin.profile.workspace.cwd) return null;
+    await requireExecutionWorkspace(this.trust, pin.profile.workspace, ctx.abortSignal);
+    return pin.profile.workspace;
   }
 
   async #decide(tx: Tx, owner: ConversationId, caller: Caller, legacy?: Readonly<{ first?: EntryId }>): Promise<Decision> {
@@ -167,13 +175,17 @@ export class ToolPolicy {
     }
     const cwd = this.directory((await tx.doc(AgentDoc, owner)).cwd);
     const first = run.first === undefined ? undefined : await tx.entry(run.first);
-    const actualInput = first?.conversationId === owner && first.model?.some(m => m.role === "user");
     const source = run.inputs[0] === undefined ? undefined : await tx.submission(run.inputs[0]);
-    const continuation = !actualInput && source?.type === "continue" ? source.id : undefined;
-    if (!actualInput && continuation === undefined) return fixed(disabled, nested);
+    // A queued reset can be first in the run even though the run starts with
+    // a newly placed user submission. The reset's handoff isn't that input.
+    const placed = first?.conversationId === owner && ResetEntry.is(first) && source?.type === "input" &&
+      source.status === "placed" && source.conversationId === owner && source.entry > first.id ? await tx.entry(source.entry) : first;
+    const actualInput = placed?.conversationId === owner && placed.model?.some(m => m.role === "user") ? placed.id : undefined;
+    const continuation = actualInput === undefined && source?.type === "continue" ? source.id : undefined;
+    if (actualInput === undefined && continuation === undefined) return fixed(disabled, nested);
     // Durable fills run.first with the first assistant tool-call entry on an
     // inputless Continue. The original Continue submission stays stable.
-    const turn: TurnKey = { owner, cwd, ...(continuation === undefined ? { first: run.first! } : { continuation }) };
+    const turn: TurnKey = { owner, cwd, ...(continuation === undefined ? { first: actualInput! } : { continuation }) };
     const saved = (await tx.doc(Native, owner)).turn;
     const prior = saved && sameTurn(turn, saved) ? saved : undefined;
     if (prior && prior.cwd !== cwd) return fixed(disabled, nested);
@@ -228,7 +240,8 @@ export class ToolPolicy {
     if ("workspace" in profile) {
       try {
         if (!profile.workspace) return { denied: workspaceChanged } as const;
-        if (profile.kind === "default" && api.env?.cwd !== profile.workspace.root) return { denied: workspaceChanged } as const;
+        if ((profile.kind === "default" || profile.kind === "subagent-write") && api.env?.cwd !== profile.workspace.root)
+          return { denied: workspaceChanged } as const;
         await requireExecutionWorkspace(this.trust, profile.workspace, ctx.abortSignal);
       } catch {
         ctx.abortSignal?.throwIfAborted();
@@ -238,13 +251,26 @@ export class ToolPolicy {
     return { profile } as const;
   }
 
+  // Subagents consume the actual authorized binding, not a new grant for
+  // whatever directory happens to occupy the cwd when the tool runs.
+  async subagentWorkspace(api: ToolExecutionApi, ctx: Context) {
+    const decision = await this.#authorize(subagentToolName, api, ctx);
+    return decision.profile?.kind === "default" ? decision.profile.workspace : undefined;
+  }
+
+  async matchesSubagentWorkspace(tx: Tx, api: ToolExecutionApi, expected: ExecutionWorkspace) {
+    const value = await this.#decide(tx, api.conversationId, { tool: api.taskId });
+    return !value.nested && "profile" in value && value.profile.kind === "default" && !!value.profile.workspace &&
+      sameExecutionWorkspace(value.profile.workspace, expected);
+  }
+
   #protect(tool: ToolRegistration): ToolRegistration {
     const { name } = tool;
     return { ...tool, execute: async (args, api, ctx) => {
       const decision = await this.#authorize(name, api, ctx);
       if (decision.denied !== undefined) return failure(decision.denied);
       const { profile } = decision;
-      if ((name === "read" || name === "inspect_file") && profile.kind !== "default" && "workspace" in profile) {
+      if ((name === "read" || name === "inspect_file") && profile.kind !== "default" && profile.kind !== "subagent-write" && "workspace" in profile) {
         const { path, offset, limit } = args as { path: string; offset?: number; limit?: number };
         const w = profile.workspace!;
         // Direct read retains line slicing, but restricted profiles do not

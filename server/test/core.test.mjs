@@ -10,7 +10,7 @@ import { setImmediate } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { AgentDoc } from "@earendil-works/pi-durable";
+import { AgentDoc, defineTask } from "@earendil-works/pi-durable";
 import { createCoreServer } from "../../dist/server/src/index.js";
 import { encode } from "../../dist/server/src/wire.js";
 import { context, openNative, projectState } from "../../protocol/v1/native-probe.mjs";
@@ -184,6 +184,46 @@ test("ordered admission: waits do not block, keyed retry is one input, scoped re
     assert.ok(compact.taskId);
     result(await wire.send("thread.abort", { threadId: fork.id }));
   } finally { release.resolve(); }
+});
+
+test("thread.list resumes past a scan budget of private rows with a sealed cursor", { timeout: 8000 }, async t => {
+  const privateIds = new Set();
+  const { conv, path, threadId } = await fixture(t, { server: {
+    host: { privateConversation: async id => privateIds.has(id) },
+  } });
+  const owner = defineTask({ name: "fixture.private-owner", version: 1, initial: () => ({ phase: "idle" }), phases: {} });
+  const tail = await conv.commit(async tx => {
+    const taskId = await tx.createTask(owner, null, { ownership: { kind: "conversation" }, background: true });
+    // With limit 1 there are more private rows than the 64-scan budget.
+    for (let i = 0; i < 65; i++) privateIds.add((await tx.createConversation({ ownership: { kind: "task", taskId } })).id);
+    return String((await tx.createConversation({ ownership: { kind: "ownerless" } })).id);
+  }, context);
+  const wire = await client(t, path);
+  await hello(wire);
+  const list = async cursor => result(await wire.send("thread.list", { limit: 1, ...(cursor && { cursor }) }));
+  const first = await list();
+  assert.deepEqual(first.threads.map(row => row.id), [threadId]);
+  assert.ok(first.nextCursor);
+  const hidden = await list(first.nextCursor);
+  assert.deepEqual(hidden.threads, []);
+  const cursor = hidden.nextCursor;
+  assert.match(cursor, /^[A-Za-z0-9_-]{1,512}$/);
+  const repeated = await list(first.nextCursor);
+  assert.deepEqual(repeated.threads, []);
+  assert.ok(repeated.nextCursor);
+  assert.notEqual(repeated.nextCursor, cursor, "the same private position is sealed with a fresh nonce");
+  for (const next of [cursor, repeated.nextCursor]) {
+    const last = await list(next);
+    assert.deepEqual(last.threads.map(row => row.id), [tail]);
+    assert.equal(last.nextCursor, null);
+  }
+  const tampered = (cursor[0] === "A" ? "B" : "A") + cursor.slice(1);
+  code(await wire.send("thread.list", { limit: 1, cursor: tampered }), "invalid_cursor");
+  code(await wire.send("history", { threadId, limit: 1, range: { kind: "cursor", cursor } }), "invalid_cursor");
+
+  const fresh = await client(t, (await fixture(t)).path);
+  await hello(fresh);
+  code(await fresh.send("thread.list", { limit: 1, cursor }), "invalid_cursor");
 });
 
 test("socket replica converges for seeded structural changes; history fills a gap independently", { timeout: 15000 }, async t => {

@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+  Subagents · Latest delegated turn ──────────────────────────────── 1 running
+  › ◐ Check the retry path    Reading    │ Check the retry path
+    • Check cancellation      Done       │ Reading files · Read-only · 8.0k
+                                         │ tok / $0.05
+                                         │ /repo
+
+  ↵ Open log  Follow public output
+  ↑↓ move  tab log  f full  esc back
+
+  ──────────────────────────────────────────────────── Subagents 2 · 1 running
+  you ›
+  Workspace workspace                                        12.0k tok / $0.08
+  › ○ workspace

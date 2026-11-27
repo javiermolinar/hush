@@ -53,6 +53,7 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 	caps["clientEnvironment"] = []uint64{sdk.ClientEnvironmentVersion}
 	caps["delegation"] = []uint64{sdk.DelegationVersion}
 	caps["workerActivity"] = []uint64{sdk.WorkerActivityVersion}
+	caps["subagents"] = []uint64{sdk.SubagentOverviewVersion}
 	environment := detectClientEnvironment(ctx)
 	target := backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, RequireWorkTrust: true}
 	client, err := backendstart.NewClient(ctx, target, sdk.ClientOptions{Capabilities: caps})

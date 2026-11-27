@@ -485,6 +485,10 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 		stateFloor = min(20, w-ruleSpace)
 	}
 	room := w - ruleSpace - stateFloor
+	subagents := m.subagentBadge(room)
+	if subagents.text != "" {
+		room -= stringWidth(subagents.text) + 2
+	}
 	workers := m.workerBadgeRow(room)
 	if workers.text != "" {
 		room -= stringWidth(workers.text) + 2
@@ -497,6 +501,7 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	if model := m.ruleModel(t, min(w/3, room)); model != "" {
 		metadata.text = m.quiet(model)
 	}
+	mergeRow(&metadata, subagents, "  ")
 	mergeRow(&metadata, workers, "  ")
 	mergeRow(&metadata, badge, "  ")
 	var right displayRow
@@ -774,6 +779,16 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				i := p.Y - f.dialogY
 				if i >= 0 && i < len(f.dialogChoices) {
 					target := f.dialogChoices[i]
+					if d.subagent != nil {
+						if target == subagentOpenTarget {
+							return m.subagentKey(d, "enter")
+						}
+						if target >= 0 && target < len(m.subagents.update.Workers) && (f.dialogListWidth == 0 || p.X < f.dialogX+f.dialogListWidth) {
+							d.selected = target
+							return m.subagentKey(d, "enter")
+						}
+						return nil
+					}
 					if d.worker != nil {
 						return m.workerClick(d, target, p.X, p.Y)
 					}
@@ -862,9 +877,11 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				} else if p.Button == tea.MouseWheelDown {
 					m.outputMove(d, 3, 0)
 				}
-			} else if inside && (d.worker != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil || d.plan != nil) {
+			} else if inside && (d.subagent != nil || d.worker != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil || d.plan != nil) {
 				move := m.planKey
-				if d.worker != nil {
+				if d.subagent != nil {
+					move = m.subagentKey
+				} else if d.worker != nil {
 					move = m.workerKey
 				} else if d.planWorkspace != nil {
 					move = m.planWorkspaceKey

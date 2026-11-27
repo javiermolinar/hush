@@ -25,6 +25,7 @@ type outputViewer struct {
 	top, left    int
 	widest       int
 	reviewSource []outputLine
+	reviewStarts []int // byte offsets in the sanitized text before wrapping
 	reviewWidth  int
 	windows      map[outputWindow]string
 }
@@ -150,22 +151,41 @@ func (v *outputViewer) reflowReview(width int) {
 	clear(v.windows)
 	v.widest = width
 	v.lines = make([]outputLine, 0, len(v.reviewSource))
+	v.reviewStarts = v.reviewStarts[:0]
+	pos := 0
 	for _, line := range v.reviewSource {
+		start := pos
+		pos += len(line.text) + 1
 		if line.width <= width {
 			v.lines = append(v.lines, line)
+			v.reviewStarts = append(v.reviewStarts, start)
 			continue
 		}
 		if line.ascii {
-			for start := 0; start < len(line.text); start += width {
-				s := line.text[start:min(len(line.text), start+width)]
+			for at := 0; at < len(line.text); at += width {
+				s := line.text[at:min(len(line.text), at+width)]
 				v.lines = append(v.lines, outputLine{text: s, width: len(s), ascii: true})
+				v.reviewStarts = append(v.reviewStarts, start+at)
 			}
 			continue
 		}
 		for s := range strings.SplitSeq(ansi.Hardwrap(line.text, width, true), "\n") {
 			v.lines = append(v.lines, newOutputLine(s))
+			v.reviewStarts = append(v.reviewStarts, start)
+			start += len(s)
 		}
 	}
+}
+
+func (v *outputViewer) reviewAnchor() int {
+	if len(v.reviewStarts) == 0 {
+		return 0
+	}
+	return v.reviewStarts[min(v.top, len(v.reviewStarts)-1)]
+}
+
+func (v *outputViewer) seekReview(anchor int) {
+	v.top = max(0, sort.Search(len(v.reviewStarts), func(i int) bool { return v.reviewStarts[i] > anchor })-1)
 }
 
 func (m *Model) outputCopyHint() string { return "c copy all" }

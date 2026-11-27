@@ -32,6 +32,8 @@ func (m *Model) menuFrame(d *dialog, available int) menuFrame {
 	}
 	var frame menuFrame
 	switch {
+	case d.subagent != nil:
+		frame = m.subagentRows(d, w, n)
 	case d.worker != nil:
 		frame = m.workerRows(d, w, n)
 	case d.planWorkspace != nil:
@@ -305,7 +307,7 @@ func menuCount(n int, singular, plural string) string {
 
 // Do not intercept f in a text field or a type-to-filter list.
 func (d *dialog) canZoom() bool {
-	return d.worker != nil || d.plan != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil ||
+	return d.subagent != nil || d.worker != nil || d.plan != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil ||
 		d.git != nil || d.output != nil || d.workTrust != nil || d.themePicker != nil ||
 		d.config != nil && !d.config.pickingModel
 }

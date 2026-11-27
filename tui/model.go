@@ -117,6 +117,7 @@ type Model struct {
 	nativeSkillDraft          bool
 	nativeContext             bool
 	workers                   workerFeed
+	subagents                 subagentFeed
 	skills                    skillsLease
 	images                    imageState
 	intro                     *introState
@@ -289,6 +290,7 @@ func (m *Model) Close() {
 	m.stopPlanWatch()
 	m.stopChatPlanWatch()
 	m.stopWorkerActivity()
+	m.stopSubagents()
 	m.stopFileScope()
 	m.stopSkills()
 	for id, work := range m.pending {
@@ -381,7 +383,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fileScopePush, m.gitDiffPush = v.scopeWatch, v.gitWatch
 		m.nativeSkills, m.nativeSkillDraft = v.skills, v.skillDraft
 		m.nativeChatPlanActivity = v.chatPlanActivity
-		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity())
+		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity(), m.syncSubagents())
+	case subagentMsg:
+		cmd = m.receiveSubagents(v)
 	case workerFeedMsg:
 		cmd = m.receiveWorkers(v)
 	case workerInspectionMsg:
@@ -597,7 +601,7 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 	m.overlays, m.sheet = nil, nil
 	m.reprojectBackgroundTab(previous)
 	m.emit(id, extension.Event{Kind: extension.ThreadSwitched, PreviousThreadID: previous})
-	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity()}
+	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity(), m.syncSubagents()}
 	budget := maxEffects
 	for _, d := range old {
 		cmds = append(cmds, m.replyDialog(d, nil, false, &budget))
@@ -1002,6 +1006,8 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 		return m.openLoadedContext(r, budget)
 	case openGitDiffOp:
 		return m.openGitDiff(r)
+	case openSubagentsOp:
+		return m.openSubagents(r)
 	case openWorkersOp:
 		return m.openWorkers(r)
 	case openWorkspaceTrustOp:

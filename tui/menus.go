@@ -144,6 +144,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, planCatalog := m.backend.(planCatalogBackend)
 	_, planReview := m.backend.(planReviewBackend)
 	_, workers := m.backend.(workerActivityBackend)
+	_, subagents := m.backend.(subagentBackend)
 	_, planDraft := m.backend.(planDraftBackend)
 	_, planChat := m.backend.(planChatBackend)
 	_, chatPlanActivity := m.backend.(chatPlanActivityBackend)
@@ -155,7 +156,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, settings := m.backend.(settingsBackend)
 	native = native && m.options.Services.Models == nil
 	if !ok || !native && !titles && !directory && !worktrees && !archive &&
-		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings && !plans && !workers {
+		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings && !plans && !workers && !subagents {
 		return nil
 	}
 	token := m.token()
@@ -205,6 +206,9 @@ func (m *Model) menuProbe() tea.Cmd {
 		}
 		if workers && hello.Capabilities["delegation"] == sdk.DelegationVersion && hello.Capabilities["workerActivity"] == sdk.WorkerActivityVersion {
 			f |= x.WorkerActivity
+		}
+		if subagents && hello.Capabilities["subagents"] == sdk.SubagentOverviewVersion {
+			f |= x.Subagents
 		}
 		if settings && hello.Capabilities["settings"] == sdk.SettingsVersion {
 			f |= x.Settings

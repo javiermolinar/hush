@@ -77,6 +77,16 @@ func (m *Model) footerThread(t *threadState) x.Thread {
 		(last.workspace == "" || filepath.Clean(thread.Workspace) == filepath.Clean(last.workspace)) {
 		thread.ContextUse = last.context
 	}
+	if m.subagents.owner.Valid() && thread.ID == m.subagents.owner {
+		s := m.subagents.update.Usage
+		thread.SubagentUsage = s
+		thread.Usage.InputTokens += s.InputTokens
+		thread.Usage.OutputTokens += s.OutputTokens
+		thread.Usage.TotalTokens += s.TotalTokens
+		thread.Usage.CacheReadTokens += s.CacheReadTokens
+		thread.Usage.CacheWriteTokens += s.CacheWriteTokens
+		thread.Usage.CostUSD += s.CostUSD
+	}
 	return thread
 }
 
@@ -142,6 +152,9 @@ func footerRegistration() x.Registration {
 			if usage.CostUSD == 0 && usage.TotalTokens == 0 {
 				return nil
 			}
+			if c.Thread.SubagentUsage != (sdk.Usage{}) && c.Width >= compactFooterWidth {
+				return usageSpan(spendLabel(usage), x.Muted)
+			}
 			return usageSpan(fmt.Sprintf("$%.2f", usage.CostUSD), x.Muted)
 		}},
 	}}
@@ -158,9 +171,30 @@ func (m *Model) openUsage(r ownerRoute, t *threadState, budget *int) tea.Cmd {
 	if !m.foreground(r) {
 		return nil
 	}
+	d := &dialog{route: r, token: m.token(), budget: budget, title: "Usage details", usage: true}
+	m.refreshUsage(d, t)
+	return m.pushDialog(d)
+}
+
+func (m *Model) refreshUsage(d *dialog, t *threadState) {
+	if t == nil {
+		return
+	}
 	thread := m.footerThread(t)
 	usage := thread.Usage
 	text := fmt.Sprintf("Total tokens: %d\nSpend: $%.2f", usage.TotalTokens, usage.CostUSD)
+	if m.menuFeaturesFromBackend.Has(x.Subagents) {
+		f := m.subagents
+		switch {
+		case f.owner != d.route.owner || !f.ready:
+			text = "Parent only · subagent spend not yet available\n\n" + spendLabel(t.info.Usage)
+		case f.failed:
+			text = "Last observed subagent spend\n\n" + text
+		}
+	}
+	if agents := thread.SubagentUsage; agents != (sdk.Usage{}) {
+		text += fmt.Sprintf("\n\nParent: %s\nSubagents: %s", spendLabel(t.info.Usage), spendLabel(agents))
+	}
 	if v := thread.ContextUse; v.Known && v.Window > 0 {
 		used := strconv.FormatUint(v.Tokens, 10)
 		if v.Estimated {
@@ -168,9 +202,9 @@ func (m *Model) openUsage(r ownerRoute, t *threadState, budget *int) tea.Cmd {
 		}
 		text += fmt.Sprintf("\n\nCurrent context: %s of %d tokens", used, contextLimit(thread))
 	}
-	d := &dialog{route: r, token: m.token(), budget: budget, title: "Usage details"}
-	m.setReviewText(d, text)
-	return m.pushDialog(d)
+	if d.output == nil || d.output.raw != text {
+		m.setReviewText(d, text)
+	}
 }
 
 func tokenLabel(n uint64) string {

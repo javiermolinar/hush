@@ -7,7 +7,7 @@ import {
   type Cursor, type EntryId, type EntryRecord, type Harness, type InboxState, type LiveState, type Observer,
   type SubmissionId, type SubmissionRecord, type Tx, type UsageState,
 } from "@earendil-works/pi-durable";
-import { Cursors } from "./cursor.js";
+import { Cursors, SealedCursors } from "./cursor.js";
 import { environmentEntry, environmentInputKind, type ClientEnvironment } from "./client-environment.js";
 import { projectImageBytes, type ImageRef, type ImagesHost, type ImageSubmission } from "./images.js";
 import { planReviewKind } from "./plan-review.js";
@@ -100,7 +100,7 @@ function projectWindowEntry(entry: EntryRecord) {
   return projected;
 }
 
-function projectUsage(ledger: UsageState | undefined) {
+export function projectUsage(ledger: UsageState | undefined) {
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, costUsd: 0 };
   for (const bucket of [ledger?.models, ledger?.tools]) {
     for (const row of Object.values(bucket ?? {})) {
@@ -259,6 +259,7 @@ export async function checkPreparedModel(host: NativeHost["requireModel"], model
 
 export class DurableAdapter {
   readonly #cursors = new Cursors();
+  readonly #listCursors = new SealedCursors();
 
   constructor(private readonly harness: Harness, private readonly host?: NativeHost) {}
 
@@ -312,6 +313,8 @@ export class DurableAdapter {
 
   get supportsCatalogCreation() { return typeof this.host?.validateSelection === "function"; }
 
+  async requireVisibleThread(threadId: string, ctx: Context) { await this.#get(threadId, ctx); }
+
   async createCatalogThread(params: CatalogCreation, ctx: Context) {
     if (!this.host?.validateSelection) throw new WireError("unsupported_capability", "modelCatalog");
     await this.host.validateSelection(params.model, params.thinkingLevel);
@@ -329,7 +332,7 @@ export class DurableAdapter {
       case "thread.new": return { result: await this.#createThread(request.params, ctx) };
       case "thread.list": {
         const { limit, cursor } = request.params;
-        let next = cursor === undefined ? undefined : this.#cursors.decode<Cursor>("list", cursor);
+        let next = cursor === undefined ? undefined : this.#listCursors.decode<Cursor>("thread.list", cursor);
         const threads: ReturnType<typeof projectThread>[] = [];
         for (let i = 0; i < 64; i++) {
           const page = await this.harness.commit(tx => tx.scanConversations({ order: "ascending" }, limit - threads.length, next), ctx);
@@ -337,7 +340,9 @@ export class DurableAdapter {
           next = page.next;
           if (!next || threads.length === limit) break;
         }
-        return { result: { threads, nextCursor: next ? this.#cursors.encode("list", next) : null } };
+        // The scan can stop on a private row, even on an empty page. Keep
+        // that position for continuation without exposing the storage cursor.
+        return { result: { threads, nextCursor: next ? this.#listCursors.encode("thread.list", next) : null } };
       }
       case "submission.get": {
         const params = request.params;

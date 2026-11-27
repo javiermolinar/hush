@@ -15,6 +15,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createCoreServer, type NativeHost } from "../../server/src/index.js";
 import { WireError } from "../../server/src/wire.js";
 import { joinReviewsName, spawnReviewsName } from "../../server/src/delegation.js";
+import { subagentToolName } from "../../server/src/subagents.js";
 import { runAuthCommand } from "./auth.js";
 import { registerBundledOAuthFlows } from "./auth-providers.js";
 import { CredentialWrites, credentialAdvice, credentialConfigurationFailed, hushCredentialStore } from "./credentials.js";
@@ -36,6 +37,7 @@ import { planAuthor } from "./plan-author.js";
 import { ToolPolicy } from "./tool-policy.js";
 import { ReviewSnapshots } from "./review-snapshot.js";
 import { Delegation } from "./delegation.js";
+import { Subagents } from "./subagents.js";
 import { PlanDrafts } from "./plan-draft.js";
 import { planAcceptance, type PlanAcceptance } from "./plan-acceptance.js";
 import { PlanFiles } from "./plan-files.js";
@@ -232,8 +234,17 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const protect = (ext: Extension) => policy?.protect(ext) ?? ext;
     const reviewSnapshots = policy && trust && !fauxPlan && !modelIssue
       ? new ReviewSnapshots(() => h!, trust, cwd => resources.directory(cwd), protectedDirs) : undefined;
-    const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, coding,
-      ...(codemode ? [codemode.extension] : []), ...(config.faux ? [fauxTools] : []), ...(author ? [author] : [])].map(protect);
+    const codingTools = protect(coding);
+    const base = config.ephemeral ? [prompt] : [withWorkspaceChanges, codingTools];
+    if (!config.ephemeral) {
+      if (codemode) base.push(protect(codemode.extension));
+      if (config.faux) base.push(protect(fauxTools));
+      if (author) base.push(protect(author));
+    }
+    const subagents = policy && trust && !config.faux && !modelIssue
+      ? new Subagents(() => h!, trust, policy, withWorkspaceChanges, codingTools) : undefined;
+    // The tool calls ToolPolicy directly so it can carry the authorized pin.
+    if (subagents) base.push(subagents.extension);
     const planAdmission = planEnabled && !config.faux ? checkPlanAdmission : undefined;
     const schedules = config.dataDir ? new Scheduling(() => h!, config.scheduleLateMs, authorizeWork,
       planAdmission && (async (tx, id) => !!await foregroundPlan(tx, id))) : undefined;
@@ -341,7 +352,8 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     const harness = h = await Harness.open(store, {
       models: runtime, registry, settings, readOnly: !!modelIssue,
       env: async ({ cwd, conversationId, read }, ctx) => {
-        if (await policy?.hidesWorkspace(conversationId, read, ctx)) return undefined;
+        const assigned = await policy?.assignedEnvironment(conversationId, cwd, read, ctx);
+        if (assigned !== undefined) return assigned ? new LocalEnvironment(assigned.root, assigned.cwd) : undefined;
         // Scoped tools use the file helper, not the normal work environment.
         // A terminal reservation left by a fault must not restrict later chat.
         const run = planAdmission && (await read.snapshot(PlanForeground, conversationId, ctx))?.run;
@@ -384,7 +396,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     };
     if (!config.ephemeral) {
       const tools = base.flatMap(ext => ext.tools ?? [])
-        .filter(tool => tool.name !== spawnReviewsName && tool.name !== joinReviewsName &&
+        .filter(tool => tool.name !== spawnReviewsName && tool.name !== joinReviewsName && tool.name !== subagentToolName &&
           !tool.deferred && (tool.callers === undefined || tool.callers.includes("model")));
       intro = new IntroReports(harness, root, resources, runtime, startedAtMs, () => ({ ...defaultModel(), tools }),
         host.prepare!, host.requireModel, planAdmission);
@@ -415,7 +427,7 @@ export async function startBackend(config: BackendConfig): Promise<RunningBacken
     }) : undefined;
     server = createCoreServer(harness, { host, onConnections: check, readOnlyReason, capabilities: { intro, threadDirectory, images,
       schedules: modelIssue ? undefined : schedules, checkpoints: modelIssue ? undefined : checkpoints,
-      plan: plans, planChat: chatPlans && plans, planWorktree: plans?.worktrees, planDraft: planDrafts, planReview: planReviews, delegation,
+      plan: plans, planChat: chatPlans && plans, planWorktree: plans?.worktrees, planDraft: planDrafts, planReview: planReviews, delegation, subagents,
       gitDiff, workspaceFiles, workspaceSkills, loadedContext, hushProfile: 1, nativeStop: modelIssue ? undefined : 1,
       workspaceWorkTrust: trust ? 1 : undefined, settings: settingsHost, clientEnvironment: 1, modelCatalog, storeIdentity,
       runtime: { stop: () => { void close().catch(() => {}); } } } });

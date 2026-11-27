@@ -113,6 +113,7 @@ type Thread struct {
 	Status           ThreadStatus
 	Queued           int
 	Usage            sdk.Usage
+	SubagentUsage    sdk.Usage // portion of Usage spent by subagents, when available
 	ContextUse       ContextUse
 	ContextThreshold uint64
 	Forked           bool

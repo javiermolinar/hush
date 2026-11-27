@@ -13,6 +13,7 @@ import { parsePlanAt, parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, p
 import { parsePlanReview, planReviewVersion, type PlanReviewHost } from "./plan-review.js";
 import { delegationVersion, parseReviewKey, parseReviewLaunch, parseWorkerActivity, parseWorkerInspection, parseWorkerKey,
   reviewEvidenceVersion, workerActivityVersion, type DelegationHost } from "./delegation.js";
+import { parseSubagentOverview, parseSubagentQuery, subagentOverviewVersion, subagentsVersion, type SubagentsHost } from "./subagents.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
@@ -51,6 +52,7 @@ export type HostCapabilities = Readonly<{
   planDraft?: PlanDraftHost;
   planReview?: PlanReviewHost;
   delegation?: DelegationHost;
+  subagents?: SubagentsHost;
   settings?: SettingsHost;
   workspaceWorkTrust?: 1;
   schedules?: SchedulesHost;
@@ -219,6 +221,7 @@ class Peer {
   #delegation?: DelegationHost;
   #reviewEvidence = false;
   #workerActivity = false;
+  #subagents?: { host: SubagentsHost; version: number };
   #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
   #workspaceScopeWatch = false;
@@ -508,6 +511,7 @@ class Peer {
           }
           if (parts[2] !== "list") throw new WireError("unknown_method");
           const { threadId, query } = parseCatalogQuery(req.params, version);
+          if (threadId !== undefined) await this.adapter.requireVisibleThread(threadId, this.#context);
           const signal = this.#abort.signal;
           const result = threadId === undefined ? await host.draft!(query, signal) :
             query ? await host.search!(threadId, query, signal) : await host.list(threadId, signal);
@@ -624,6 +628,17 @@ class Peer {
           this.#write(encode(imageReply({ ...identity(req), ok: true, result })));
           return;
         }
+        if (parts[1] === "subagents" && this.#subagents) {
+          const { host, version } = this.#subagents;
+          if (parts[2] === "overview" && version === subagentOverviewVersion) {
+            const query = parseSubagentOverview(req.params);
+            this.#metadata(req, "subagents", () => host.overview(query, this.#abort.signal));
+          } else if (parts[2] === "wait") {
+            const query = parseSubagentQuery(req.params);
+            this.#metadata(req, "subagents", () => host.wait(query, this.#abort.signal));
+          } else throw new WireError("unknown_method");
+          return;
+        }
         if (parts[1] === "workerActivity" && this.#workerActivity) {
           const host = this.#delegation!, signal = this.#abort.signal;
           if (parts[2] === "wait") {
@@ -657,6 +672,13 @@ class Peer {
         if (this.#version) throw new WireError("already_negotiated");
         if (!req.params.versions.includes(1)) throw new WireError("unsupported_version");
         const capabilities: Record<string, number> = {};
+        const subagentOffer = req.params.capabilities?.subagents;
+        const subagentVersion = subagentOffer?.includes(subagentOverviewVersion) ? subagentOverviewVersion
+          : subagentOffer?.includes(subagentsVersion) ? subagentsVersion : undefined;
+        if (this.capabilities?.subagents && subagentVersion !== undefined) {
+          capabilities.subagents = subagentVersion;
+          this.#subagents = { host: this.capabilities.subagents, version: subagentVersion };
+        }
         if (this.capabilities?.delegation && req.params.capabilities?.delegation?.includes(delegationVersion)) {
           capabilities.delegation = delegationVersion;
           this.#delegation = this.capabilities.delegation;

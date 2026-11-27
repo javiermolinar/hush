@@ -48,6 +48,27 @@ export async function existingDirectory(path: string): Promise<string> {
   return canonical;
 }
 
+// A branch selects only an already registered checkout. Both the source and
+// target need their own valid directory grant; lookup never grants or creates.
+export async function existingWorktree(trust: WorkspaceTrust, cwd: string, branch: string, signal: AbortSignal) {
+  const ref = `refs/heads/${branch}`;
+  return trust.withGit(cwd, signal, async source => {
+    const listing = await workspaceGit(source.cwd.path, signal, "worktree", "list", "--porcelain", "-z");
+    if (!listing.endsWith("\0\0")) throw new WireError("invalid_request");
+    const matches = listing.slice(0, -2).split("\0\0").flatMap(row => {
+      const [path, ...fields] = row.split("\0");
+      return path?.startsWith("worktree ") && fields.includes(`branch ${ref}`) &&
+        !fields.some(f => f === "bare" || f === "prunable" || f.startsWith("prunable ")) ? [path.slice(9)] : [];
+    });
+    if (matches.length !== 1) throw new WireError("not_found");
+    return trust.withGit(matches[0]!, signal, async target => {
+      if (target.root.path !== target.cwd.path || directoryKey(source) !== directoryKey(target) ||
+          await workspaceGit(target.cwd.path, signal, "symbolic-ref", "HEAD") !== `${ref}\n`) throw new WireError("not_found");
+      return target.cwd.path;
+    });
+  });
+}
+
 // An explicit opt-in starts from committed HEAD, never from uncommitted files.
 // Worktrees live beside the private backend DB, not inside the main checkout.
 // Archive is metadata only. In particular, never delete a path on an unknown
