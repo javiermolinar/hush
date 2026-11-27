@@ -17,7 +17,11 @@ const workerKind = "hush.subagent";
 const maxStarts = 5, maxPrompt = 8192, logBytes = 16 * 1024;
 const childKey = (task: TaskId) => `subagent:${task}`;
 const settledKey = "settled";
-const modelHint = "Use subagent for a focused task or independent second opinion that would improve the answer. Give it a self-contained prompt. Set read_only for inspection and false for work that needs edits or shell tools. For independent read-only tasks, issue the calls together in one response so they can run in parallel. Writable workers run one at a time. The parent resumes after the results are ready. You can start at most five per user turn; handle quick checks yourself.";
+const modelHint = "Use subagent without waiting for the user to ask when delegating a focused task or getting an independent second opinion would improve the answer. " +
+  "For example, a review might benefit from separate passes on security and design, or from a second look at one risky change. Choose the scope and number of workers based on the task. " +
+  "Give it a self-contained prompt. Set read_only for inspection and false for work that needs edits or shell tools. " +
+  "For independent read-only tasks, issue the calls together in one response so they can run in parallel. Writable workers run one at a time. " +
+  "The parent resumes after the results are ready. You can start at most five per user turn; handle quick checks yourself.";
 
 type Input = { prompt: string; read_only: boolean; worktree?: string };
 type Intent = Input & { turn: SubmissionId; source: ExecutionWorkspace; workspace: ExecutionWorkspace;

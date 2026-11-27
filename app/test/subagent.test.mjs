@@ -76,6 +76,7 @@ async function until(peer, query, predicate, after) {
 test("an ordinary CLI prompt streams backend subagents and uses their results without launching a TUI", { timeout: 18_000 }, async t => {
   const prompt = "Ask a read-only subagent to inspect the retry behavior, then have another update the retry text in the fix/retry worktree and summarize both results.";
   const inspect = "Inspect retry.txt without touching it.", fix = "Update retry.txt in the selected checkout.";
+  const proactiveHint = /Use subagent without waiting for the user to ask/;
   const release = Promise.withResolvers(), beginText = Promise.withResolvers();
   t.after(() => { release.resolve(); beginText.resolve(); });
   const parentCalls = [];
@@ -83,7 +84,7 @@ test("an ordinary CLI prompt streams backend subagents and uses their results wi
     if (turn.text === inspect) {
       assert.deepEqual(turn.tools, ["read"]);
       assert.equal(turn.messages.filter(msg => msg.role === "user").length, 1);
-      assert.doesNotMatch(turn.prompt, /Use subagent for a focused task/);
+      assert.doesNotMatch(turn.prompt, proactiveHint);
       if (turn.results.length === 0) return [call("write", { path: "forbidden.txt", content: "This must not be written." })];
       if (turn.results.length === 1) {
         assert.match(turn.results[0].content, /not (offered|available)|unavailable/i);
@@ -110,7 +111,7 @@ test("an ordinary CLI prompt streams backend subagents and uses their results wi
     }
     assert.equal(turn.text, prompt);
     assert.ok(turn.tools.includes("subagent"));
-    assert.match(turn.prompt, /Use subagent for a focused task/);
+    assert.match(turn.prompt, proactiveHint);
     parentCalls.push(turn.results.length);
     switch (turn.results.length) {
       case 0: return [call("subagent", { prompt: inspect, read_only: true })];
