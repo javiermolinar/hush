@@ -48,7 +48,8 @@ func TestMenusGoldens(t *testing.T) {
 		}
 		return m.runAction(at, "")
 	}
-	threadPickerStep(t, m, act(switcherID))
+	_, readTurn := m.Update(act(switcherID)())
+	threadTurnStep(t, m, readTurn)
 	golden(t, "menu-switch", m)
 	press(m, tea.KeyEscape, 0)
 	m.finishWork(act(forkPickerID)().(workMsg))
@@ -262,10 +263,16 @@ func TestDirectorySheetShowsNamesAndDatesAndOpensOlderPage(t *testing.T) {
 		!strings.Contains(frame, "Workspace unknown") || !strings.Contains(frame, "Fix the date picker") || m.sheet.choices[0].ID != "17" {
 		t.Fatalf("wrong thread directory:\n%s", frame)
 	}
-	press(m, tea.KeyDown, 0)
-	if detail := ansi.Strip(assertFrame(t, m)); !strings.Contains(detail, strings.SplitN(previewPlain, " ", 2)[0]) {
-		t.Fatalf("missing the focused thread's preview:\n%s", detail)
+	threadTurnStep(t, m, press(m, tea.KeyDown, 0))
+	if detail := ansi.Strip(assertFrame(t, m)); !strings.Contains(detail, "Prompt: Open the fixture") || !strings.Contains(detail, "Reply:  Done") {
+		t.Fatalf("missing the focused thread's last turn:\n%s", detail)
 	}
+	// Hosts without search still filter against the cached local answer.
+	m.changeDialogQuery(m.sheet, "the docs")
+	if item, ok := m.sheet.choice(); !ok || item.ID != "1" {
+		t.Fatalf("local message filtering lost the cached answer: %+v", item)
+	}
+	m.changeDialogQuery(m.sheet, "")
 	press(m, tea.KeyEnd, 0)
 	next := m.acceptChoice(m.sheet)
 	threadPickerStep(t, m, next)

@@ -409,7 +409,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 	}
 	t := m.threads[m.active]
 	if chord == "esc" && !m.stopAt.IsZero() {
-		if time.Since(m.stopAt) <= 2*time.Second && (threadBusy(t) || canStopPlan(t)) {
+		if time.Since(m.stopAt) <= 2*time.Second && threadBusy(t) {
 			return m.stopKey() // an advertised confirmation takes priority over suggestions
 		}
 		m.stopAt = time.Time{}
@@ -527,7 +527,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 			m.slashHidden = true
 			return nil
 		}
-		if !canStopPlan(t) && !threadBusy(t) && m.canHintFork() && !t.sending && !t.aborting {
+		if !threadBusy(t) && m.canHintFork() && !t.sending && !t.aborting {
 			now := time.Now()
 			if !m.escapeAt.IsZero() && now.Sub(m.escapeAt) <= 450*time.Millisecond {
 				m.escapeAt = time.Time{}
@@ -807,13 +807,8 @@ func (m *Model) sendPrompt(mode sdk.BusyMode) tea.Cmd {
 	if strings.TrimSpace(text) == "" && len(t.attachments) == 0 {
 		return nil
 	}
-	if t.sending || t.aborting || t.planDraft.saving {
+	if t.sending || t.aborting {
 		return m.notifyRoute(r, "Wait for the pending request", extension.Warning)
-	}
-	if len(t.attachments) == 0 {
-		if cmd, handled := m.confirmPlanPreview(r, t, text); handled {
-			return cmd
-		}
 	}
 	if mode == sdk.Steer && !threadBusy(t) {
 		mode = sdk.RejectBusy
@@ -994,7 +989,7 @@ type stopResult struct {
 
 func (m *Model) stopKey() tea.Cmd {
 	t := m.threads[m.active]
-	if (!threadBusy(t) && !canStopPlan(t)) || t.aborting || t.sending {
+	if !threadBusy(t) || t.aborting || t.sending {
 		m.stopAt = time.Time{}
 		return nil
 	}

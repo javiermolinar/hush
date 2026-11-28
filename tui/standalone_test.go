@@ -329,7 +329,7 @@ func TestStandaloneTUIPrompt(t *testing.T) {
 			}
 		}
 		slices.Sort(declared)
-		if !slices.Equal(declared, []string{"bash", "edit", "read", "subagent", "thread_start", "write"}) {
+		if !slices.Equal(declared, []string{"bash", "edit", "plan_read", "plan_save", "read", "subagent", "thread_start", "write"}) {
 			t.Fatalf("unexpected tool declarations: %v", declared)
 		}
 	}
@@ -1250,10 +1250,16 @@ func TestStandaloneTUIWorkspaceReturnAndFork(t *testing.T) {
 		t.Fatalf("v1 unexpectedly allowed a search: %v", err)
 	}
 	remote := open(back, "", false)
+	remote.Update(tea.WindowSizeMsg{Width: 100, Height: 26})
 	threadPickerStep(t, remote, remote.runAction(remote.host.byID[switcherID], ""))
 	threadPickerStep(t, remote, remote.changeDialogQuery(remote.sheet, "OUTSIDE"))
 	if _, ok := choice(remote, string(outsideID)); !ok || !strings.Contains(remote.sheet.title, "all workspaces") ||
 		remote.sheet.threadPicker.rows[remote.sheet.filtered[remote.sheet.selected]].workspaceName != "outside" {
 		t.Fatal("remote attach without local opt-in should search named workspaces without a launch path")
+	}
+	threadTurnStep(t, remote, remote.syncThreadTurn())
+	if frame := ansi.Strip(assertFrame(t, remote)); !strings.Contains(frame, "Prompt: !workspace-read") ||
+		!strings.Contains(frame, "Reply:  "+paths[outside]) || remote.active != "" || remote.threads[outsideID] != nil {
+		t.Fatalf("picker did not read the committed turn without opening the thread:\n%s", frame)
 	}
 }

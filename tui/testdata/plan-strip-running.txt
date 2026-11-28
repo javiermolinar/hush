@@ -17,8 +17,8 @@
     func main() { println(42) }
   ────────────────────────────────────────
   Plan run · r3 · Tooling and delegation · 3 steps
-  ▸ plan r3  ✓●●○○○○○○○○○○○  1/14  Prove the Durable spawn and join contract +1                             ↑ peek
-  ◌ Waiting for model · 8s ───────────────────────────────────────────────────────── esc stop  ± 4 files  +82 −18*
+  ▸ plan r3  ✓●⏸  1/3  Run in progress                                  ↑ peek
+  ◌ Waiting for model · 8s ────────────────────────────────────────── esc stop
   steer ›
-  Workspace src
-  › ◐ src
+  Workspace workspace
+  › ◐ workspace

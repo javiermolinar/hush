@@ -293,3 +293,80 @@ func TestGitDiffGoldens(t *testing.T) {
 	}
 	golden(t, "git-diff-file-bottom", m)
 }
+
+type gitDiffLaunchFixture struct {
+	gitDiffFixtureBackend
+	cwds *[]string
+}
+
+func (f gitDiffLaunchFixture) GitDiffSummaryAt(_ context.Context, cwd string) (sdk.GitDiffSummary, error) {
+	*f.cwds = append(*f.cwds, cwd)
+	summary := diffFixtureSummary(sdk.GitDiffHead)
+	summary.Checkpoint = false
+	return summary, nil
+}
+func (f gitDiffLaunchFixture) GitDiffFileAt(_ context.Context, cwd, _ string, i int) (sdk.GitDiffPatch, error) {
+	*f.cwds = append(*f.cwds, cwd)
+	return diffFixturePatch(i), nil
+}
+func (gitDiffLaunchFixture) WatchGitDiffAt(context.Context, string) <-chan sdk.GitDiffUpdate {
+	return nil
+}
+
+func TestGitDiffBeforeFirstThread(t *testing.T) {
+	for _, launch := range []bool{false, true} {
+		t.Run(fmt.Sprint(launch), func(t *testing.T) {
+			var cwds []string
+			m := modelFor(t, Options{ReducedMotion: true, Fills: FillOff, WorkspaceLocal: true})
+			m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+			m.backend = gitDiffLaunchFixture{cwds: &cwds}
+			m.menuFeaturesFromBackend |= x.GitDiff
+			m.gitDiffLaunchReady = launch
+			cmd := m.syncGitDiff()
+			if !launch {
+				if cmd != nil || m.gitDiffFeed.token != 0 {
+					t.Fatal("gitDiff:1 has no launch-directory target")
+				}
+				if strings.Contains(ansi.Strip(assertFrame(t, m)), "±") {
+					t.Fatal("badge shown without a Git target")
+				}
+				return
+			}
+			if cmd == nil {
+				t.Fatal("no launch-directory scan")
+			}
+			m.Update(cmd())
+			frame := ansi.Strip(assertFrame(t, m))
+			if !strings.Contains(frame, m.threads[""].gitDiff.badge) || m.threads[""].gitDiff.badge == "" {
+				t.Fatalf("missing startup Git badge:\n%s", frame)
+			}
+			d := &dialog{}
+			open := m.openGitDiff(m.route("", menusID))
+			for _, o := range m.overlays {
+				if o.git != nil {
+					d = o
+				}
+			}
+			if d.git == nil || len(d.git.list.Files) == 0 {
+				t.Fatal("startup Git review did not open with the badge's summary")
+			}
+			if open != nil {
+				m.Update(open())
+			}
+			if got := m.gitReviewCWD(d); got != "/workspace" {
+				t.Fatalf("review scope %q", got)
+			}
+			m.Update(m.fetchGitPatch(d)())
+			if d.git.view == nil {
+				t.Fatalf("no patch: %v", d.git.err)
+			}
+			if !slices.Equal(cwds, []string{"/workspace", "/workspace"}) {
+				t.Fatalf("launch reads %q", cwds)
+			}
+			s := m.prepareDraftThread("7", sdk.Model{}, "")
+			if s.gitDiff.badge != m.threads[""].gitDiff.badge {
+				t.Fatal("the first thread lost the startup badge")
+			}
+		})
+	}
+}

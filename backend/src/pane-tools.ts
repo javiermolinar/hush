@@ -4,33 +4,21 @@ import type { PaneDirectory, PaneReply, PaneRequest } from "../../server/src/pan
 import { durableID } from "../../server/src/wire.js";
 import { paneToolParameters, type PaneToolName } from "./pane-contract.js";
 import type { PaneRouting } from "./pane-routing.js";
-import type { Delegation } from "./delegation.js";
 import type { ToolPolicy } from "./tool-policy.js";
 
 const reply = (value: PaneReply & { reason?: string }) => ({
   output: [{ type: "text" as const, text: JSON.stringify(value) }], isError: value.outcome !== "confirmed",
 });
 
-export function paneTools(routing: PaneRouting, policy: ToolPolicy, reviews: () => Delegation | undefined) {
+export function paneTools(routing: PaneRouting, policy: ToolPolicy) {
   // Registry schemas describe the superset. The request hook trims these to
   // the live route; dispatch independently rejects unsupported operations.
-  const schema = paneToolParameters({ left: true, above: true, tabs: true, read: true, views: true, threadTabs: true }, true);
+  const schema = paneToolParameters({ left: true, above: true, tabs: true, read: true, views: true, threadTabs: true });
   const execute = async (name: PaneToolName, api: ToolExecutionApi, ctx: Context, request: (cwd: PaneDirectory) => PaneRequest) => {
     const workspace = await policy.paneWorkspace(name, api, ctx);
     if (!workspace) return reply({ outcome: "rejected", reason: "The turn tool policy or workspace trust does not allow pane control." });
     const { root: dir, device, inode, birth } = workspace;
     const call = request({ dir, directory: { device, inode, birth } });
-    if (call.op === "open" && call.launch.mode === "review") {
-      const { threadId, handle } = call.launch;
-      try {
-        const service = reviews();
-        if (!service) return reply({ outcome: "rejected" });
-        await service.requireTranscript({ threadId, handle }, ctx);
-      } catch {
-        ctx.abortSignal?.throwIfAborted();
-        return reply({ outcome: "rejected", reason: "No readable review transcript with that handle in this thread." });
-      }
-    }
     return reply(await routing.dispatch(call, api, ctx, tx => policy.confirmDefaultWorkspace(tx, api, workspace, ctx)));
   };
   const common = { callers: ["model"], replay: "unsafe", executionMode: "sequential", outputLimits: { maxBytes: 40 * 1024, maxLines: 200 } } as const;
@@ -56,14 +44,13 @@ export function paneTools(routing: PaneRouting, policy: ToolPolicy, reviews: () 
           directory: { device: workspace.device, inode: workspace.inode, birth: workspace.birth } } : { op: "thread_open", threadId, where: "tab" };
         return reply(await routing.dispatch(call, api, ctx, async tx => {
           const current = await read(tx);
-          return !!current && (!workspace || current.cwd === before.cwd && await policy.confirmWorkspace(tx, target, workspace, ctx)) &&
+          return !!current && (!workspace || current.cwd === before.cwd && await policy.confirmWorkspace(workspace, ctx)) &&
             await policy.confirmDefaultWorkspace(tx, api, source, ctx);
         }));
       } }),
     defineTool({ ...common, name: "pane_open", parameters: schema.pane_open!,
       description: "Open a pane when the latest user message asks for one. Use a supported placement beside the submitting terminal. Use only launch modes in the schema. Confirmed means the pane was created, not that its content is ready or a command succeeded. Do not retry an unknown outcome.",
-      execute: ({ placement, launch }, api, ctx) => execute("pane_open", api, ctx, cwd => ({ op: "open", placement,
-        launch: launch.mode === "review" ? { ...launch, threadId: String(api.conversationId) } : launch, ...cwd })) }),
+      execute: ({ placement, launch }, api, ctx) => execute("pane_open", api, ctx, cwd => ({ op: "open", placement, launch, ...cwd })) }),
     defineTool({ ...common, name: "pane_list", parameters: schema.pane_list!,
       description: "List opaque terminal handles in the submitting terminal's session or workspace. A listed handle does not grant read access.",
       execute: (_args, api, ctx) => execute("pane_list", api, ctx, () => ({ op: "list" })) }),

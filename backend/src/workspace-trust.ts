@@ -50,7 +50,7 @@ export function workspaceGitIndex(cwd: string, signal: AbortSignal, checkoutConf
 
 // Use identical Git discovery/config inputs for the trust probe and checkout.
 // Don't inherit environment-based repository, config, or discovery overrides.
-async function runWorkspaceGit(cwd: string, signal: AbortSignal, args: string[], maxBuffer: number, ignoreProbe?: string) {
+function spawnWorkspaceGit(cwd: string, signal: AbortSignal, args: readonly string[], maxBuffer: number) {
   signal.throwIfAborted();
   // A relative or empty search component would let the requested cwd select
   // which executable is used for the pre-consent probes.
@@ -58,12 +58,35 @@ async function runWorkspaceGit(cwd: string, signal: AbortSignal, args: string[],
   if (!path) throw failure("gitUnavailable");
   const opts = ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "submodule.recurse=false",
     "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "protocol.allow=never"];
+  return run("git", [...opts, ...args], {
+    cwd, signal, timeout: 25_000, maxBuffer, encoding: "buffer",
+    env: { PATH: path, HOME: process.env.HOME ?? "", LC_ALL: "C",
+      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
+  });
+}
+
+// A delegate's read-only command. The caller validates every argument. Git's
+// own diagnostic is returned, since a failed revision or path is the model's
+// to fix; output past the budget is cut rather than failing the command.
+export async function workspaceGitOutput(cwd: string, signal: AbortSignal, args: readonly string[], maxBuffer: number) {
+  const child = spawnWorkspaceGit(cwd, signal, args, maxBuffer);
   try {
-    const child = run("git", [...opts, ...args], {
-      cwd, signal, timeout: 25_000, maxBuffer, encoding: "buffer",
-      env: { PATH: path, HOME: process.env.HOME ?? "", LC_ALL: "C",
-        GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
-    });
+    const { stdout } = await child;
+    return { ok: true, text: stdout, truncated: false } as const;
+  } catch (error) {
+    signal.throwIfAborted();
+    const { code, stdout, stderr, killed } = error as { code?: number | string | null; stdout?: Buffer; stderr?: Buffer; killed?: boolean };
+    if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return { ok: true, text: stdout ?? Buffer.alloc(0), truncated: true } as const;
+    if (killed) return { ok: false, text: Buffer.from("Git did not finish within 25 seconds."), truncated: false } as const;
+    if (typeof code === "number") return { ok: false, text: stderr ?? Buffer.alloc(0), truncated: false } as const;
+    if (code === "ENOENT" || code === "EACCES" || code === "ENOEXEC") throw failure("gitUnavailable");
+    throw failure("workspace");
+  }
+}
+
+async function runWorkspaceGit(cwd: string, signal: AbortSignal, args: string[], maxBuffer: number, ignoreProbe?: string) {
+  const child = spawnWorkspaceGit(cwd, signal, args, maxBuffer);
+  try {
     if (ignoreProbe !== undefined) {
       child.child.stdin?.on("error", () => {});
       child.child.stdin?.end(ignoreProbe);
@@ -318,6 +341,11 @@ export class WorkspaceTrust {
     if (action === "dismiss") this.#access(identity, "dismissed", signal, true);
     else this.#access(identity, "work", signal, action === "grant");
     return this.#status(identity, signal);
+  }
+
+  // Grant exactly this directory. A path now naming another directory fails.
+  grantIdentity(expected: DirectoryIdentity, signal: AbortSignal) {
+    return this.change(expected.path, "grant", signal, key(record("work", expected)));
   }
 
   async require(workspace: string, signal?: AbortSignal) {

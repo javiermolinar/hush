@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+  Workspace profiles · r7 ─────────────────────────────────────────── 0/4 done
+  › □ ○ Save a profile     Pending       │ Save a profile
+    □ ○ Restore saved pr…  Pending       │ Store a profile under a stable
+    □ ⏸ Document discove…  Blocked       │ name.
+    □ ○ Review the profi…  Pending       │ Check that the profile has the
+                                         │ expected name.
+                                         │
+
+  ↵ Run 1 here @ r7  Save a profile
+  space select  ↵ run here  w new worktree  tab details  ↑↓ move  esc back
+
+  ○ idle ─────────────────────────────────────────────────────────────────────
+  you ›
+  Workspace workspace
+  › ○ workspace

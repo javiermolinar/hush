@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -82,7 +82,7 @@ test("an ordinary CLI prompt streams backend subagents and uses their results wi
   const parentCalls = [];
   const f = await fixture(t, async turn => {
     if (turn.text === inspect) {
-      assert.deepEqual(turn.tools, ["read"]);
+      assert.deepEqual(turn.tools, ["read"], "the thread's grant is for a subdirectory, so no Git");
       assert.equal(turn.messages.filter(msg => msg.role === "user").length, 1);
       assert.doesNotMatch(turn.prompt, proactiveHint);
       if (turn.results.length === 0) return [call("write", { path: "forbidden.txt", content: "This must not be written." })];
@@ -187,6 +187,108 @@ test("an ordinary CLI prompt streams backend subagents and uses their results wi
   const parent = ok(await again.send("subscribe", { threadId: f.thread.id })).state;
   assert.equal(parent.usage.totalTokens, 480, "core usage remains parent-only");
   assert.deepEqual(parentCalls, [0, 1, 2, 3], "reading the same receipt did not replay work");
+});
+
+test("a default subagent is read-only, starts in pwd, and reads Git without running programs", { timeout: 18_000 }, async t => {
+  const prompt = "Have subagents review the package changes.", brief = "Review the package changes.", nested = "Read the subdirectory.";
+  const starts = [];
+  let marker, filtered;
+  const gitConfig = (...args) => execFileSync("git", ["config", ...args], { cwd: f.repo, stdio: "pipe" });
+  const f = await fixture(t, async turn => {
+    if (turn.text === nested) {
+      // History and objects aren't limited to a subdirectory grant.
+      assert.deepEqual(turn.tools, ["read"], "a subdirectory grant gets no Git tool");
+      return "No Git here.";
+    }
+    if (turn.text === brief) {
+      assert.deepEqual(turn.tools.toSorted(), ["git", "read"]);
+      const n = turn.results.length;
+      if (n === 0) return [call("git", { command: "status", args: ["--short", "--untracked-files=all", "--", "."] })];
+      if (n === 1) {
+        assert.match(turn.results[0].content, /\?\? pkg\/new\.txt/, "status paths are scoped to pwd");
+        assert.doesNotMatch(turn.results[0].content, /retry\.txt/);
+        return [call("git", { command: "diff", args: ["--", "../retry.txt"] })];
+      }
+      if (n === 2) {
+        assert.match(turn.results[1].content, /^-original\n\+existing uncommitted work$/m);
+        return [call("git", { command: "log", args: ["--oneline", "-n", "1"] })];
+      }
+      if (n === 3) {
+        assert.match(turn.results[2].content, /^[0-9a-f]+ base$/m);
+        // Status compares a modified file through its clean filter.
+        await writeFile(join(f.target, ".gitattributes"), "*.txt filter=evil\n");
+        gitConfig("filter.evil.clean", `touch ${filtered}; cat`);
+        return [call("git", { command: "status", args: ["--short"] })];
+      }
+      if (n === 4) {
+        assert.match(turn.results[3].content, /unavailable in repositories with Git filters/);
+        gitConfig("--unset", "filter.evil.clean");
+        return [call("git", { command: "diff", args: ["--output=leak.txt"] }), call("bash", { command: "touch leak.txt" })];
+      }
+      if (n === 6) {
+        assert.match(turn.results[4].content, /does not allow --output/);
+        assert.match(turn.results[5].content, /not (offered|available)|unavailable/i);
+        return [call("read", { path: "new.txt" })];
+      }
+      assert.match(turn.results[6].content, /untracked package file/, "read resolves paths from pwd");
+      return "The package adds new.txt; retry.txt has uncommitted work.";
+    }
+    assert.equal(turn.text, prompt);
+    assert.ok(!turn.tools.includes("git"), "the parent never gets the delegate Git tool");
+    if (!turn.results.length) return [
+      call("subagent", { prompt: "Escape the checkout.", pwd: "../.." }),
+      call("subagent", { prompt: "Use a missing directory.", pwd: "missing" }),
+      call("subagent", { prompt: "Think harder.", thinking: "high" }),
+      call("subagent", { prompt: "Follow a link out of the checkout.", pwd: "link" }),
+      call("subagent", { prompt: nested }),
+      call("subagent", { prompt: brief, worktree: "fix/retry", pwd: join(f.target, "pkg"), thinking: "off" }),
+    ];
+    starts.push(...turn.results.map(r => r.content));
+    return "Reviewed.";
+  });
+  await mkdir(join(f.target, "pkg"));
+  await writeFile(join(f.target, "pkg", "new.txt"), "untracked package file\n");
+  await symlink(f.target, join(f.cwd, "link"));
+  marker = join(f.repo, "ran"), filtered = join(f.repo, "ran-filter");
+  gitConfig("diff.external", `touch ${marker}`);
+  const q = await f.submit("pwd-git", prompt), peer = await f.connect();
+  const done = await until(peer, q, s => s.settled);
+  assert.match(starts[0], /pwd must be an existing directory inside/);
+  assert.match(starts[1], /pwd must be an existing directory inside/);
+  assert.match(starts[2], /Thinking level high is not available/);
+  assert.match(starts[3], /pwd must be an existing directory inside/, "a link to another trusted checkout is not a subdirectory");
+  assert.equal(starts[4], "No Git here.");
+  assert.equal(starts[5], "The package adds new.txt; retry.txt has uncommitted work.");
+  assert.deepEqual(done.events.filter(e => e.type === "started").map(({ cwd, read_only }) => ({ cwd, read_only })),
+    [{ cwd: f.cwd, read_only: true }, { cwd: join(f.target, "pkg"), read_only: true }], "rejected requests don't start or count as workers");
+  await assert.rejects(readFile(join(f.target, "pkg", "leak.txt")), { code: "ENOENT" });
+  await assert.rejects(readFile(join(f.target, "leak.txt")), { code: "ENOENT" });
+  await assert.rejects(readFile(marker), { code: "ENOENT" }, "the repository's external diff never ran");
+  await assert.rejects(readFile(filtered), { code: "ENOENT" }, "the repository's clean filter never ran");
+});
+
+test("a writable subagent with pwd runs its shell and writes in that directory", { timeout: 15_000 }, async t => {
+  const prompt = "Have a writer add a note to the package.", brief = "Add the package note.";
+  const f = await fixture(t, async turn => {
+    if (turn.text === brief) {
+      assert.deepEqual(turn.tools.toSorted(), ["bash", "edit", "read", "write"]);
+      if (!turn.results.length) return [call("bash", { command: "pwd" })];
+      if (turn.results.length === 1) {
+        assert.equal(turn.results[0].content.trim(), join(f.cwd, "pkg"));
+        return [call("write", { path: "note.txt", content: "written from pwd\n" })];
+      }
+      return "Wrote the note.";
+    }
+    assert.equal(turn.text, prompt);
+    if (!turn.results.length) return [call("subagent", { prompt: brief, read_only: false, pwd: "pkg/" })];
+    assert.equal(turn.results[0].content, "Wrote the note.");
+    return "Done.";
+  });
+  await mkdir(join(f.cwd, "pkg"));
+  const done = await until(await f.connect(), await f.submit("pwd-write", prompt), s => s.settled);
+  assert.deepEqual(done.events.find(e => e.type === "started"), { type: "started", workerId: done.events[0].workerId,
+    cwd: join(f.cwd, "pkg"), read_only: false });
+  assert.equal(await readFile(join(f.cwd, "pkg", "note.txt"), "utf8"), "written from pwd\n");
 });
 
 test("the sixth call can't start a worker, and aborting stops running and queued workers", { timeout: 18_000 }, async t => {

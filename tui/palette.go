@@ -134,7 +134,7 @@ func (m *Model) shellPaletteItems(t *threadState) []paletteItem {
 		len(m.slashMatches()) > 0 || m.slashCompleter() != nil {
 		add(palettePrompt, "complete", "Complete current command or file", shellKeys.complete.Help().Key)
 	}
-	if (threadBusy(t) || canStopPlan(t)) && !t.sending && !t.aborting {
+	if threadBusy(t) && !t.sending && !t.aborting {
 		add(paletteThread, "stop", "Stop run (confirm with Esc)", shellKeys.escape.Help().Key, shellKeys.escape.Help().Key)
 	}
 	return items

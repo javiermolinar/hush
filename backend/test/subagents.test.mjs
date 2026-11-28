@@ -46,7 +46,7 @@ for (const [name, change, failure] of [
   await grant(repo);
   await grant(target);
 
-  const policy = new ToolPolicy(() => h, trust, cwd => cwd ?? repo, [agentDir], false);
+  const policy = new ToolPolicy(() => h, trust, cwd => cwd ?? repo, [agentDir]);
   const promptExtension = { name: "fixture-subagent-prompt" }, coding = { name: "fixture-subagent-tools" };
   const service = new Subagents(() => h, trust, policy, promptExtension, coding);
   const { definition } = service.extension.tasks[0];

@@ -11,8 +11,7 @@ export function makeFaux(ephemeral: boolean) {
     faux.appendResponses([reply]);
     const last = messages.findLast(message => message.role !== "system");
     if (last?.role === "toolResult") {
-      if (last.toolName === "codemode" ||
-          last.toolName === "hush_plan_propose" || last.toolName === "hush_fixture_plan_check" ||
+      if (last.toolName === "codemode" || last.toolName === "plan_save" ||
           last.toolName === "hush_fixture_fast" || last.toolCallId === "workspace-read") {
         return fauxAssistantMessage(last.content.filter(b => b.type === "text").map(b => b.text).join("\n"));
       }
@@ -20,25 +19,15 @@ export function makeFaux(ephemeral: boolean) {
     }
     const text = last?.role !== "user" ? "" : typeof last.content === "string" ? last.content
       : last.content.flatMap(block => block.type === "text" ? [block.text] : []).join("");
-    if (text.startsWith("!plan-fixture-work\n") && getCurrentTools(messages).some(t => t.name === "hush_fixture_plan_check")) {
-      const step = JSON.parse(text.slice("!plan-fixture-work\n".length)) as { id: string };
-      return step.id === "report-only" ? fauxAssistantMessage("All checks passed.") : fauxAssistantMessage(
-        fauxToolCall("hush_fixture_plan_check", {}, { id: "plan-proof" }), { stopReason: "toolUse" });
-    }
-    if ((text === "!plan-fixture" || text === "!plan-fixture-revise") && getCurrentTools(messages).some(t => t.name === "hush_plan_propose")) {
-      const revise = text.endsWith("-revise");
-      return fauxAssistantMessage(fauxToolCall("hush_plan_propose", {
-        baseRevision: revise ? 1 : 0, title: revise ? "Workspace profiles revised" : "Workspace profiles", steps: [
-          { id: "save", title: "Save a profile", description: "Store a profile under a stable name.",
-            checks: ["Saved profile has the expected name"], thinking: "high" },
-          { id: "restore", title: "Restore saved profiles", description: "Read the saved profile and restore its settings.",
-            checks: ["Saved settings round-trip"], requires: ["save"], thinking: "low" },
-          { id: "docs", title: "Document profile discovery", description: "Describe where profiles are read from.",
-            checks: ["Discovery path is documented"], blocker: "Profile path undecided" },
-          { id: "report-only", title: "Verify the report", description: "Verify a report with observed evidence.",
-            checks: ["Check produced evidence"], after: "restore" },
-        ],
-      }, { id: "plan-draft" }), { stopReason: "toolUse" });
+    if (text === "!plan-fixture" && getCurrentTools(messages).some(t => t.name === "plan_save")) {
+      return fauxAssistantMessage(fauxToolCall("plan_save", { baseRevision: 0, title: "Workspace profiles", steps: [
+        { id: "save", title: "Save a profile", prompt: "Store a profile under a stable name. Check that the saved profile has the expected name." },
+        { id: "restore", title: "Restore saved profiles", prompt: "Read the saved profile and restore its settings. Check that they round-trip.",
+          requires: ["save"] },
+        { id: "docs", title: "Document profile discovery", prompt: "Describe where profiles are read from." },
+        { id: "review", title: "Review the profile code", prompt: "Review the save and restore code for data loss.",
+          requires: ["restore"], delegate: { read_only: true } },
+      ] }, { id: "plan-draft" }), { stopReason: "toolUse" });
     }
     if (text === "!error") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "synthetic failure" });
     if (text === "!aborted") return fauxAssistantMessage("", { stopReason: "aborted", errorMessage: "synthetic abort" });

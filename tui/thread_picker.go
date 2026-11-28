@@ -20,12 +20,14 @@ type threadPicker struct {
 	cursor                  string
 	rows                    []threadPickerRow // aligned with the dialog choices
 	creation                *workspaceThreadCreation
+	turn                    threadTurnPreview
 }
 
 type threadPickerRow struct {
 	workspaceID, workspaceName string
 	status                     x.ThreadStatus
 	title                      string // display title; the choice label is kept for legacy filtering
+	searchPreview              string // last cached answer for client-side filtering on older hosts
 	current                    bool
 	destination                *workspaceThreadTarget
 	directory                  string // a choice in the directory picker
@@ -49,6 +51,7 @@ func (p *threadPicker) stop() {
 		p.cancel()
 		p.cancel = nil
 	}
+	p.turn.reset()
 }
 
 func (m *Model) openThreadPicker(r ownerRoute, all bool, budget *int) tea.Cmd {
@@ -238,7 +241,7 @@ func (p *threadPicker) setPage(d *dialog, active sdk.ID, r x.ClientResult, direc
 			row := g.row
 			row.status, row.current = t.Status, t.ID == active
 			label := threadTitle(t)
-			row.title = threadDisplayTitle(t)
+			row.title, row.searchPreview = threadDisplayTitle(t), t.Preview
 			if t.Forked {
 				label = "⑂ " + label
 				row.title = "⑂ " + row.title
@@ -294,9 +297,6 @@ func threadChoiceDetail(t x.Thread, directory bool) string {
 	}
 	if directory && t.Branch != "" {
 		parts = append(parts, "⎇ "+t.Branch)
-	}
-	if t.Preview != "" {
-		parts = append(parts, t.Preview)
 	}
 	return strings.Join(parts, " · ")
 }

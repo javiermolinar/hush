@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { diffRevisions } from "@earendil-works/chord/delta";
 import type { Harness } from "@earendil-works/pi-durable";
-import { DurableAdapter, nativeStopVersion, parseStop, projectView, requestError, visibleEntry, type NativeHost, type StructuralView } from "./durable.js";
+import { DurableAdapter, nativeStopVersion, parseStop, projectView, requestError, type NativeHost, type StructuralView } from "./durable.js";
 export type { NativeHost } from "./durable.js";
 import { clientEnvironment, clientEnvironmentVersion, type ClientEnvironment } from "./client-environment.js";
 import { paneControlVersion, paneFileIdentity, paneLaunchInput, parsePaneCapabilities, threadViewVersion,
@@ -11,17 +11,14 @@ import { paneControlVersion, paneFileIdentity, paneLaunchInput, parsePaneCapabil
 import { checkCatalog, modelCatalogDraftVersion, modelCatalogSearchVersion, modelCatalogVersion,
   parseCatalogCreation, parseCatalogQuery, type ModelCatalogHost, type ModelCatalogVersion } from "./model-catalog.js";
 import { storeIdentityVersion, validStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { parsePlanAt, parsePlanAttach, parsePlanClosure, parsePlanDraftTarget, parsePlanHistory, parsePlanRun, parsePlanWait, parsePlanWorkspace, parsePlanWorktreeSource, parsePlanWorktreeStart,
-  planWorktreeVersion, type PlanWorktreeHost, planVersion, planCatalogVersion, planChatVersion, planChatActivityVersion, planDraftVersion, planWorkspaceVersion, type PlanChatHost, type PlanDraftHost, type PlanHost } from "./plan.js";
-import { parsePlanReview, planReviewVersion, type PlanReviewHost } from "./plan-review.js";
-import { delegationVersion, parseReviewKey, parseReviewLaunch, parseWorkerActivity, parseWorkerInspection, parseWorkerKey,
-  reviewEvidenceVersion, workerActivityVersion, type DelegationHost } from "./delegation.js";
+import { parsePlanActivity, parsePlanClosure, parsePlanGet, parsePlanHistory, parsePlanList, parsePlanRun, parsePlanWorktree, planVersion,
+  type PlanHost } from "./plan.js";
 import { parseSubagentOverview, parseSubagentQuery, subagentOverviewVersion, subagentsVersion, type SubagentsHost } from "./subagents.js";
 import { runtimeVersion, type RuntimeHost } from "./runtime.js";
 import { checkSettings, parseSettingsChange, settingsVersion, type SettingsHost } from "./settings.js";
 import { parseSchedule, schedulesVersion, type SchedulesHost } from "./scheduling.js";
 import { checkpointsVersion, parseCheckpoint, type CheckpointsHost } from "./checkpoints.js";
-import { gitDiffVersion, gitDiffWatchVersion, parseGitDiff, parseGitDiffWatch, type GitDiffHost } from "./git-diff.js";
+import { gitDiffLaunchVersion, gitDiffVersion, gitDiffWatchVersion, parseGitDiff, parseGitDiffWatch, type GitDiffHost } from "./git-diff.js";
 import { parseLoadedContext, loadedContextAgentsVersion, loadedContextVersion, type LoadedContextHost, type LoadedContextVersion } from "./loaded-context.js";
 import { parseWorkspaceFiles, parseWorkspaceFileSearch, parseWorkspaceScopeWatch, workspaceFilesVersion, workspaceFileSearchVersion,
   workspaceFileProjectPathsVersion, workspaceScopeWatchVersion, type WorkspaceFilesHost } from "./workspace-files.js";
@@ -51,11 +48,6 @@ export type HostCapabilities = Readonly<{
   runtime?: RuntimeHost;
   paneControl?: PaneRoutes;
   plan?: PlanHost;
-  planChat?: PlanChatHost;
-  planWorktree?: PlanWorktreeHost;
-  planDraft?: PlanDraftHost;
-  planReview?: PlanReviewHost;
-  delegation?: DelegationHost;
   subagents?: SubagentsHost;
   settings?: SettingsHost;
   workspaceWorkTrust?: 1;
@@ -101,27 +93,8 @@ class Feed {
     this.identity = { epoch, subscriptionId: randomUUID() };
   }
 
-  async attach(adapter: DurableAdapter, params: Params["subscribe"], ctx: Context, delegation: boolean) {
-    const min = params.window?.min ?? 50;
-    let older: { before: NonNullable<StructuralView["before"]>; limit: number; entries: StructuralView["entries"] } | undefined;
-    let rawEntries: StructuralView["entries"] | undefined, visible: StructuralView["entries"];
-    this.#project = view => {
-      if (rawEntries !== view.entries) {
-        rawEntries = view.entries;
-        visible = view.entries.filter(entry => visibleEntry(entry, view.conversation.id, delegation));
-      }
-      const entries = visible;
-      if (!adapter.filtersWorkerNotices && entries.length === view.entries.length) return projectView(view);
-      if (view.before === undefined) return projectView({ ...view, entries });
-      const before = view.before, limit = Math.max(0, min - entries.length) + 1;
-      const assemble = (previous: StructuralView["entries"]) => projectView({ ...view,
-        before: previous[limit - 1]?.id, entries: [...previous.slice(0, limit - 1).reverse(), ...entries] });
-      if (older?.before === before && older.limit >= limit) return assemble(older.entries);
-      return adapter.windowPredecessors(view.conversation.id, before, limit, delegation, ctx).then(previous => {
-        older = { before, limit, entries: previous };
-        return assemble(previous);
-      });
-    };
+  async attach(adapter: DurableAdapter, params: Params["subscribe"], ctx: Context) {
+    this.#project = view => projectView(view);
     const observation = await adapter.observe(params, {
       // Called on the Session line. Retain only the newest immutable view. No projection or socket I/O.
       advance: (call) => {
@@ -212,19 +185,10 @@ class Peer {
   #schedules?: SchedulesHost;
   #checkpoints?: CheckpointsHost;
   #gitDiff?: GitDiffHost;
+  #gitDiffVersion = gitDiffVersion;
   #gitDiffPending = false;
   #gitDiffWatch = false;
   #plan?: PlanHost;
-  #planChat?: PlanChatHost;
-  #planChatActivity = false;
-  #planWorktree?: PlanWorktreeHost;
-  #planDraft?: PlanDraftHost;
-  #planWorkspace = false;
-  #planCatalog = false;
-  #planReview?: PlanReviewHost;
-  #delegation?: DelegationHost;
-  #reviewEvidence = false;
-  #workerActivity = false;
   #subagents?: { host: SubagentsHost; version: number };
   #loadedContext?: { host: LoadedContextHost; version: LoadedContextVersion };
   #workspaceFiles?: { host: WorkspaceFilesHost; version: number };
@@ -306,7 +270,7 @@ class Peer {
     }
     const call = { ...req, method: "submit", params: input };
     if (!validRequest(call) || call.method !== "submit") throw new WireError("invalid_request");
-    const admission = await this.adapter.admit(call, this.#context, !!this.#modelCatalog, hints, skillToken, false, pane);
+    const admission = await this.adapter.admit(call, this.#context, !!this.#modelCatalog, hints, skillToken, pane);
     if (!("result" in admission)) throw new WireError("internal");
     return admission.result;
   }
@@ -413,100 +377,21 @@ class Peer {
           return;
         }
         if (parts[1] === "plan" && this.#plan) {
-          const host = this.#plan, signal = this.#abort.signal;
-          if (parts[2] === "wait") {
-            const { threadId, after } = parsePlanWait(req.params);
-            const workspace = this.#planWorkspace;
-            this.#metadata(req, parts[1], async () => {
-              const snapshot = await host.wait(threadId, after, signal, undefined, !!this.#planChat);
-              if (workspace || snapshot.run?.state !== "closed") return snapshot;
-              // Preserve the original plan:1 state vocabulary for older clients.
-              return { ...snapshot, run: { ...snapshot.run, state: "failed", failure: "The plan closed before the remaining tasks started." } };
-            });
+          const host = this.#plan, signal = this.#abort.signal, p = req.params, method = parts[2];
+          // Watches and worktree runs can take a while. Each method holds its
+          // own slot, so a list watch doesn't block a plan or activity watch.
+          const long = method === "list" ? (q => () => host.list(q, signal))(parsePlanList(p))
+            : method === "get" ? (q => () => host.get(q, signal))(parsePlanGet(p))
+            : method === "activity" ? (q => () => host.activity(q, signal))(parsePlanActivity(p))
+            : method === "runInWorktree" ? (q => () => host.runInWorktree(q, signal))(parsePlanWorktree(p)) : undefined;
+          if (long) {
+            this.#metadata(req, `plan.${method}`, long);
             return;
           }
-          const result = parts[2] === "run" ? await host.run(parsePlanRun(req.params), signal)
-            : parts[2] === "attach" ? await host.attach(parsePlanAttach(req.params), signal) : undefined;
+          const result = method === "run" ? await host.run(parsePlanRun(p), signal)
+            : method === "history" ? await host.history(parsePlanHistory(p), signal)
+            : method === "close" ? await host.close(parsePlanClosure(p), signal) : undefined;
           if (!result) throw new WireError("unknown_method");
-          this.#write(encode({ ...identity(req), ok: true, result }));
-          return;
-        }
-        if (parts[1] === "planWorktree" && this.#planWorktree) {
-          const host = this.#planWorktree, signal = this.#abort.signal;
-          // Checkout/model work can take seconds; keep the peer's request
-          // admission available without allowing concurrent prepares on it.
-          if (parts[2] === "prepare") {
-            const query = parsePlanWorktreeSource(req.params);
-            this.#metadata(req, parts[1], () => host.prepare(query, signal));
-            return;
-          }
-          if (parts[2] !== "start") throw new WireError("unknown_method");
-          const result = await host.start(parsePlanWorktreeStart(req.params), signal);
-          this.#write(encode({ ...identity(req), ok: true, result }));
-          return;
-        }
-        if (parts[1] === "planChatActivity" && this.#planChatActivity && this.#planChat?.activity) {
-          if (parts[2] !== "wait") throw new WireError("unknown_method");
-          const { threadId, after } = parsePlanWait(req.params);
-          this.#metadata(req, parts[1], () => this.#planChat!.activity!(threadId, after, this.#abort.signal));
-          return;
-        }
-        if (parts[1] === "planChat" && this.#planChat) {
-          const host = this.#planChat, signal = this.#abort.signal;
-          if (parts[2] === "workspace") {
-            const query = parsePlanAt(req.params, false);
-            this.#metadata(req, parts[1], () => host.workspaceAt(query, signal, this.#planCatalog));
-            return;
-          }
-          if (parts[2] === "inspect") {
-            const query = parsePlanAt(req.params, true);
-            this.#metadata(req, parts[1], () => host.inspectAt(query, signal, this.#planCatalog));
-            return;
-          }
-          if (parts[2] !== "run") throw new WireError("unknown_method");
-          const result = await host.runInChat(parsePlanRun(req.params), signal);
-          this.#write(encode({ ...identity(req), ok: true, result }));
-          return;
-        }
-        if (parts[1] === "planDraft" && this.#planDraft) {
-          if (parts[2] !== "save") throw new WireError("unknown_method");
-          const result = await this.#planDraft.save(parsePlanDraftTarget(req.params), this.#abort.signal);
-          this.#write(encode({ ...identity(req), ok: true, result }));
-          return;
-        }
-        if (parts[1] === "planCatalog" && this.#planCatalog && this.#plan?.catalog) {
-          if (parts[2] !== "wait") throw new WireError("unknown_method");
-          const query = parsePlanWorkspace(req.params), host = this.#plan;
-          this.#metadata(req, parts[1], () => host.catalog!(query, this.#abort.signal, !!this.#planChat));
-          return;
-        }
-        if (parts[1] === "planWorkspace" && this.#plan && this.#planWorkspace) {
-          const host = this.#plan, signal = this.#abort.signal;
-          if (parts[2] === "wait") {
-            const query = parsePlanWorkspace(req.params);
-            this.#metadata(req, parts[1], () => host.workspace(query, signal, !!this.#planChat));
-            return;
-          }
-          if (parts[2] === "inspect") {
-            const { threadId, after, planId } = parsePlanWait(req.params, true);
-            this.#metadata(req, parts[1], () => host.wait(threadId, after, signal, planId, !!this.#planChat, this.#planCatalog));
-            return;
-          }
-          const result = parts[2] === "setClosed" ? await host.setClosed(parsePlanClosure(req.params), signal)
-            : parts[2] === "use" ? await host.attach(parsePlanAttach(req.params), signal, true)
-            : parts[2] === "history" ? await host.history(parsePlanHistory(req.params), signal, !!this.#planChat, this.#planCatalog, !!this.#planWorktree) : undefined;
-          if (!result) throw new WireError("unknown_method");
-          this.#write(encode({ ...identity(req), ok: true, result }));
-          return;
-        }
-        if (parts[1] === "planReview" && this.#planReview) {
-          const host = this.#planReview, signal = this.#abort.signal;
-          const call = parsePlanReview(parts[2], req.params);
-          if (call.method === "wait") {
-            this.#metadata(req, parts[1], () => host.wait(call.query, signal));
-            return;
-          }
-          const result = call.method === "start" ? await host.start(call.query, signal) : await host.cancel(call.query, signal);
           this.#write(encode({ ...identity(req), ok: true, result }));
           return;
         }
@@ -536,12 +421,12 @@ class Peer {
         }
         if (parts[1] === "gitDiffWatch" && this.#gitDiffWatch) {
           if (parts[2] !== "wait") throw new WireError("unknown_method");
-          const query = parseGitDiffWatch(req.params);
+          const query = parseGitDiffWatch(req.params, this.#gitDiffVersion);
           this.#metadata(req, parts[1], () => this.#gitDiff!.wait!(query, this.#abort.signal));
           return;
         }
         if (parts[1] === "gitDiff" && this.#gitDiff) {
-          const query = parseGitDiff(parts[2]!, req.params);
+          const query = parseGitDiff(parts[2]!, req.params, this.#gitDiffVersion);
           if (this.#gitDiffPending) throw new WireError("limit");
           this.#gitDiffPending = true;
           // Disk scans are passive reads. A slow or cancelled review must not
@@ -706,32 +591,6 @@ class Peer {
           } else throw new WireError("unknown_method");
           return;
         }
-        if (parts[1] === "workerActivity" && this.#workerActivity) {
-          const host = this.#delegation!, signal = this.#abort.signal;
-          if (parts[2] === "wait") {
-            const query = parseWorkerActivity(req.params);
-            this.#metadata(req, "workerActivity.wait", () => host.waitActivity!(query, signal));
-          } else if (parts[2] === "inspect") {
-            const query = parseWorkerInspection(req.params);
-            this.#metadata(req, "workerActivity.inspect", () => host.inspect!(query, signal));
-          } else throw new WireError("unknown_method");
-          return;
-        }
-        if (parts[1] === "delegation" && this.#delegation) {
-          const host = this.#delegation, signal = this.#abort.signal;
-          if (parts[2] === "get") {
-            const key = parseReviewKey(req.params);
-            this.#metadata(req, "delegation.get", () => host.get(key, signal));
-          } else {
-            if (parts[2] === "start" && Object.hasOwn(req.params, "assessment") && !this.#reviewEvidence)
-              throw new WireError("unsupported_capability", "reviewEvidence");
-            const result = parts[2] === "start" ? await host.start(parseReviewLaunch(req.params), signal)
-              : parts[2] === "stop" ? await host.stop(parseWorkerKey(req.params), signal) : undefined;
-            if (!result) throw new WireError("unknown_method");
-            this.#write(encode({ ...identity(req), ok: true, result }));
-          }
-          return;
-        }
         throw new WireError("unsupported_capability", parts[1]);
       }
       if (!validRequest(req)) throw new WireError("invalid_request");
@@ -745,18 +604,6 @@ class Peer {
         if (this.capabilities?.subagents && subagentVersion !== undefined) {
           capabilities.subagents = subagentVersion;
           this.#subagents = { host: this.capabilities.subagents, version: subagentVersion };
-        }
-        if (this.capabilities?.delegation && req.params.capabilities?.delegation?.includes(delegationVersion)) {
-          capabilities.delegation = delegationVersion;
-          this.#delegation = this.capabilities.delegation;
-          if (this.#delegation.evidence && req.params.capabilities?.reviewEvidence?.includes(reviewEvidenceVersion)) {
-            capabilities.reviewEvidence = reviewEvidenceVersion;
-            this.#reviewEvidence = true;
-          }
-          if (this.#delegation.waitActivity && this.#delegation.inspect && req.params.capabilities?.workerActivity?.includes(workerActivityVersion)) {
-            capabilities.workerActivity = workerActivityVersion;
-            this.#workerActivity = true;
-          }
         }
         if (this.capabilities?.hushProfile === 1 && req.params.capabilities?.hushProfile?.includes(1)) {
           capabilities.hushProfile = 1;
@@ -799,34 +646,6 @@ class Peer {
         if (this.capabilities?.plan && req.params.capabilities?.plan?.includes(planVersion)) {
           capabilities.plan = planVersion;
           this.#plan = this.capabilities.plan;
-          if (this.capabilities.planDraft && req.params.capabilities?.planDraft?.includes(planDraftVersion)) {
-            capabilities.planDraft = planDraftVersion;
-            this.#planDraft = this.capabilities.planDraft;
-          }
-          if (req.params.capabilities?.planWorkspace?.includes(planWorkspaceVersion)) {
-            capabilities.planWorkspace = planWorkspaceVersion;
-            this.#planWorkspace = true;
-            if (this.capabilities.planChat && req.params.capabilities?.planChat?.includes(planChatVersion)) {
-              capabilities.planChat = planChatVersion;
-              this.#planChat = this.capabilities.planChat;
-              if (this.#planChat.activity && req.params.capabilities?.planChatActivity?.includes(planChatActivityVersion)) {
-                capabilities.planChatActivity = planChatActivityVersion;
-                this.#planChatActivity = true;
-              }
-              if (this.capabilities.planWorktree && req.params.capabilities?.planWorktree?.includes(planWorktreeVersion)) {
-                this.#planWorktree = this.capabilities.planWorktree;
-                capabilities.planWorktree = planWorktreeVersion;
-              }
-            }
-            if (this.#plan.catalog && req.params.capabilities?.planCatalog?.includes(planCatalogVersion)) {
-              capabilities.planCatalog = planCatalogVersion;
-              this.#planCatalog = true;
-            }
-            if (this.capabilities.planReview && req.params.capabilities?.planReview?.includes(planReviewVersion)) {
-              capabilities.planReview = planReviewVersion;
-              this.#planReview = this.capabilities.planReview;
-            }
-          }
         }
         const loadedContext = this.capabilities?.loadedContext, offeredContext = req.params.capabilities?.loadedContext;
         const contextVersion = offeredContext?.includes(loadedContextAgentsVersion) ? loadedContextAgentsVersion
@@ -856,8 +675,11 @@ class Peer {
             }
           }
         }
-        if (this.capabilities?.gitDiff && req.params.capabilities?.gitDiff?.includes(gitDiffVersion)) {
-          capabilities.gitDiff = gitDiffVersion;
+        const gitOffer = req.params.capabilities?.gitDiff;
+        const gitVersion = gitOffer?.includes(gitDiffLaunchVersion) ? gitDiffLaunchVersion : gitOffer?.includes(gitDiffVersion) ? gitDiffVersion : undefined;
+        if (this.capabilities?.gitDiff && gitVersion !== undefined) {
+          capabilities.gitDiff = gitVersion;
+          this.#gitDiffVersion = gitVersion;
           this.#gitDiff = this.capabilities.gitDiff;
           if (this.#gitDiff.wait && req.params.capabilities?.gitDiffWatch?.includes(gitDiffWatchVersion)) {
             capabilities.gitDiffWatch = gitDiffWatchVersion;
@@ -915,7 +737,7 @@ class Peer {
         const feed = new Feed(this.epoch, this.pendingObservations, this.#write, () => this.socket.writableNeedDrain);
         let adopted = false;
         try {
-          const ready = await feed.attach(this.adapter, req.params, this.#context, !!this.#delegation);
+          const ready = await feed.attach(this.adapter, req.params, this.#context);
           const encoded = this.#success(req, ready);
           if (this.#write(encoded)) {
             this.#feed?.close();
@@ -932,7 +754,7 @@ class Peer {
       if ((req.method === "thread.wait" || req.method === "submission.wait") && this.#waiting >= MAX_PENDING_WAITS) {
         throw new WireError("limit");
       }
-      const action = await this.adapter.admit(req, this.#context, !!this.#modelCatalog, undefined, undefined, !!this.#delegation);
+      const action = await this.adapter.admit(req, this.#context, !!this.#modelCatalog);
       if ("wait" in action) {
         this.#waiting++;
         void action.wait.then(

@@ -81,8 +81,7 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		defer stop()
 	}
 	target := backendstart.Options{Socket: o.socket, Bundle: o.bundle,
-		AttachOnly:       o.command == reviewCommand && o.review.action == "transcript",
-		RequireWorkTrust: o.command == printAnswer || o.command == scheduleCommand || o.command == reviewCommand && o.review.action == "start"}
+		RequireWorkTrust: o.command == printAnswer || o.command == scheduleCommand}
 	if o.command == rawProtocol {
 		target.AttachOnly = true
 		socket, err := backendstart.Resolve(ctx, target)
@@ -132,10 +131,6 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 	}
 	if o.command == checkpointCommand {
 		sdkOpts.Capabilities = map[string][]uint64{"checkpoints": {sdk.CheckpointsVersion}}
-	}
-	if o.command == reviewCommand {
-		sdkOpts.Capabilities = map[string][]uint64{"delegation": {sdk.DelegationVersion},
-			"reviewEvidence": {sdk.ReviewEvidenceVersion}, "workerActivity": {sdk.WorkerActivityVersion}}
 	}
 	var client *sdk.Client
 	if o.ephemeral {
@@ -189,8 +184,6 @@ func Run(ctx context.Context, args []string, in, out, stderr *os.File,
 		return report(o.schedule.run(ctx, client, o.json, out))
 	case checkpointCommand:
 		return report(o.checkpoint.run(ctx, client, o.json, out))
-	case reviewCommand:
-		return report(o.review.run(ctx, client, out, o.json))
 	case listThreads, newThread, forkThread, archiveThread, unarchiveThread:
 		return report(threadCommand(ctx, client, o, out))
 	default:

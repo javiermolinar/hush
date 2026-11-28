@@ -1,19 +1,43 @@
 # Backend subagents (`subagents:1–2`)
 
-On a trusted, writable persistent host, an ordinary parent turn can call the native model tool
-`subagent({prompt, read_only, worktree?})`. This isn't a socket launch method and doesn't depend on a client
+On a trusted, writable persistent host, an ordinary parent turn or a plan run can call the native model tool
+`subagent({prompt, read_only?, worktree?, pwd?, thinking?})`, or in a plan run `subagent({step})`. This isn't a socket launch method and doesn't depend on a client
 negotiating the log capability. The tool starts a fresh, private backend thread with the parent's model selection,
-not its transcript. Independent read-only calls issued in the same model response can overlap. Writable
+not its transcript. `thinking` replaces the parent's thinking level for this worker; the parent's model must
+support it. Independent read-only calls issued in the same model response can overlap. Writable
 workers run exclusively among the parent's workers in admission order. The parent resumes only after the
 round's results are ready; there is no separate join or parent submission. There are at most five starts
-per original user submission, invalid requests don't consume a start, and workers can't call `subagent`.
+per original user submission or plan run, invalid requests don't consume a start, and workers can't call `subagent`.
 
 Omit `worktree` to use the parent's exact backend working directory, or give the branch of an existing, separately
 trusted checkout in the same Git repository. The child starts at that checkout's root and sees its current files,
-including uncommitted changes. This doesn't create, reset, or merge a checkout. `read_only` is required: `true`
-permits scoped file reads; `false` permits the normal built-in coding tools, including shell. A checkout is not a
-sandbox. Workers have no Hush-imposed deadline or tool-round limit. Aborting the parent stops its child.
-A restart does not replay interrupted worker work; partial edits may remain. `--no-session` stays tool-free.
+including uncommitted changes. This doesn't create, reset, or merge a checkout. `pwd` starts the worker in a
+directory inside that checkout, relative to it or absolute. It must be a real directory, not a link, and it needs
+no grant of its own. `read_only` defaults to `true`, which permits scoped file reads relative to the worker's
+directory and, when the grant covers the repository root, the `git` tool. `false` permits the normal built-in
+coding tools, including shell. A checkout is not a sandbox. Workers have no Hush-imposed deadline or tool-round
+limit. Aborting the parent stops its child. A restart does not replay interrupted worker work; partial edits may
+remain. `--no-session` stays tool-free.
+
+`subagent({step})` takes a step selected in the current plan run that has a `delegate` specification. The backend
+builds the prompt from the step and fills `read_only`, `worktree`, `pwd` and `thinking` from the run's revision, so
+the model cannot change them; `step` cannot be combined with other fields. It counts toward the same five starts.
+See [plans](plan.md#runs).
+
+`git({command, args?})` runs `status`, `diff`, `show` or `log` through the same hardened runner as Git review.
+Git history and objects cover the whole repository, so a worker whose grant is for a subdirectory doesn't get the
+tool. Parents and writable workers don't get it either.
+- Only options that select or format output are accepted. Revisions follow `--end-of-options`, and paths after
+  `--` are relative to the worker's directory.
+- Paths and revisions must be relative and stay inside the checkout, which also keeps `git diff` from switching to
+  `--no-index`.
+- `status -v`, `pretty.*` aliases and `%G` signature placeholders, with or without a modifier, are not accepted.
+  The repository's `format.pretty` is replaced by `medium`.
+- Hush disables external diff drivers, textconv, color, signature checks and submodule status, and does not take
+  optional locks. It refuses repositories with clean, smudge or process filters or conditional includes, because
+  status and worktree diffs run filters.
+- Hush rechecks the checkout's grant before returning output. Output is cut at 48 KiB, and `log` shows 100
+  commits unless `-n` is given.
 
 ## Follow a log
 

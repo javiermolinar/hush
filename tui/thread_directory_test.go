@@ -125,6 +125,7 @@ func (b *tabWatchFixture) checkWatches(t *testing.T, m *Model, totalState, total
 }
 
 func TestDirectoryReplacesBackgroundStateWatches(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "") // exercise the non-Rex fallback
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	ids := []sdk.ID{"1", "2", "3", "4", "5"}

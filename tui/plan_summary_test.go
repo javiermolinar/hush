@@ -25,14 +25,19 @@ func TestGoldenPlanRunSummaryAndProgress(t *testing.T) {
 	if strings.Contains(text, "Selected:") || strings.Contains(text, "First, revised") || !strings.Contains(text, "Workspace profiles · 2 steps") {
 		t.Fatalf("plan transcript should be compact:\n%s", text)
 	}
-	s.plan.snapshot.Run = &sdk.PlanRun{ID: "42", StepIDs: []string{"save", "restore"}, State: "running"}
-	s.plan.snapshot.Progress = []sdk.PlanProgress{{StepID: "save", State: "verified"}, {StepID: "restore", State: "running"}}
+	s.runInputs = []sdk.ID{"9"}
+	s.planRun = planActivity{ready: true, run: &sdk.PlanActivityRun{
+		PlanRunRecord: sdk.PlanRunRecord{ID: "42", Revision: 7, ThreadID: s.info.ID, StepIDs: []string{"save", "restore"}, State: "running",
+			SubmissionID: "9", Outcomes: []sdk.PlanOutcome{{StepID: "save", Status: "done", Detail: "Saved"}}},
+		PlanID: "fixture-plan", Title: "Workspace profiles",
+		Steps: []sdk.PlanActivityStep{{ID: "save", Title: "Save a profile", Status: "done"}, {ID: "restore", Title: "Restore saved profiles", Status: "pending"}},
+	}}
 	s.tools = []x.Tool{{CallID: "1", Name: "bash", Live: true}}
 	s.activity.intent = "Checking profiles"
 	assertFrame(t, m)
 	rule := m.frame.ruleY
 	progress := ansi.Strip(m.frame.rows[rule-1])
-	if !strings.Contains(progress, "✓") || !strings.Contains(progress, "Restore saved profiles") ||
+	if !strings.Contains(progress, "✓") || !strings.Contains(progress, "Run in progress") ||
 		!strings.Contains(ansi.Strip(m.frame.rows[rule]), "Checking profiles") {
 		t.Fatalf("plan progress should not replace the live rule: %q, %q", progress, m.frame.rows[rule])
 	}

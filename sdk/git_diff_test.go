@@ -3,6 +3,7 @@ package sdk
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 )
@@ -83,6 +84,59 @@ func TestGitDiffNegotiationAndScope(t *testing.T) {
 				}
 			} else if err != nil || len(patch.Lines) != 1 || patch.Lines[0].NewLine != 10 {
 				t.Fatalf("patch: %+v %v", patch, err)
+			}
+		})
+	}
+}
+
+func TestGitDiffLaunchDirectory(t *testing.T) {
+	const revision = "129cb6d4-9d9b-4757-a711-b7b1fd839a5f"
+	const cwd = "/projects/hush"
+	for _, version := range []uint64{GitDiffVersion, GitDiffLaunchVersion} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			ctx, path := runContext(t)
+			listener(t, path, func(c net.Conn, r *bufio.Reader) {
+				q, err := readReq(r)
+				if err != nil || q.Method != "hello" {
+					return
+				}
+				reply(c, q, Hello{Version: 1, Epoch: "git-diff-launch", Capabilities: map[string]uint64{gitDiffCapability: version}})
+				for {
+					q, err = readReq(r)
+					if err != nil {
+						return
+					}
+					if version != GitDiffLaunchVersion || q.Params["cwd"] != cwd || q.Params["threadId"] != nil {
+						t.Errorf("unexpected Git request on version %d: %+v", version, q)
+						return
+					}
+					switch q.Method {
+					case gitDiffPrefix + "summary":
+						reply(c, q, GitDiffSummary{Revision: revision, Range: GitDiffHead, Commit: "1111111111111111111111111111111111111111",
+							Files: []GitDiffFile{{Path: "main.go", Status: "M", Text: true}}})
+					case gitDiffPrefix + "file":
+						reply(c, q, GitDiffPatch{Revision: revision, File: 0, Lines: []GitDiffLine{{Kind: "add", NewLine: 1, Text: "x"}}})
+					}
+				}
+			})
+			client := NewClient(path, ClientOptions{Capabilities: map[string][]uint64{gitDiffCapability: {version}}})
+			defer client.Close()
+			if _, err := client.GitDiffSummaryAt(ctx, "relative"); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("relative launch directory: %v", err)
+			}
+			summary, err := client.GitDiffSummaryAt(ctx, cwd)
+			if version == GitDiffVersion {
+				var server *ServerError
+				if !errors.As(err, &server) || server.Code != "unsupported_capability" {
+					t.Fatalf("version 1 launch summary: %v", err)
+				}
+				return
+			}
+			if err != nil || len(summary.Files) != 1 {
+				t.Fatalf("launch summary: %+v %v", summary, err)
+			}
+			if patch, err := client.GitDiffFileAt(ctx, cwd, summary.Revision, 0); err != nil || len(patch.Lines) != 1 {
+				t.Fatalf("launch patch: %+v %v", patch, err)
 			}
 		})
 	}

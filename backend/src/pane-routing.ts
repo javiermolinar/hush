@@ -7,7 +7,7 @@ import { panePlacements } from "../../server/src/pane-control.js";
 import { isPaneTool, paneToolParameters, type PaneToolName } from "./pane-contract.js";
 import { paneOnlyTurn } from "./pane-intent.js";
 
-type Caller = { generation: TaskId } | { tool: TaskId; name: PaneToolName };
+type Caller = { generation: TaskId } | { tool: TaskId; name: string };
 
 export class PaneRouting {
   constructor(readonly routes: PaneRoutes) {}
@@ -47,7 +47,7 @@ export class PaneRouting {
   }
 
   // Narrow the active tool declarations without creating durable prompt state.
-  gate(harness: () => Harness, canOffer?: (owner: ConversationId, task: TaskId, ctx: Context) => Promise<boolean>, review = false) {
+  gate(harness: () => Harness, canOffer?: (owner: ConversationId, task: TaskId, ctx: Context) => Promise<boolean>) {
     return hook(GenerationTask, { beforeRequest: async ({ messages }, api, ctx) => {
       const tools = getCurrentTools(messages);
       if (!tools.some(t => isPaneTool(t.name))) return;
@@ -63,7 +63,7 @@ export class PaneRouting {
       }
       const removed = (name: string) => paneOnly || isPaneTool(name);
       const caps = current?.route.live && current.until > Date.now() ? current.route.capabilities : undefined;
-      const parameters = caps && paneToolParameters(caps, review);
+      const parameters = caps && paneToolParameters(caps);
       const open = parameters && current?.route.canLaunch(current.launchInput);
       const replacements = tools.flatMap(t => {
         const schema = isPaneTool(t.name) && (t.name !== "pane_open" && t.name !== "thread_open" || open) && parameters?.[t.name];
@@ -76,7 +76,6 @@ export class PaneRouting {
           `Use pane_open when the latest user message asks to open a pane. Plain language is sufficient; do not ask for a slash command. One open per input. Placements: ${panePlacements(caps).join(", ")}; default to right if unspecified.`,
           ...(caps.views ? [
             'For "open a new side pane" without a command, use launch mode terminal (an idle shell). Use mode hush for a fresh blank Hush thread only, not to start a prompted run.',
-            ...(review ? ["Use mode review only for a requested read-only transcript with an exact existing review handle in this thread. Ask if the handle is ambiguous; never start or rerun a review to place it."] : []),
           ] : ["This client can open command panes only. Do not invent a command to open an idle pane."]),
           "Run a command in a pane only when requested by the user. Use argv for literal arguments and shell only for requested shell syntax. A created pane does not prove readiness or success.",
         ] : []),
@@ -95,12 +94,21 @@ export class PaneRouting {
 
   // The caller must have already applied the tool/workspace policy and
   // resolved any authoritative local cwd. Verify the active run again here.
-  async dispatch(request: PaneRequest, api: ToolExecutionApi, ctx: Context, permitted?: (tx: Tx) => Promise<boolean>): Promise<PaneReply> {
-    const name: PaneToolName = request.op === "thread_open" ? request.op : `pane_${request.op}`;
+  // `caller` names the dispatching tool when it is not the pane tool itself.
+  async dispatch(request: PaneRequest, api: ToolExecutionApi, ctx: Context, permitted?: (tx: Tx) => Promise<boolean>,
+      caller?: string): Promise<PaneReply> {
+    return await this.dispatchRouted(request, api, ctx, permitted, caller) ?? { outcome: "rejected" };
+  }
+
+  // Undefined when the turn has no live route or is not permitted, so a
+  // caller can tell "nothing to ask" from a client that declined.
+  async dispatchRouted(request: PaneRequest, api: ToolExecutionApi, ctx: Context, permitted?: (tx: Tx) => Promise<boolean>,
+      caller?: string): Promise<PaneReply | undefined> {
+    const name = caller ?? (request.op === "thread_open" ? request.op : `pane_${request.op}`);
     const current = await api.commit(async tx => {
       if (permitted && !await permitted(tx)) return;
       return this.#forRun(tx, api.conversationId, { tool: api.taskId, name });
     }, ctx);
-    return current ? current.route.dispatch(String(api.taskId), current.until, request, ctx.abortSignal, current.launchInput) : { outcome: "rejected" };
+    return current?.route.dispatch(String(api.taskId), current.until, request, ctx.abortSignal, current.launchInput);
   }
 }

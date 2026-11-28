@@ -8,6 +8,7 @@ Build and test per [CONTRIBUTING.md](CONTRIBUTING.md). Read only the guides rele
 - [TUI extension API](docs/tui-extensions.md).
 - [Headless I/O](protocol/v1/README.md#headless-io).
 - [Backend and pinned Durable references](backend/README.md#pi-durable-references).
+- [Thread model](docs/thread-model.md): threads, delegates, plans and checkouts, and the phased simplification toward them.
 
 ## Hush UI style
 

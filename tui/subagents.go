@@ -96,8 +96,13 @@ func (m *Model) receiveSubagents(msg subagentMsg) tea.Cmd {
 		f.failed = true
 		return awaitSubagents(f.feedLease, msg.source)
 	}
-	previous := f.update.Workers
+	previous, spent := f.update.Workers, f.update.Usage
 	f.update, f.failed, f.ready = msg.update, false, true
+	if f.update.Usage != spent {
+		// Subagent spend is part of the thread's usage events, also when the
+		// parent's own usage did not change.
+		m.emit(f.owner, x.Event{Kind: x.UsageChanged})
+	}
 	f.running = 0
 	for _, row := range f.update.Workers {
 		if row.Active() {
@@ -190,24 +195,34 @@ func (m *Model) refreshSubagent(d *dialog) {
 	}
 }
 
+// Glyphs and tones follow docs/ui-style.md. A finished worker's result is
+// input to its parent, not an outcome of record, so its ✓ is quiet.
 func subagentStatus(s string) (icon, label string, tone x.Tone) {
 	switch s {
 	case "starting":
 		return "○", "Starting", x.Muted
 	case "reading":
-		return "◐", "Reading files", x.Muted
+		return "◐", "Reading files", x.Warning
 	case "working":
-		return "◐", "Running tools", x.Muted
+		return "◐", "Running tools", x.Warning
 	case "responding":
-		return "◐", "Responding", x.Muted
+		return "◐", "Responding", x.Warning
 	case "waiting":
-		return "◐", "Waiting for model", x.Muted
+		return "◐", "Waiting for model", x.Warning
 	case "retrying":
 		return "⏸", "Retrying", x.Warning
 	case "ok":
-		return "•", "Done", x.Muted
+		return "✓", "Done", x.Muted
+	case "stopping":
+		return "⏸", "Stopping", x.Warning
+	case "cancelled":
+		return "✗", "Cancelled", x.Muted
+	case "timed_out":
+		return "✗", "Timed out", x.Danger
+	case "failed":
+		return "✗", "Failed", x.Danger
 	default:
-		return workerStateLabel(s)
+		return "⏸", "Unresolved", x.Warning
 	}
 }
 

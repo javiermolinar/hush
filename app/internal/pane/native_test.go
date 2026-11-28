@@ -525,15 +525,12 @@ func TestPaneHandlerTypedViewsNeverGrantRead(t *testing.T) {
 		t.Fatal("view without local attachment dispatches", r)
 	}
 	open.Attachment = sdk.PaneAttachment{Socket: "/local/backend sock", Epoch: "current-epoch"}
-	handle := strings.Repeat("a", 32)
 	for i, tc := range []struct {
 		launch sdk.PaneLaunch
 		argv   []string
 	}{
 		{sdk.PaneLaunch{Mode: "terminal"}, []string{"/bin/sh", "-i"}},
 		{sdk.PaneLaunch{Mode: "hush"}, []string{"/local/hush with spaces", "--local", "--socket", open.Attachment.Socket, "--pane-epoch", open.Attachment.Epoch}},
-		{sdk.PaneLaunch{Mode: "review", ThreadID: "7", Handle: handle}, []string{"/local/hush with spaces", "review", "transcript", handle, "--thread", "7",
-			"--socket", open.Attachment.Socket, "--pane-epoch", open.Attachment.Epoch}},
 	} {
 		open.Launch = tc.launch
 		r := h.Handle(t.Context(), open)
@@ -553,12 +550,18 @@ func TestPaneHandlerTypedViewsNeverGrantRead(t *testing.T) {
 func TestExistingThreadTabAndSplitDispatchSeparateEffects(t *testing.T) {
 	a, path := fakeAdapter(t, "rex", true)
 	var tab sdk.ID
-	h := NewThreadHandler(a, "/local/hush with spaces", func(_ context.Context, id sdk.ID) Outcome {
-		tab = id
+	var focused bool
+	h := NewThreadHandler(a, "/local/hush with spaces", func(_ context.Context, id sdk.ID, focus bool) Outcome {
+		tab, focused = id, focus
 		return Confirmed
 	})
-	if r := h.Handle(t.Context(), sdk.PaneRequest{Op: "thread_open", ThreadID: "7", Where: "tab"}); r.Outcome != "confirmed" || tab != "7" || len(loadFixture(path).Effects) != 0 {
-		t.Fatal("tab open attempted a native launch", r, tab)
+	if r := h.Handle(t.Context(), sdk.PaneRequest{Op: "thread_open", ThreadID: "8", Where: "focus"}); r.Outcome != "confirmed" || r.Where != "focus" ||
+		tab != "8" || !focused || len(loadFixture(path).Effects) != 0 {
+		t.Fatal("focus did not open and switch to the TUI tab", r, tab, focused)
+	}
+	if r := h.Handle(t.Context(), sdk.PaneRequest{Op: "thread_open", ThreadID: "7", Where: "tab"}); r.Outcome != "confirmed" || tab != "7" || focused ||
+		len(loadFixture(path).Effects) != 0 {
+		t.Fatal("tab open attempted a native launch or took focus", r, tab)
 	}
 	dir := t.TempDir()
 	stamp, ok := localIdentity(dir, os.ModeDir)

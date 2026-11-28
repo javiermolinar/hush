@@ -3,19 +3,19 @@
 
 
 
-
-
-
   Switch thread · all workspaces ─────────────────────────────────────────────────────── 6 choices
   › Workspace, thread, or message
   hush                                             │ Go TUI
     + New thread here                              │ hush
   › ◐ Go TUI                             Running   │ #3
     ⏸ List display                       Parked    │
-  Deployment tools                                 │
-    + New thread here                              │
-    ✗ Rollout review                     Failed    │
-    ○ Trace annotations                  Stopped   │
+  Deployment tools                                 │ Last turn
+    + New thread here                              │ Prompt: Explain how the thread picker fits on
+    ✗ Rollout review                     Failed    │         narrow terminals.
+    ○ Trace annotations                  Stopped   │ Reply:  The picker keeps the list and details
+                                                   │         side by side when there is room.
+                                                   │         On narrow terminals, the details
+                                                   │         stack below the list.
 
   ↵ Switch to  Go TUI
   ↑↓ move  ↵ choose  type to filter  ctrl+x n new here  esc back

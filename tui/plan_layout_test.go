@@ -22,7 +22,7 @@ func TestPlanStepNavigationKeepsPanelFixed(t *testing.T) {
 			s.info.Model, s.info.Thinking = sdk.Model{Provider: "fixture", ModelID: "test-model"}, "high"
 			m.editor.set("Keep the draft")
 			d := planPickerFixture(m, s)
-			s.plan.snapshot.Plan.Steps[1].Description = strings.Repeat("A long explanation that needs several lines. ", 40)
+			d.plan.snapshot.Plan.Steps[1].Prompt = strings.Repeat("A long explanation that needs several lines. ", 40)
 			assertFrame(t, m)
 			top, rule := m.frame.dialogY, m.frame.ruleY
 			chrome := slices.Clone(m.frame.rows[rule:])

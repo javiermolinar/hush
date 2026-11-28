@@ -272,8 +272,9 @@ func TestReleaseFrames(t *testing.T) {
 			openGroupedThreadPicker(t, m)
 			if body := shot("thread-switcher"); !strings.Contains(body, "Deployment tools") ||
 				!strings.Contains(body, "Parked") || !strings.Contains(body, "Stopped") ||
-				!strings.Contains(body, "+ New thread here") || !strings.Contains(body, "ctrl+x n new here") {
-				t.Fatal("the thread picker did not show groups, statuses, and workspace creation")
+				!strings.Contains(body, "+ New thread here") || !strings.Contains(body, "ctrl+x n new here") ||
+				!strings.Contains(body, "Last turn") || !strings.Contains(body, "below the list.") {
+				t.Fatal("the thread picker did not show groups, statuses, workspace creation, and the last turn")
 			}
 			press(m, tea.KeyDown, 0)
 			press(m, tea.KeyDown, 0)
@@ -287,25 +288,15 @@ func TestReleaseFrames(t *testing.T) {
 			planPickerFixture(m, s)
 			press(m, tea.KeyDown, 0)
 			press(m, tea.KeySpace, 0)
-			if body := shot("plan-blocked"); !strings.Contains(body, "Blocked · select Save a profile") {
-				t.Fatal("the plan picker did not explain the missing prerequisite")
+			if body := shot("plan-dependent"); !strings.Contains(body, "Run 1 here @ r7  Restore saved profiles") {
+				t.Fatal("the plan picker did not preview the selected step")
 			}
 			press(m, tea.KeyUp, 0)
 			press(m, tea.KeySpace, 0)
-			if body := shot("plan-selection"); !strings.Contains(body, "Run 2 @ r7") || !strings.Contains(body, "Save a profile → Restore saved profiles") {
+			if body := shot("plan-selection"); !strings.Contains(body, "Run 2 here @ r7") || !strings.Contains(body, "Save a profile → Restore saved profiles") {
 				t.Fatal("the plan picker did not preview the selected run")
 			}
 			press(m, tea.KeyEscape, 0)
-			s.info.Status, s.tools, s.plan = x.Idle, nil, planView{}
-			m.menuFeaturesFromBackend |= x.Plans | x.PlanDraft
-			s.merge([]sdk.Entry{previewFixtureEntry(99)})
-			if body := shot("plan-preview"); !strings.Contains(body, "Plan preview · Worker reviews") || !strings.Contains(body, "Save to /plan") {
-				t.Fatal("the preview did not show its Save action")
-			}
-			m.runAction(m.host.byID[inspectPlanPreviewID], "")
-			if body := shot("plan-preview-details"); !strings.Contains(body, "New plan · not saved") || !strings.Contains(body, "Worker results remain separate") {
-				t.Fatal("the preview detail did not show the proposed check")
-			}
 		})
 	}
 }

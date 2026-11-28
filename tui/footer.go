@@ -81,17 +81,28 @@ func (m *Model) footerThread(t *threadState) x.Thread {
 		(last.workspace == "" || filepath.Clean(thread.Workspace) == filepath.Clean(last.workspace)) {
 		thread.ContextUse = last.context
 	}
-	if m.subagents.owner.Valid() && thread.ID == m.subagents.owner {
-		s := m.subagents.update.Usage
-		thread.SubagentUsage = s
-		thread.Usage.InputTokens += s.InputTokens
-		thread.Usage.OutputTokens += s.OutputTokens
-		thread.Usage.TotalTokens += s.TotalTokens
-		thread.Usage.CacheReadTokens += s.CacheReadTokens
-		thread.Usage.CacheWriteTokens += s.CacheWriteTokens
-		thread.Usage.CostUSD += s.CostUSD
-	}
+	m.withSubagentUsage(&thread)
 	return thread
+}
+
+// withSubagentUsage sets the spend of the thread's subagents, which only the
+// active thread follows. Usage stays the thread's own, as in core state.
+func (m *Model) withSubagentUsage(thread *x.Thread) {
+	if m.subagents.owner.Valid() && thread.ID == m.subagents.owner {
+		thread.SubagentUsage = m.subagents.update.Usage
+	}
+}
+
+// threadSpend is the thread's own usage plus its subagents'.
+func threadSpend(t x.Thread) sdk.Usage {
+	u, s := t.Usage, t.SubagentUsage
+	u.InputTokens += s.InputTokens
+	u.OutputTokens += s.OutputTokens
+	u.TotalTokens += s.TotalTokens
+	u.CacheReadTokens += s.CacheReadTokens
+	u.CacheWriteTokens += s.CacheWriteTokens
+	u.CostUSD += s.CostUSD
+	return u
 }
 
 func workspaceLabel(path string) string {
@@ -158,7 +169,7 @@ func footerRegistration() x.Registration {
 			return usageSpan(label, tone)
 		}},
 		{Key: "cost", Slot: x.StatusRight, Order: 30, Priority: 43, Render: func(c x.RenderContext) x.Line {
-			usage := c.Thread.Usage
+			usage := threadSpend(c.Thread)
 			if usage.CostUSD == 0 && usage.TotalTokens == 0 {
 				return nil
 			}
@@ -191,7 +202,7 @@ func (m *Model) refreshUsage(d *dialog, t *threadState) {
 		return
 	}
 	thread := m.footerThread(t)
-	usage := thread.Usage
+	usage := threadSpend(thread)
 	text := fmt.Sprintf("Total tokens: %d\nSpend: $%.2f", usage.TotalTokens, usage.CostUSD)
 	if m.menuFeaturesFromBackend.Has(x.Subagents) {
 		f := m.subagents
@@ -515,6 +526,9 @@ func (m *Model) decorateView(v *tea.View, t *threadState) {
 	if needed > 0 {
 		v.WindowTitle = fmt.Sprintf("(%d) %s", needed, v.WindowTitle)
 	}
+	if m.rexActivity != nil {
+		return // Rex uses structured activity, not OSC 9 progress or notifications.
+	}
 	if m.quitting {
 		v.ProgramStatus = &tea.ProgramStatus{State: tea.ProgramStateIdle}
 		return
@@ -532,7 +546,7 @@ func (m *Model) desktopStatus(id sdk.ID, before, after x.ThreadStatus) tea.Cmd {
 	if t.directoryBase.beforeFallback != "" {
 		before, t.directoryBase.beforeFallback = t.directoryBase.beforeFallback, ""
 	}
-	if before == "" || before == after || m.focused && id == m.active {
+	if m.rexActivity != nil || before == "" || before == after || m.focused && id == m.active {
 		return nil
 	}
 	switch after {
@@ -679,6 +693,11 @@ func (m *Model) threadInfo(t *threadState, snap sdk.Snapshot) x.Thread {
 		if meta.Status != "" {
 			out.Status, hostStatus = meta.Status, true
 		}
+	}
+	if m.rexActivity != nil {
+		// Prefer the native observations to the asynchronously indexed directory
+		// while watching this thread, including on legacy background watches.
+		t.rexActivity.observeNative(out.Status, t, s)
 	}
 	t.saveDirectoryBase(out, hostStatus)
 	m.mergeDirectory(&out, t, t.activeRun)

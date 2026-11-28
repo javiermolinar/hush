@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+  Plans · all workspaces ───────────────────────────────────────────── 4 plans
+  This workspace                         │ Workspace profiles
+  › ⏸ Workspace profiles   1 blocked     │ 1/4 done · r7 · 1 blocked
+    ◐ Export settings      Running       │
+  Other workspaces                       │
+    ✓ Theme cleanup        Complete      │
+  Closed plans                           │
+    ⏸ Old migration        Closed        │
+
+  ↵ Open  Workspace profiles
+  ↵ open  ↑↓ move  h history  c close  r refresh  f full  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  you ›
+  Workspace profiles
+  › ○ profiles

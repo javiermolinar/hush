@@ -12,6 +12,7 @@ import (
 )
 
 func TestFooterGoldens(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "") // the view assertion includes legacy terminal progress
 	m, state := demo(t, Options{Fills: FillOff, ReducedMotion: true, SegmentOrder: map[string]int{"fixture/footer:extra": 4}, Extensions: []x.Registration{{
 		ID: "fixture/footer", APIVersion: x.APIVersion, Segments: []x.Segment{{Key: "extra", Priority: 1, Slot: x.StatusLeft, Order: 80, Render: func(x.RenderContext) x.Line {
 			return x.Line{{Text: "inbox 2", Tone: x.Accent}}
@@ -421,6 +422,7 @@ func TestPinnedFooterOutlivesIntro(t *testing.T) {
 }
 
 func TestFeedChromeTransitions(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "") // exercise the non-Rex fallback
 	m, tab := demo(t, Options{ReducedMotion: true, ProjectThread: func(s sdk.Snapshot) ThreadMetadata {
 		return ThreadMetadata{ContextUse: x.ContextUse{Known: true, Tokens: s.State.Usage.InputTokens, Window: 1000}}
 	}})

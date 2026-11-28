@@ -39,11 +39,15 @@ whose recent activity moved them ahead of the fence.
   Paths are on the backend. Omitting `cwd` uses the backend's project directory.
   An opted-in worktree requires Git, a trusted source, and a committed HEAD.
   The reference host checks the source directory's workspace grant before
-  checkout. The connection cannot grant or change trust.
-  It creates a private checkout and unique branch from committed HEAD, not from
-  working files, then creates a conversation with its `cwd` and allocation metadata
-  in one Durable commit. The new checkout does not inherit a Hush workspace grant.
-  Creation is not keyed; do not retry an uncertain reply.
+  checkout. The connection cannot grant or change trust for an existing directory.
+  It first creates the conversation with its `cwd` and allocation metadata in
+  one Durable commit, then a private checkout and unique branch from committed
+  HEAD, not from working files. The new thread opens in the same subdirectory as
+  the source, which must exist in committed HEAD. The new checkout inherits the
+  source's workspace grant for that directory: it holds the trusted source's
+  committed files. Hush grants only the directory it verified after Git created
+  it. If the checkout can't be finished, the error names the reserved thread; its
+  checkout may be incomplete. Creation is not keyed; do not retry an uncertain reply.
 - `ext.threadDirectory.archive`: set `{threadId, archived}`; returns `{}`. A live
   native run or compaction rejects archive as `busy`. Archive is presentation, not
   deletion, permission enforcement, or cancellation. History and explicit attachment

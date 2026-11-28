@@ -25,12 +25,11 @@ func builtins(workspaceTrust bool) x.Registration {
 		local("palette", "Command palette", "", "p", "hotkeys", x.OpenPalette),
 		local("details", "Toggle details", "ctrl+o", "o", "", x.ToggleDetails),
 		local("edit", "Edit prompt", "ctrl+g", "e", "", x.EditPrompt),
+		// menuFeatures offers GitDiff only with a target: the active thread's
+		// checkout, or the launch directory before the first thread.
 		{ID: gitDiffID, Title: "Review worktree changes", Binding: x.Binding{Leader: "i d"}, Requires: x.GitDiff,
-			Slash: &x.Slash{Name: "diff"}, Available: func(c x.Context) bool { return c.ActiveThreadID.Valid() },
-			Run: func(x.Context, x.Invocation) x.Outcome { return x.Outcome{x.Local{Op: openGitDiffOp}} }},
-		{ID: workerActivityID, Title: "Review workers", Binding: x.Binding{Leader: "i j"}, Requires: x.WorkerActivity,
-			Available: func(c x.Context) bool { return c.ActiveThreadID.Valid() },
-			Run:       func(x.Context, x.Invocation) x.Outcome { return x.Outcome{x.Local{Op: openWorkersOp}} }},
+			Slash: &x.Slash{Name: "diff"},
+			Run:   func(x.Context, x.Invocation) x.Outcome { return x.Outcome{x.Local{Op: openGitDiffOp}} }},
 		{ID: subagentsID, Title: "Subagents", Binding: x.Binding{Leader: "i g"}, Requires: x.Subagents,
 			Available: func(c x.Context) bool { return c.ActiveThreadID.Valid() },
 			Run:       func(x.Context, x.Invocation) x.Outcome { return x.Outcome{x.Local{Op: openSubagentsOp}} }},

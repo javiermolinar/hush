@@ -13,9 +13,9 @@ import { threadWorkspaceSearchVersion, type ManagedThreadRow, type ThreadArchive
   type ThreadDirectoryPage, type ThreadDirectoryQuery, type ThreadDirectoryReport, type ThreadDirectoryRow, type ThreadDirectoryVersion,
   type ThreadLookup, type ThreadStatus, type ThreadWorkspaceVersion, type WorkspaceMatch } from "../../server/src/thread-directory.js";
 import { WireError } from "../../server/src/wire.js";
-import { actionableFailure, displayTitle, threadActivity, ThreadPresentationDoc, threadLabel, topicTitle } from "./thread-presentation.js";
+import { actionableFailure, displayTitle, markCheckoutReady, threadActivity, ThreadPresentationDoc, threadLabel, topicTitle } from "./thread-presentation.js";
 import type { GenerateThreadTitle } from "./thread-title-model.js";
-import { existingDirectory, type ThreadWorktrees } from "./worktrees.js";
+import { existingDirectory, type ManagedCheckout, type ThreadWorktrees } from "./worktrees.js";
 
 const historyBatch = 16;
 const inventoryBatch = 32;
@@ -409,19 +409,34 @@ export class ThreadDirectory implements ThreadDirectoryHost {
     const title = query.title === undefined ? "" : threadLabel(query.title, 96);
     if (query.title !== undefined && !title) throw new WireError("invalid_request");
     const workspace = await existingDirectory(resolve(this.cwd, query.cwd ?? "."));
-    const managed = query.worktree ? await this.worktrees.create(workspace, signal) : undefined;
-    const cwd = managed?.cwd ?? workspace;
     const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT);
-    const agent = await this.defaults(cwd, ctx);
-    const thread = await this.h.createConversation({ ownership: ownerless, agent: { ...agent, cwd }, init: async (tx, id) => {
-      if (title || managed) {
-        const doc = await tx.doc(ThreadPresentationDoc, id);
-        if (title) doc.title = title;
-        if (managed) doc.checkout = managed;
-      }
-    } }, ctx);
-    return { id: String(thread.id), ...(title && { title }), status: "idle", archived: false,
-      checkout: managed ? { kind: "managed", cwd, branch: managed.branch } : { kind: "shared", cwd } };
+    const open = async (cwd: string, managed?: ManagedCheckout) => {
+      const agent = await this.defaults(cwd, ctx);
+      return (await this.h.createConversation({ ownership: ownerless, agent: { ...agent, cwd }, init: async (tx, id) => {
+        if (title || managed) {
+          const doc = await tx.doc(ThreadPresentationDoc, id);
+          if (title) doc.title = title;
+          if (managed) doc.checkout = managed;
+        }
+      } }, ctx)).id;
+    };
+    const row = (id: ConversationId, cwd: string, branch?: string) => ({ id: String(id), ...(title && { title }), status: "idle" as const,
+      archived: false, checkout: branch === undefined ? { kind: "shared" as const, cwd } : { kind: "managed" as const, cwd, branch } });
+    if (!query.worktree) return row(await open(workspace), workspace);
+    // Reserve the thread before Git writes the checkout, so a failure leaves
+    // a thread to find it by rather than an unrecorded checkout.
+    let reserved: ConversationId | undefined;
+    try {
+      const managed = await this.worktrees.create(workspace, signal, { name: async () => ({ fallback: "" }),
+        reserve: async ({ cwd, branch, repository }) => { reserved = await open(cwd, { cwd, branch, repository }); },
+        created: async ({ cwd }) => { if (reserved !== undefined) await this.h.commit(tx => markCheckoutReady(tx, reserved!, cwd), BACKGROUND_CONTEXT); } });
+      return row(reserved!, managed.cwd, managed.branch);
+    } catch (error) {
+      if (reserved === undefined) throw error;
+      const failure = new WireError("invalid_request");
+      failure.message = `Could not finish the worktree for thread ${reserved}. It may be incomplete; review it in /threads before using it.`;
+      throw failure;
+    }
   }
 
   async #archive(query: ThreadArchive, signal: AbortSignal) {

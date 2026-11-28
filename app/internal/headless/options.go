@@ -36,12 +36,6 @@ const usage = `Usage:
   hush thread fork --thread ID --at-entry ID [--json]
   hush thread archive|unarchive --thread ID [--json]
   hush submission get|wait --thread ID (--request-id KEY | --submission-id ID) [--json]
-  hush review start --thread ID --request-id KEY [--tracked PATH] [--untracked PATH] (--brief TEXT | --reviewer NAME=BRIEF) [--parallel]
-      [--check ID=DESCRIPTION] [--evidence ID:LABEL=TEXT] [--prompt TEXT]
-      [--model PROVIDER/ID --thinking LEVEL] [--worker-timeout-ms MS] [--json]
-  hush review status --thread ID --request-id KEY [--json]
-  hush review stop HANDLE --thread ID [--json]
-  hush review transcript HANDLE --thread ID [--json]
   hush schedule add --thread ID --target ID --at RFC3339 --text TEXT [--after THREAD/SUBMISSION] [--allow-late] [--json]
   hush schedule list --thread ID [--json]
   hush schedule run|cancel OCCURRENCE --thread ID [--json]
@@ -83,7 +77,6 @@ const (
 	scheduleCommand
 	checkpointCommand
 	localService
-	reviewCommand
 )
 
 // InteractiveOptions are passed to the terminal frontend only after routing.
@@ -113,7 +106,6 @@ type options struct {
 	serviceAction           string
 	schedule                scheduleOptions
 	checkpoint              checkpointOptions
-	review                  reviewOptions
 	directory               sdk.ThreadDirectoryOptions
 	create                  sdk.ThreadCreation
 	atEntry                 sdk.ID
@@ -165,7 +157,6 @@ func parse(args []string) (options, error) {
 	f.BoolVar(&o.ephemeral, "no-session", false, "")
 	o.schedule.flags(f)
 	o.checkpoint.flags(f)
-	o.review.flags(f)
 	if err := f.Parse(args); err != nil {
 		return o, err
 	}
@@ -180,9 +171,8 @@ func parse(args []string) (options, error) {
 	}
 	rest := f.Args()
 	if f.Changed("pane-epoch") {
-		review := len(rest) == 3 && rest[0] == "review" && rest[1] == "transcript" && f.ArgsLenAtDash() != 0
 		view := len(rest) == 0 && (!f.Changed("thread") || sdk.ID(thread).Valid()) && !o.noWait && !o.ephemeral && !o.forcePrint && mode == "" && o.key == ""
-		if (!review && !view) || o.socket == "" || f.Changed("backend") || len(o.paneEpoch) == 0 || len(o.paneEpoch) > 160 ||
+		if !view || o.socket == "" || f.Changed("backend") || len(o.paneEpoch) == 0 || len(o.paneEpoch) > 160 ||
 			strings.Trim(o.paneEpoch, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != "" {
 			return o, errors.New("pane attachment requires an explicit socket and a valid backend epoch")
 		}
@@ -286,19 +276,6 @@ func parse(args []string) (options, error) {
 		o.checkpoint.label, o.checkpoint.effect = o.create.Title, o.schedule.text
 		err := o.checkpoint.parse(f, rest)
 		return o, err
-	}
-	if len(rest) != 0 && rest[0] == "review" && f.ArgsLenAtDash() != 0 {
-		o.command = reviewCommand
-		if o.bundle != "" && o.socket != "" {
-			return o, errors.New("--backend selects a local bundle; it cannot be combined with --socket")
-		}
-		err := o.review.parse(f, sdk.ID(thread), o.key, rest[1:])
-		return o, err
-	}
-	for _, flag := range reviewFlags {
-		if f.Changed(flag) {
-			return o, fmt.Errorf("--%s is for review start", flag)
-		}
 	}
 	if f.Changed("restore") || f.Changed("checkpoint") {
 		return o, errors.New("--restore and --checkpoint are for rewind")

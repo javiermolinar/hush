@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/javiermolinar/hush/sdk"
 )
@@ -24,11 +23,6 @@ func ViewLaunch(exe string, attachment sdk.PaneAttachment, view sdk.PaneLaunch) 
 			return Launch{}, sdk.ErrProtocol
 		}
 		args = []string{"--local", "--thread", string(view.ThreadID)}
-	case "review":
-		if !view.ThreadID.Valid() || len(view.Handle) != 32 || strings.Trim(view.Handle, "0123456789abcdef") != "" {
-			return Launch{}, sdk.ErrProtocol
-		}
-		args = []string{"review", "transcript", view.Handle, "--thread", string(view.ThreadID)}
 	default:
 		return Launch{}, sdk.ErrProtocol
 	}

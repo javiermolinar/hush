@@ -22,7 +22,7 @@ const (
 	ToolResult EventKind = "tool.result"
 	// StatusChanged observes a change in projected thread status or metadata.
 	StatusChanged EventKind = "status"
-	// UsageChanged observes change to reported cumulative usage.
+	// UsageChanged observes a change to Thread.Usage or Thread.SubagentUsage.
 	UsageChanged EventKind = "usage"
 	// ApprovalChanged observes a capability-gated approval change.
 	ApprovalChanged EventKind = "approval"

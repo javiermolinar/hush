@@ -92,12 +92,16 @@ func (m *Model) receiveDirectory(msg directoryFeedMsg) tea.Cmd {
 			continue
 		}
 		prior := t.info
-		if t.directory == nil {
+		first := t.directory == nil
+		if first {
 			t.saveDirectoryBase(prior, t.directoryBase.hostStatus)
 		}
 		t.directory = &row // detached SDK report, only read by the UI loop
 		t.info = m.withoutDirectory(t)
 		m.mergeDirectory(&t.info, t, t.activeRun && m.connection == x.Connected)
+		if m.rexActivity != nil {
+			t.rexActivity.observeDirectory(row, first, row.ID == m.active)
+		}
 		m.tabMetadataChanged(t, prior)
 		cmds = append(cmds, m.desktopStatus(row.ID, prior.Status, t.info.Status))
 	}

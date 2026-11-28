@@ -38,7 +38,7 @@ type PaneCapabilities struct {
 	Above      bool `json:"above"`
 	Tabs       bool `json:"tabs"`
 	Read       bool `json:"read"`
-	Views      bool `json:"views,omitempty"` // terminal, fresh Hush, and read-only review launches
+	Views      bool `json:"views,omitempty"` // terminal and fresh Hush launches
 	ThreadTabs bool `json:"threadTabs,omitempty"`
 	NoPanes    bool `json:"noPanes,omitempty"` // tab-only route without a native adapter
 }
@@ -47,7 +47,8 @@ type PaneCapabilities struct {
 // and the handler. Custom handlers do not have to reimplement negotiation.
 func (c PaneCapabilities) supports(r PaneRequest) bool {
 	if r.Op == "thread_open" {
-		return c.ThreadTabs && (r.Where == "tab" || r.Where == "split" && !c.NoPanes && c.Views)
+		// focus opens and switches to the thread; only a conversation move sends it.
+		return c.ThreadTabs && (r.Where == "tab" || r.Where == "focus" || r.Where == "split" && !c.NoPanes && c.Views)
 	}
 	if c.NoPanes {
 		return false
@@ -60,7 +61,7 @@ func (c PaneCapabilities) supports(r PaneRequest) bool {
 	case "open":
 		switch r.Launch.Mode {
 		case "argv", "shell":
-		case "terminal", "hush", "review":
+		case "terminal", "hush":
 			if !c.Views {
 				return false
 			}
@@ -207,8 +208,7 @@ type PaneLaunch struct {
 	Program  string   `json:"program,omitempty"`
 	Args     []string `json:"args,omitempty"`
 	Text     string   `json:"text,omitempty"`
-	ThreadID ID       `json:"threadId,omitempty"` // review or existing-thread view, derived locally for the latter
-	Handle   string   `json:"handle,omitempty"`   // review only
+	ThreadID ID       `json:"threadId,omitempty"` // existing-thread view, derived locally
 }
 
 type PaneRequest struct {
@@ -289,17 +289,12 @@ func paneRequest(raw any) (PaneRequest, error) {
 			if len(launch) == 1 && keys(launch, "mode") {
 				return r, nil
 			}
-		case "review":
-			if len(launch) == 3 && keys(launch, "mode", "threadId", "handle") && r.Launch.ThreadID.Valid() &&
-				len(r.Launch.Handle) == 32 && strings.Trim(r.Launch.Handle, "0123456789abcdef") == "" {
-				return r, nil
-			}
 		}
 	case "thread_open":
 		if !r.ThreadID.Valid() {
 			break
 		}
-		if r.Where == "tab" && len(fields) == 3 && keys(fields, "op", "threadId", "where") {
+		if (r.Where == "tab" || r.Where == "focus") && len(fields) == 3 && keys(fields, "op", "threadId", "where") {
 			return r, nil
 		}
 		if r.Where == "split" && len(fields) == 5 && keys(fields, "op", "threadId", "where", "dir", "directory") &&
@@ -554,7 +549,7 @@ func (s *session) receivePaneCancel(f map[string]any) error {
 func (s *session) handlePaneCall(p *paneSession, id string, deadline time.Time, request PaneRequest) {
 	ctx, cancel := context.WithDeadline(p.life, deadline)
 	result := PaneReply{Outcome: "rejected"}
-	view := request.Op == "thread_open" || request.Launch.Mode == "hush" || request.Launch.Mode == "review"
+	view := request.Op == "thread_open" || request.Launch.Mode == "hush"
 	if ctx.Err() == nil && p.backend.verified() {
 		if view {
 			request.Attachment = p.backend.attachment

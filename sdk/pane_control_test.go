@@ -48,7 +48,7 @@ func TestPaneControlSharedFixtures(t *testing.T) {
 			}
 		}
 		for _, placement := range []string{"right", "below", "left", "above", "tab"} {
-			for _, mode := range []string{"argv", "shell", "terminal", "hush", "review"} {
+			for _, mode := range []string{"argv", "shell", "terminal", "hush", "review"} { // review was removed
 				check(PaneRequest{Op: "open", Placement: placement, Launch: PaneLaunch{Mode: mode}},
 					slices.Contains(row.Placements, placement) && slices.Contains(row.Launches, mode))
 			}
@@ -423,7 +423,7 @@ func TestPaneViewWireRejectsExtraAuthority(t *testing.T) {
 	request := map[string]any{"op": "open", "placement": "below", "dir": "/fixture",
 		"directory": map[string]any{"device": "1", "inode": "2", "birth": "3"}}
 	for _, launch := range []map[string]any{
-		{"mode": "terminal"}, {"mode": "hush"}, {"mode": "review", "threadId": "7", "handle": "0123456789abcdef0123456789abcdef"},
+		{"mode": "terminal"}, {"mode": "hush"},
 	} {
 		request["launch"] = launch
 		got, err := paneRequest(request)

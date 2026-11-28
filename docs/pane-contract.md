@@ -56,7 +56,7 @@ adapter cannot honor.
 Offer `pane_read` only when the verified adapter supports capture. Read only a
 terminal previously confirmed by a Hush command open on the same live origin.
 A reference from `pane_list` is not permission to read. This excludes unrelated
-terminals, idle shells, and panes opened for a Hush conversation or review transcript. Check
+terminals, idle shells, and panes opened for a Hush conversation. Check
 access and revalidate the exact target before capturing.
 
 `lines` is required and must be an integer from 1 to 200. Return the most recent
@@ -113,7 +113,15 @@ focus or list difference.
   directory and a pinned attach-only `hush --thread ID` launch. A tab stays in
   the submitting TUI and does not change focus or the current draft. If the
   requested view is unavailable, report the thread ID rather than falling back
-  to another placement or rerunning the prompt. The parent transcript records
+  to another placement or rerunning the prompt.
+- Ask “Move this conversation to a new worktree.” `thread_start` with
+  `worktree: "new"` and `history: true` creates a managed checkout from
+  committed `HEAD`, which inherits the source's grant, and forks the
+  conversation up to the current input into a thread there. It submits the
+  model's first prompt and switches the submitting TUI to the new thread
+  (`thread_open` with `where: "focus"`). A branch name instead of `"new"`
+  selects an existing trusted checkout. Uncommitted changes are not copied;
+  the receipt counts them. The parent transcript records
   the source input and new thread ID when allocated, then records the first
   submission ID if admitted. These notices survive interruption. Check the
   reported thread before starting another; Hush never resubmits automatically.
@@ -121,17 +129,10 @@ focus or list difference.
   (`ctrl+x i e`), to open a Hush TUI in the current thread's verified local directory. The child pins the parent backend's socket
   and epoch, creates a fresh thread, and never starts a backend. It does not
   copy history, the current draft, or a pane association.
-- Ask “Open review HANDLE in a side pane” in the parent thread, or open review
-  evidence with `ctrl+x i j`, enter its transcript, and press `o`. Both open the
-  same read-only review by parent thread and handle with the attach-only check.
-  Neither launches, stops, nor reruns a review. If placement fails, keep reading
-  the transcript in Hush.
 - A verified local plain terminal supports thread tabs but no native pane tools.
   Unverified or legacy peers and mixed or disconnected routes do not get these
   view tools. If a native route loses its origin, v2 can bind a fresh tab-only
-  route for later inputs without reviving old pane authority. An already verified
-  local socket and epoch can still be used for direct read-only review
-  attachment. Ordinary chat continues. An explicit `/pane` draft is not sent as
+  route for later inputs without reviving old pane authority. Ordinary chat continues. An explicit `/pane` draft is not sent as
   plain chat when the client cannot route it. No socket access
   settings are changed to obtain support.
 

@@ -8,13 +8,12 @@ const modes = {
   shell: obj({ mode: lit("shell"), text }),
   terminal: obj({ mode: lit("terminal") }),
   hush: obj({ mode: lit("hush") }),
-  review: obj({ mode: lit("review"), handle: str({ pattern: "^[0-9a-f]{32}$", minLength: 32, maxLength: 32 }) }),
 } as const;
 
 // Build schemas from live capabilities. A client without a route is not
 // eligible for any of these tools.
-export function paneToolParameters(caps: Partial<PaneCapabilities>, review = false) {
-  const placements = threadViewPlacements(caps), launches = paneLaunchModes(caps).filter(mode => mode !== "review" || review);
+export function paneToolParameters(caps: Partial<PaneCapabilities>) {
+  const placements = threadViewPlacements(caps), launches = paneLaunchModes(caps);
   return {
     ...(!caps.noPanes ? {
       pane_open: obj({ placement: { type: "string", ...oneOf(panePlacements(caps)) }, launch: union(launches.map(mode => modes[mode])) }),

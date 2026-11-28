@@ -45,8 +45,6 @@ type dialog struct {
 	plan                        *planPicker
 	planWorkspace               *planWorkspacePicker
 	planHistory                 *planHistoryPicker
-	planReview                  *planReviewPicker
-	worker                      *workerPanel
 	subagent                    *subagentPanel
 	result                      func(tea.Model) (any, bool)
 	done                        func(x.Context, any, bool) x.Outcome
@@ -236,14 +234,8 @@ func (m *Model) customUpdate(d *dialog, msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) replyDialog(d *dialog, value any, accepted bool, budget *int) tea.Cmd {
-	if d.worker != nil && d.worker.cancel != nil {
-		d.worker.cancel()
-	}
 	if d.planWorkspace != nil && d.planWorkspace.cancel != nil {
 		d.planWorkspace.cancel()
-	}
-	if d.planReview != nil && d.planReview.cancel != nil {
-		d.planReview.cancel()
 	}
 	if d.plan != nil && d.plan.cancel != nil {
 		d.plan.cancel()
@@ -340,7 +332,11 @@ func (d *dialog) filter() {
 				d.filtered = append(d.filtered, i)
 				continue
 			}
-			text = p.rows[i].workspaceName + " " + string(p.rows[i].status) + " " + text
+			row := p.rows[i]
+			text = row.workspaceName + " " + string(row.status) + " " + text
+			if row.searchPreview != "" {
+				text += " " + row.searchPreview
+			}
 		}
 		if d.palette {
 			text = d.paletteFilterText(i)
@@ -506,17 +502,11 @@ func (m *Model) dialogInput(msg tea.Msg) tea.Cmd {
 	if d.subagent != nil {
 		return m.subagentKey(d, chord)
 	}
-	if d.worker != nil {
-		return m.workerKey(d, chord)
-	}
 	if d.planWorkspace != nil {
 		return m.planWorkspaceKey(d, chord)
 	}
 	if d.planHistory != nil {
 		return m.planHistoryKey(d, chord)
-	}
-	if d.planReview != nil {
-		return m.planReviewKey(d, chord)
 	}
 	if d.plan != nil {
 		return m.planKey(d, chord)
@@ -839,9 +829,8 @@ func (m *Model) selectRows(d *dialog, w, n int) menuFrame {
 				budget--
 			}
 			if count > 0 {
-				focus, detail := d.choices[d.filtered[d.selected]], p.detail(d)
 				list := m.menuColumns(w, budget, func(width, height int) []string {
-					return m.menuDetail(p.selectedRow(d).displayTitle(focus), detail, width, height)
+					return m.threadPickerDetail(d, width, height)
 				}, func(lw, lh int) menuFrame {
 					var list menuFrame
 					m.threadPickerRows(d, lw, lh, list.add)

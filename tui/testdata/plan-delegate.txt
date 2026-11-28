@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+  Workspace profiles · r7 ─────────────────────────────────────────── 0/4 done
+    ■ ○ Save a profile     Pending       │ Review the profile code
+    ■ ○ Restore saved pr…  Pending       │ Review save and restore for lost
+    □ ⏸ Document discove…  Blocked       │ settings.
+  › □ ○ Review the profi…  Pending       │ Needs: Restore saved profiles
+                                         │ Delegate: read-only subagent
+                                         │ Thinking: high
+
+  ↵ Run 2 here @ r7  Save a profile → Restore saved profiles
+  ↵ run here  w new worktree  tab steps  ↑↓ scroll  h history  esc back
+
+  ○ idle ─────────────────────────────────────────────────────────────────────
+  you ›
+  Workspace workspace
+  › ○ workspace

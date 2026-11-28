@@ -110,7 +110,7 @@ func (t *threadState) projectRecord(p *activityProjection, r *record) bool {
 	r.voice = voiceAgent
 	r.thoughts = 0
 	e := r.entry.Record
-	if e.Kind == planReviewEntry || e.Kind == sdk.ReviewNoticeKind {
+	if e.Kind == planReviewEntry || e.Kind == workerNoticeEntry {
 		// A background review does not break the current turn's tool burst.
 		r.visible = true
 		return true

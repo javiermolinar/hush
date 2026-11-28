@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import { gitDiffFiles, gitDiffLines, type GitDiffFile, type GitDiffHost, type GitDiffLine, type GitDiffRange,
-  type GitDiffRequest, type GitDiffSummary, type GitDiffUpdate, type GitDiffWatch } from "../../server/src/git-diff.js";
+  type GitDiffRequest, type GitDiffSummary, type GitDiffTarget, type GitDiffUpdate, type GitDiffWatch } from "../../server/src/git-diff.js";
 import { WireError } from "../../server/src/wire.js";
 import type { CheckpointService } from "./checkpoints.js";
 import { checkFilters } from "./rewind-git.js";
+import { prospectiveWorkspace } from "./thread-workspace.js";
 import { workspaceGit, type DirectoryIdentity, type WorkspaceTrust, type GitWorkspaceIdentity } from "./workspace-trust.js";
 import { inspectWorkspaceText } from "./workspace-file.js";
 import { ChangePulse, observe, WorkspaceRevisions } from "./workspace-changes.js";
@@ -118,7 +119,7 @@ async function untrackedText(root: string, path: string, signal: AbortSignal) {
 }
 
 type Summary = Omit<GitDiffSummary, "revision">;
-type Observation = { threadId: string; cwd: string; identity: GitWorkspaceIdentity; range: GitDiffRange;
+type Observation = { target: string; cwd: string; identity: GitWorkspaceIdentity; range: GitDiffRange;
   commit: string; files: GitDiffFile[]; expires: number };
 type WorktreeSnapshot = Pick<Summary, "commit" | "files" | "branch"> & { stamp: string; expires: number };
 type Worktree = { identity: GitWorkspaceIdentity; version: number; value?: WorktreeSnapshot;
@@ -127,6 +128,10 @@ type ThreadSnapshot = { revision: string } & ({ summary: Summary; cwd: string; i
   { error: { code: string; message: string } });
 type WatchedThread = { peers: number; changes: ChangePulse; stop: AbortController; tree?: Worktree;
   read?: Promise<ThreadSnapshot> };
+
+// A launch directory has no thread, so it has no checkpoint and no stored cwd to recheck.
+const targetKey = (target: GitDiffTarget) => "threadId" in target ? `thread:${target.threadId}` : `cwd:${target.cwd}`;
+const threadOf = (target: GitDiffTarget) => "threadId" in target ? Number(target.threadId) as ConversationId : undefined;
 
 const directoryKey = (dir: DirectoryIdentity) => [dir.path, String(dir.device), String(dir.inode), String(dir.birth)];
 const treeKey = (id: GitWorkspaceIdentity) => JSON.stringify([directoryKey(id.root), directoryKey(id.gitDir), directoryKey(id)]);
@@ -204,14 +209,15 @@ export class GitDiffService implements GitDiffHost {
     } finally { this.#probing = false; }
   }
 
-  async wait({ threadId, after }: GitDiffWatch, peer: AbortSignal): Promise<GitDiffUpdate> {
+  async wait({ target, after }: GitDiffWatch, peer: AbortSignal): Promise<GitDiffUpdate> {
     const signal = AbortSignal.any([peer, this.#stop.signal]);
     signal.throwIfAborted();
-    let thread = this.#watching.get(threadId);
+    const key = targetKey(target);
+    let thread = this.#watching.get(key);
     if (!thread) {
       if (this.#watching.size >= maxWatchThreads) throw new WireError("limit");
       thread = { peers: 0, changes: new ChangePulse(), stop: new AbortController() };
-      this.#watching.set(threadId, thread);
+      this.#watching.set(key, thread);
     }
     if (!this.#timer) {
       this.#nextFallback = Date.now() + fallback;
@@ -221,20 +227,20 @@ export class GitDiffService implements GitDiffHost {
     try {
       for (;;) {
         const generation = thread.changes.generation;
-        const view = await observe(this.#watchSnapshot(threadId, thread), signal);
+        const view = await observe(this.#watchSnapshot(target, thread), signal);
         signal.throwIfAborted();
         if (generation !== thread.changes.generation) continue;
         if (view.revision !== after) {
           if ("error" in view) return view;
           const { revision, summary, cwd, identity } = view;
-          return { revision, summary: this.#remember(threadId, cwd, identity, summary) };
+          return { revision, summary: this.#remember(key, cwd, identity, summary) };
         }
         await thread.changes.wait(generation, signal);
       }
     } finally {
       if (--thread.peers === 0) {
         thread.stop.abort();
-        this.#watching.delete(threadId);
+        this.#watching.delete(key);
       }
       if (!this.#watching.size) {
         clearInterval(this.#timer);
@@ -243,12 +249,12 @@ export class GitDiffService implements GitDiffHost {
     }
   }
 
-  #watchSnapshot(threadId: string, thread: WatchedThread) {
+  #watchSnapshot(target: GitDiffTarget, thread: WatchedThread) {
     if (thread.read) return thread.read;
     if (this.#queued >= maxWatchThreads) throw new WireError("limit");
     this.#queued++;
     const lane = this.#nextLane++ % this.#lanes.length;
-    const read = this.#lanes[lane]!.then(() => this.#readWatch(threadId, thread)).finally(() => {
+    const read = this.#lanes[lane]!.then(() => this.#readWatch(target, thread)).finally(() => {
       thread.read = undefined;
       this.#queued--;
     });
@@ -256,29 +262,29 @@ export class GitDiffService implements GitDiffHost {
     return thread.read = read;
   }
 
-  async #readWatch(threadId: string, thread: WatchedThread): Promise<ThreadSnapshot> {
+  async #readWatch(target: GitDiffTarget, thread: WatchedThread): Promise<ThreadSnapshot> {
     const life = AbortSignal.any([thread.stop.signal, this.#stop.signal]);
     const signal = AbortSignal.any([life, AbortSignal.timeout(4_000)]);
-    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT), id = Number(threadId) as ConversationId;
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT), id = threadOf(target), key = targetKey(target);
     try {
-      const cwd = await this.#cwd(id, ctx);
+      const cwd = await this.#cwd(target, ctx, signal);
       // Each thread must still authorize its own exact directory. A shared
       // checkout, or a cached successful observation, is not a grant.
       const identity = await this.trust.withGit(cwd, signal, value => value);
-      const key = treeKey(identity), tree = thread.tree = this.#worktree(key, identity);
+      const tree = thread.tree = this.#worktree(treeKey(identity), identity);
       const [{ commit, files, branch }, checkpoint] = await Promise.all([
-        this.#headStats(tree, signal), this.checkpoints.latestFileSnapshot(id, ctx),
+        this.#headStats(tree, signal), id === undefined ? undefined : this.checkpoints.latestFileSnapshot(id, ctx),
       ]);
       await this.#verify(id, cwd, identity, ctx, signal);
       const summary: Summary = { range: "head", commit, checkpoint: checkpoint !== undefined, files,
         ...(branch && { branch }) };
-      return { revision: this.#revisions.of([threadId, cwd, key, summary]), summary, cwd, identity };
+      return { revision: this.#revisions.of([key, cwd, treeKey(identity), summary]), summary, cwd, identity };
     } catch (failure) {
       life.throwIfAborted();
       thread.tree = undefined;
       const e = signal.aborted ? new WireError("limit") : failure instanceof WireError ? failure : new WireError("internal");
       const error = { code: e.code, message: e.message };
-      return { revision: this.#revisions.of([threadId, error]), error };
+      return { revision: this.#revisions.of([key, error]), error };
     }
   }
 
@@ -334,7 +340,9 @@ export class GitDiffService implements GitDiffHost {
     return { commit, files, branch, stamp, expires: Date.now() + fallback };
   }
 
-  async #cwd(id: ConversationId, ctx: Context) {
+  async #cwd(target: GitDiffTarget, ctx: Context, signal: AbortSignal) {
+    if ("cwd" in target) return prospectiveWorkspace(target.cwd, signal);
+    const id = Number(target.threadId) as ConversationId;
     const cwd = await this.h.commit(async tx => {
       const source = await tx.conversation(id);
       if (!source || source.owner) throw new WireError("not_found");
@@ -344,8 +352,8 @@ export class GitDiffService implements GitDiffHost {
     return cwd;
   }
 
-  async #verify(id: ConversationId, cwd: string, identity: GitWorkspaceIdentity, ctx: Context, signal: AbortSignal) {
-    if ((await this.h.snapshot(AgentDoc, id, ctx))?.cwd !== cwd) throw new WireError("invalid_cursor");
+  async #verify(id: ConversationId | undefined, cwd: string, identity: GitWorkspaceIdentity, ctx: Context, signal: AbortSignal) {
+    if (id !== undefined && (await this.h.snapshot(AgentDoc, id, ctx))?.cwd !== cwd) throw new WireError("invalid_cursor");
     await this.trust.withGit(cwd, signal, () => {}, identity);
   }
 
@@ -356,11 +364,11 @@ export class GitDiffService implements GitDiffHost {
     return head;
   }
 
-  async #base(id: ConversationId, cwd: string, root: string, range: GitDiffRange, ctx: Context, signal: AbortSignal) {
-    const snapshot = await this.checkpoints.latestFileSnapshot(id, ctx);
+  async #base(id: ConversationId | undefined, cwd: string, root: string, range: GitDiffRange, ctx: Context, signal: AbortSignal) {
+    const snapshot = id === undefined ? undefined : await this.checkpoints.latestFileSnapshot(id, ctx);
     const head = await this.#head(root, signal);
     if (range === "head") return { head, commit: head, checkpoint: snapshot !== undefined };
-    if (!snapshot) unavailable("No file checkpoint on this thread.");
+    if (!snapshot) unavailable(id === undefined ? "A checkpoint comparison needs a thread." : "No file checkpoint on this thread.");
     const commit = await this.checkpoints.comparisonCommit(cwd, snapshot, signal);
     return { head, commit, checkpoint: true };
   }
@@ -369,12 +377,12 @@ export class GitDiffService implements GitDiffHost {
     if (this.#active >= 4) throw new WireError("limit");
     this.#active++;
     const signal = AbortSignal.any([peer, AbortSignal.timeout(4_000)]);
-    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT), id = Number(q.threadId) as ConversationId;
+    const ctx = withAbortSignal(signal, BACKGROUND_CONTEXT), id = threadOf(q.target), key = targetKey(q.target);
     try {
       const input = q.op === "file" ? this.#seen.get(q.revision) : undefined;
-      if (q.op === "file" && (input?.threadId !== q.threadId || input.expires < Date.now() || !input.files[q.file]))
+      if (q.op === "file" && (input?.target !== key || input.expires < Date.now() || !input.files[q.file]))
         throw new WireError("invalid_cursor");
-      const cwd = await this.#cwd(id, ctx);
+      const cwd = await this.#cwd(q.target, ctx, signal);
       if (input && cwd !== input.cwd) throw new WireError("invalid_cursor");
       const identity = await this.trust.withGit(cwd, signal, value => value, input?.identity);
       const root = identity.root.path;
@@ -392,7 +400,7 @@ export class GitDiffService implements GitDiffHost {
       }
       const [files, branch] = await Promise.all([this.#files(root, commit, head, signal), this.#branch(root, signal)]);
       await this.#verify(id, cwd, identity, ctx, signal);
-      return this.#remember(q.threadId, cwd, identity, { range, commit, checkpoint, files, ...(branch && { branch }) });
+      return this.#remember(key, cwd, identity, { range, commit, checkpoint, files, ...(branch && { branch }) });
     } catch (error) {
       peer.throwIfAborted();
       if (signal.aborted) throw new WireError("limit");
@@ -401,10 +409,10 @@ export class GitDiffService implements GitDiffHost {
     } finally { this.#active--; }
   }
 
-  #remember(threadId: string, cwd: string, identity: GitWorkspaceIdentity, summary: Summary): GitDiffSummary {
+  #remember(target: string, cwd: string, identity: GitWorkspaceIdentity, summary: Summary): GitDiffSummary {
     const revision = randomUUID(), { range, commit, files } = summary;
     while (this.#seen.size >= maxObservations) this.#seen.delete(this.#seen.keys().next().value!);
-    this.#seen.set(revision, { threadId, cwd, identity, range, commit, files, expires: Date.now() + lifetime });
+    this.#seen.set(revision, { target, cwd, identity, range, commit, files, expires: Date.now() + lifetime });
     return { revision, ...summary };
   }
 

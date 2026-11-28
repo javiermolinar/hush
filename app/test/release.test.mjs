@@ -155,10 +155,18 @@ const batchSource = `const results = await Promise.all(['first.txt', 'second.txt
   `return results.map(value => value.split('=')[1].trim()).join(', ');`;
 
 // Newer Codex models receive tool declarations in transcript deltas, not at
-// the top level. Keep the latest declaration by name in either format.
+// the top level, and a removal as a notice rather than a retracted
+// declaration. Replay both in order; keep the latest declaration by name.
+const removalNotice = /The following tools are no longer available\. Do not call them:\n((?:- .+(?:\n|$))+)/;
 function requestTools(request) {
   const tools = new Map();
-  for (const tool of [...(request.tools ?? []), ...request.input.flatMap(item => item.tools ?? [])]) tools.set(tool.name, tool);
+  for (const tool of request.tools ?? []) tools.set(tool.name, tool);
+  for (const item of request.input) {
+    for (const tool of item.tools ?? []) tools.set(tool.name, tool);
+    const text = typeof item.content === 'string' ? item.content : (item.content ?? []).map(part => part.text ?? '').join('\n');
+    const removed = removalNotice.exec(text);
+    if (removed) for (const line of removed[1].trim().split('\n')) tools.delete(line.slice(2));
+  }
   return [...tools.values()];
 }
 
@@ -423,7 +431,9 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
   assert.equal(JSON.parse(await good(['trust', 'status', '--json'])).trusted, true);
   await good(['--print', '--thread', id, 'release-first-durable'], /^Loopback Codex reply\n$/);
   assert.equal(seen[1].model, 'gpt-6-sol');
-  const directTools = ['read', 'bash', 'edit', 'write'];
+  // Coding tools, then Hush's model tools, in the order the backend declares them.
+  const codingTools = ['read', 'bash', 'edit', 'write'], hushTools = ['plan_read', 'plan_save', 'thread_start', 'subagent'];
+  const directTools = [...codingTools, ...hushTools];
   assert.deepEqual(requestTools(seen[1]).map(tool => tool.name), directTools);
   await good(['auth', 'logout'], /no Hush-managed credential/);
   if (tuiWalkthrough) {
@@ -512,7 +522,7 @@ test('packaged Hush clean install, OAuth, model selection, and resume' + (tuiWal
     await writeFile(join(cwd, 'first.txt'), 'KEY=north\n');
     await writeFile(join(cwd, 'second.txt'), 'KEY=south\n');
     await good(['--print', '--thread', id, batchPrompt], /^Loopback Codex reply\n$/);
-    assert.deepEqual(requestTools(seen[5]).map(tool => tool.name), [...directTools, 'codemode']);
+    assert.deepEqual(requestTools(seen[5]).map(tool => tool.name).sort(), [...codingTools, 'codemode', ...hushTools].sort());
     const batchResult = seen[6].input.find(item => item.call_id === 'call_release_batch' && item.type.endsWith('_output'));
     assert.match(batchResult?.output ?? '', /Script completed[\s\S]*north, south/);
     assert.doesNotMatch(batchResult.output, /KEY=/);

@@ -138,28 +138,42 @@ const Settings Features = 1 << 15
 // LoadedContext enables the host’s read-only instruction-source inspector.
 const LoadedContext Features = 1 << 16
 
-// Plans enables the negotiated plan picker for the active thread.
+// Plans enables /plan: the plan list across workspaces, runs and history.
 const Plans Features = 1 << 17
 
-// PlanWorkspace enables the plan inventory for the active workspace.
+// PlanWorkspace reserves the bit of the plan:1 workspace inventory, now part of Plans.
+//
+// Deprecated: hosts never set it.
 const PlanWorkspace Features = 1 << 18
 
-// PlanReview enables independent advisory review of a saved plan revision.
+// PlanReview reserves the bit of the removed independent plan review.
+//
+// Deprecated: hosts never set it.
 const PlanReview Features = 1 << 19
 
-// PlanDraft enables saving an inspected plan preview.
+// PlanDraft reserves the bit of the removed plan preview save.
+//
+// Deprecated: hosts never set it.
 const PlanDraft Features = 1 << 20
 
-// PlanChat enables foreground plan runs and threadless workspace browsing.
+// PlanChat reserves the bit of the plan:1 Run here capability, now part of Plans.
+//
+// Deprecated: hosts never set it.
 const PlanChat Features = 1 << 21
 
-// PlanCatalog enables read-only discovery across workspaces in the same store.
+// PlanCatalog reserves the bit of the plan:1 cross-workspace catalog, now part of Plans.
+//
+// Deprecated: hosts never set it.
 const PlanCatalog Features = 1 << 22
 
-// PlanWorktree enables running selected plan tasks in a new managed checkout.
+// PlanWorktree reserves the bit of the plan:1 worktree run, now part of Plans.
+//
+// Deprecated: hosts never set it.
 const PlanWorktree Features = 1 << 23
 
-// WorkerActivity enables read-only review worker inspection for the active parent.
+// WorkerActivity reserves the bit of the removed review worker roster.
+//
+// Deprecated: hosts never set it.
 const WorkerActivity Features = 1 << 24
 
 // Subagents enables the native subagent log and spend overview.

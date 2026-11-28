@@ -1,11 +1,12 @@
-import { defineDoc, type ConversationId, type RunFailure, type RunFailureReason, type TaskGraph } from "@earendil-works/pi-durable";
+import { defineDoc, type ConversationId, type RunFailure, type RunFailureReason, type TaskGraph, type Tx } from "@earendil-works/pi-durable";
 import type { ThreadStatus } from "../../server/src/thread-directory.js";
 import type { ManagedCheckout } from "./worktrees.js";
 
 // Display metadata does not change the Durable run, its inputs or their terminal outcomes.
 type ThreadPresentation = {
   title?: string; autoTitle?: string; topicTitle?: string; generatedTitle?: string; titleAttempted?: boolean;
-  dismissedFailure?: number; archived?: boolean; checkout?: ManagedCheckout;
+  // `ready` marks a managed checkout that Git created and Hush verified.
+  dismissedFailure?: number; archived?: boolean; checkout?: ManagedCheckout & { ready?: true };
 };
 export const ThreadPresentationDoc = defineDoc<ThreadPresentation>({
   kind: "hush.thread-presentation", version: 1, scope: "conversation", history: "latest", fork: "initial",
@@ -14,6 +15,13 @@ export const ThreadPresentationDoc = defineDoc<ThreadPresentation>({
 
 function cleanLabel(value: string) {
   return value.slice(0, 2048).toWellFormed().replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
+}
+
+// Commit the checkout's completion on its thread. This also refreshes the
+// thread's directory row, whose workspace was unknown until Git created it.
+export async function markCheckoutReady(tx: Tx, thread: ConversationId, cwd: string) {
+  const doc = await tx.doc(ThreadPresentationDoc, thread);
+  if (doc.checkout?.cwd === cwd && !doc.checkout.ready) doc.checkout = { ...doc.checkout, ready: true };
 }
 
 export function threadLabel(value: string, max: number) {

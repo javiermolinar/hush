@@ -18,7 +18,15 @@ const deployCheckout = "/worktrees/deploy/release"
 
 type threadPickerBackend struct {
 	inertBackend
-	list func(sdk.ThreadDirectoryOptions) (sdk.ThreadDirectoryPage, error)
+	list    func(sdk.ThreadDirectoryOptions) (sdk.ThreadDirectoryPage, error)
+	history func(context.Context, sdk.ID, sdk.HistoryRange, int) (sdk.HistoryPage, error)
+}
+
+func (b threadPickerBackend) History(ctx context.Context, id sdk.ID, query sdk.HistoryRange, limit int) (sdk.HistoryPage, error) {
+	if b.history == nil {
+		return sdk.HistoryPage{ThreadID: id}, nil
+	}
+	return b.history(ctx, id, query, limit)
 }
 
 func (b threadPickerBackend) ListThreadDirectory(_ context.Context, options sdk.ThreadDirectoryOptions) (sdk.ThreadDirectoryPage, error) {
@@ -59,17 +67,30 @@ func groupedThreadPage() sdk.ThreadDirectoryPage {
 func openGroupedThreadPicker(t *testing.T, m *Model) {
 	t.Helper()
 	m.options.NewThread.CWD, m.options.WorkspaceLocal = "/launch/hush", true
-	m.backend = threadPickerBackend{list: func(opts sdk.ThreadDirectoryOptions) (sdk.ThreadDirectoryPage, error) {
-		switch opts {
-		case sdk.ThreadDirectoryOptions{Workspace: "/launch/hush", Limit: 50, BrowseAll: true}:
-			return groupedThreadPage(), nil
-		case sdk.ThreadDirectoryOptions{Workspace: deployCWD, Limit: 50}:
-			return deploymentPage(deployCWD, deployCheckout), nil
-		default:
-			return sdk.ThreadDirectoryPage{}, sdk.ErrProtocol
-		}
-	}}
+	m.backend = threadPickerBackend{
+		list: func(opts sdk.ThreadDirectoryOptions) (sdk.ThreadDirectoryPage, error) {
+			switch opts {
+			case sdk.ThreadDirectoryOptions{Workspace: "/launch/hush", Limit: 50, BrowseAll: true}:
+				return groupedThreadPage(), nil
+			case sdk.ThreadDirectoryOptions{Workspace: deployCWD, Limit: 50}:
+				return deploymentPage(deployCWD, deployCheckout), nil
+			default:
+				return sdk.ThreadDirectoryPage{}, sdk.ErrProtocol
+			}
+		},
+		history: func(_ context.Context, id sdk.ID, _ sdk.HistoryRange, _ int) (sdk.HistoryPage, error) {
+			page := sdk.HistoryPage{ThreadID: id}
+			if id == "3" {
+				page.Entries = []sdk.Entry{
+					entry(1, "user", "Explain how the thread picker fits on narrow terminals."),
+					entry(2, "assistant", "The picker keeps the list and details side by side when there is room.\n\nOn narrow terminals, the details stack below the list."),
+				}
+			}
+			return page, nil
+		},
+	}
 	threadPickerStep(t, m, m.runAction(m.host.byID[switchAllID], ""))
+	threadTurnStep(t, m, m.syncThreadTurn())
 }
 
 func TestGoldenThreadPickerGroupsAndStatus(t *testing.T) {

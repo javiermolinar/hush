@@ -141,6 +141,13 @@ func TestGoldenSubagentRoster(t *testing.T) {
 			if !strings.Contains(frame, "Subagents") || m.frame.dialogY+m.frame.dialogHeight != m.frame.ruleY {
 				t.Fatalf("%s %d: dock not anchored:\n%s", mode, width, frame)
 			}
+			// A running worker is amber and a finished one a quiet ✓, per the style guide.
+			panel := strings.Join(m.frame.rows[m.frame.dialogY:m.frame.ruleY], "\n")
+			for _, want := range []string{m.paint(x.Warning, "◐"), m.paint(x.Muted, "✓")} {
+				if !strings.Contains(panel, want) {
+					t.Errorf("%s %d: roster is missing %q", mode, width, want)
+				}
+			}
 		}
 	}
 }
@@ -207,5 +214,32 @@ func TestUsageUpdatesAfterSubagentBaseline(t *testing.T) {
 	m.Update(subagentMsg{lease: m.subagents.token, ok: true, update: sdk.SubagentUpdate{Usage: sdk.Usage{TotalTokens: 50, CostUSD: .08}}})
 	if m.focusedDialog() != d || !strings.Contains(d.output.raw, "Total tokens: 150\nSpend: $0.20") || strings.Contains(d.output.raw, "Parent only") {
 		t.Fatal(d.output.raw)
+	}
+}
+
+func TestSubagentSpendIsItsOwnUsageAndRaisesUsageChanged(t *testing.T) {
+	var seen []x.Thread
+	m, state := demo(t, Options{Fills: FillOff, ReducedMotion: true, Extensions: []x.Registration{{
+		ID: "test/usage", APIVersion: x.APIVersion, Events: []x.Subscription{
+			{Kind: x.UsageChanged, Observe: func(c x.Context, _ x.Event) { seen = append(seen, c.Thread) }},
+		},
+	}}})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.menuFeaturesFromBackend |= x.Subagents
+	state.info.Usage = sdk.Usage{TotalTokens: 100, CostUSD: .12}
+	ctx, cancel := context.WithCancel(m.ctx)
+	defer cancel()
+	m.subagents.feedLease = feedLease{m.token(), m.active, ctx, cancel}
+	spend := sdk.Usage{TotalTokens: 50, CostUSD: .08}
+	m.Update(subagentMsg{lease: m.subagents.token, ok: true, update: sdk.SubagentUpdate{Usage: spend}})
+	if len(seen) != 1 || seen[0].Usage != state.info.Usage || seen[0].SubagentUsage != spend {
+		t.Fatalf("a subagent-only change should raise UsageChanged with separate parent and subagent usage: %+v", seen)
+	}
+	m.Update(subagentMsg{lease: m.subagents.token, ok: true, update: sdk.SubagentUpdate{Usage: spend}})
+	if len(seen) != 1 {
+		t.Fatal("an unchanged subagent total raised UsageChanged")
+	}
+	if got := threadSpend(m.footerThread(state)); got.TotalTokens != 150 || got.CostUSD < .199 || got.CostUSD > .201 {
+		t.Fatalf("the footer total should add both: %+v", got)
 	}
 }

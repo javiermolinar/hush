@@ -23,10 +23,9 @@ type threadState struct {
 	directory                                                *sdk.ThreadDirectoryRow
 	directoryBase                                            tabMetadata
 	gitDiff                                                  gitDiffState
-	plan, chatPlan                                           planView
-	planDraft                                                planDraftState
+	planRun                                                  planActivity
+	planRequest                                              *planRequest // an unconfirmed plan run, retried with the same key
 	openingPane                                              bool
-	workerPanes                                              map[string]workerPaneStatus // by review handle
 	life, revision                                           uint64
 	info                                                     extension.Thread
 	ids, shown                                               []sdk.ID
@@ -62,6 +61,7 @@ type threadState struct {
 	stopInputs                                               []localInput
 	stopEvicted                                              bool
 	activity                                                 activityState
+	rexActivity                                              rexThreadActivity
 	expandEpoch                                              uint64
 	liveOverride, liveExpanded                               bool
 }
@@ -107,7 +107,6 @@ type renderKey struct {
 
 	speakerBreak    bool
 	first, forkHint bool
-	planSave        bool
 }
 type blockCache struct {
 	key  renderKey
@@ -250,10 +249,7 @@ func (t *threadState) merge(values []sdk.Entry) []*record {
 		t.entries[e.ID] = r
 		added = append(added, r)
 		ids = append(ids, e.ID)
-		if e.ThreadID == t.info.ID {
-			t.planDraft.observe(e)
-		}
-		if e.Kind != planPreviewEntry && e.Kind != sdk.ReviewNoticeKind && !checkpointMarker(e.Kind) && lessID(t.lastAnswerID, e.ID) {
+		if e.Kind != planPreviewEntry && e.Kind != workerNoticeEntry && !checkpointMarker(e.Kind) && lessID(t.lastAnswerID, e.ID) {
 			var parts []string
 			for _, msg := range r.entry.Record.Messages {
 				if msg.Role != "assistant" {
@@ -348,9 +344,6 @@ func (m *Model) blockRows(t *threadState, i, width int) []displayRow {
 	}
 	r := t.entries[shown[i]]
 	key.entry = r.entry.Record.ID
-	if r.entry.Record.Kind == planPreviewEntry {
-		key.planSave = m.canSavePlanPreview(t, key.entry)
-	}
 	ctx.Expanded = r.details(t)
 	ctx.ReasoningExpanded = r.reasoningDetails(t)
 	key.expanded, key.reasoning = ctx.Expanded, ctx.ReasoningExpanded

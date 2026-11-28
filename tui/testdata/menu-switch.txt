@@ -4,16 +4,16 @@
 
 
 
-
-
   Switch thread · workspace unverified ───────────────────────────── 3 choices
   › Workspace, thread, or message
   Workspace unknown                      │ workspace
   › ○ workspace                Idle      │ Workspace unknown
     ⑂ Untitled thread                    │ Current thread
-    + New thread                         │ Answer See the docs and
-                                         │ app/main.go:12. func main() {
-                                         │ println(42) }
+    + New thread                         │ Thread #1
+                                         │
+                                         │ Last turn
+                                         │ Prompt: Open the fixture
+                                         │ Reply:  Done
   ↵ Switch to  workspace
   ↑↓ move  ↵ choose  type to filter  esc back
   ────────────────────────────────────────────────────────────────────────────

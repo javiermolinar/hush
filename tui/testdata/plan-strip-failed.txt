@@ -17,8 +17,8 @@
     func main() { println(42) }
   ────────────────────────────────────────
   Plan run · r3 · Tooling and delegation · 3 steps
-  ▸ plan r3  ✓●✗○○○○○○○○○○○  1/14  Pin the read-only review target: Verification failed                  ↵ see why
-  ◌ Waiting for model · 8s ───────────────────────────────────────────────────────── esc stop  ± 4 files  +82 −18*
-  steer ›
-  Workspace src
-  › ◐ src
+  ▸ plan r3  ✓○⏸  1/3  ✗ The run turn did not finish.                ↵ see why
+  ◌ Waiting for model · 8s ──────────────────────────── / commands  ? all keys
+  you ›
+  Workspace workspace
+  › ○ workspace

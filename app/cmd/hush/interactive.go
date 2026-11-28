@@ -45,16 +45,12 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		"modelCatalog": {sdk.ModelCatalogDraftVersion, sdk.ModelCatalogSearchVersion, sdk.ModelCatalogVersion}, "intro": {sdk.IntroActionsVersion, sdk.IntroVersion},
 		"threadDirectory": {sdk.ThreadManagementVersion, sdk.ThreadDirectoryVersion}, "threadWorkspace": {sdk.ThreadWorkspaceSearchVersion, sdk.ThreadWorkspaceVersion},
 		"images": {sdk.ImagesVersion}, "nativeStop": {sdk.NativeStopVersion}, "schedules": {sdk.SchedulesVersion}, "plan": {sdk.PlanVersion},
-		"planWorkspace": {sdk.PlanWorkspaceVersion}, "planReview": {sdk.PlanReviewVersion}, "planDraft": {sdk.PlanDraftVersion}, "planChat": {sdk.PlanChatVersion}, "planWorktree": {sdk.PlanWorktreeVersion}, "planCatalog": {sdk.PlanCatalogVersion},
-		"planChatActivity": {sdk.PlanChatActivityVersion},
-		"checkpoints":      {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffVersion}, "settings": {sdk.SettingsVersion},
+		"checkpoints": {sdk.CheckpointsVersion}, "gitDiff": {sdk.GitDiffLaunchVersion, sdk.GitDiffVersion}, "settings": {sdk.SettingsVersion},
 		"workspaceFiles":      {sdk.WorkspaceFileProjectPathsVersion, sdk.WorkspaceFileSearchVersion, sdk.WorkspaceFilesVersion},
 		"workspaceScopeWatch": {sdk.WorkspaceScopeWatchVersion}, "gitDiffWatch": {sdk.GitDiffWatchVersion},
 		"workspaceSkills": {sdk.WorkspaceSkillDraftVersion, sdk.WorkspaceSkillsVersion}, "loadedContext": {sdk.LoadedContextAgentsVersion, sdk.LoadedContextVersion},
 	}
 	caps["clientEnvironment"] = []uint64{sdk.ClientEnvironmentVersion}
-	caps["delegation"] = []uint64{sdk.DelegationVersion}
-	caps["workerActivity"] = []uint64{sdk.WorkerActivityVersion}
 	caps["subagents"] = []uint64{sdk.SubagentOverviewVersion}
 	environment := detectClientEnvironment(ctx)
 	target := backendstart.Options{Socket: o.Socket, Bundle: o.Bundle, AttachOnly: o.PaneEpoch != "", RequireWorkTrust: true}
@@ -68,8 +64,12 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 			executable, _ = os.Executable()
 		}
 		tabs = tui.NewThreadTabs()
-		openTab := func(ctx context.Context, id sdk.ID) pane.Outcome {
-			err := tabs.Open(ctx, id)
+		openTab := func(ctx context.Context, id sdk.ID, focus bool) pane.Outcome {
+			open := tabs.Open
+			if focus {
+				open = tabs.Focus
+			}
+			err := open(ctx, id)
 			switch {
 			case err == nil:
 				return pane.Confirmed
@@ -113,8 +113,8 @@ func runInteractive(ctx context.Context, o headless.InteractiveOptions) error {
 		PaneCommandsAvailable: client.PaneCommandsAvailable,
 		ThreadTabs:            tabs,
 	}
-	if views := newPaneWorkflows(adapter, client, cwd, executable); views != nil {
-		options.OpenThreadPane, options.OpenReviewPane = views.openThread, views.openReview
+	if views := newPaneWorkflows(adapter, client, executable); views != nil {
+		options.OpenThreadPane = views.openThread
 	}
 	m, err := tui.New(ctx, client, options)
 	if err != nil {

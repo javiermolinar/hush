@@ -195,6 +195,14 @@ test("native thread CLI persists checkout ownership, titles, done status and arc
   assert.ok(page.nextCursor);
   failed(await cli(t, cfg, ["thread", "list", "--all", "--cursor", page.nextCursor, "--json"]).exit, /Invalid or expired cursor/);
   assert.ok(!(await command("list", "--cursor", page.nextCursor)).threads.some(row => row.id === id));
+  // A new checkout keeps the source's subdirectory, so it must exist in committed HEAD.
+  const sub = join(cwd, "sub");
+  await mkdir(sub);
+  value(await trust("grant", sub));
+  const worktrees = async () => (await git(cwd, "worktree", "list", "--porcelain")).match(/^worktree /gm).length;
+  const before = await worktrees();
+  failed(await cli(t, cfg, ["thread", "new", "--worktree", "--cwd", sub, "--json"]).exit, /does not exist in committed HEAD/);
+  assert.equal(await worktrees(), before, "no checkout was written");
 
   await writeFile(join(checkout.cwd, "ignored.txt"), "ignored but valuable\n");
   await writeFile(join(checkout.cwd, "notes.txt"), "unsaved work in isolated checkout\n");
@@ -318,12 +326,11 @@ test("standalone workspace trust uses one exact-directory grant across operation
   assert.equal(await git(created.checkout.cwd, "rev-parse", "HEAD"), head);
   assert.equal(await readFile(join(created.checkout.cwd, "file"), "utf8"), "committed\n");
   await writeFile(join(created.checkout.cwd, "file"), "keep isolated edits\n");
-  assert.equal((await trust("status", created.checkout.cwd)).trusted, false);
+  assert.equal((await trust("status", created.checkout.cwd)).trusted, true, "a checkout Hush creates inherits the source's grant");
   const prompt = (id, text) => cli(t, cfg, ["--socket", h.socket, "--thread", id, "--mode", "text", text]).exit;
   const source = value(await cli(t, cfg, ["--socket", h.socket, "thread", "new", "--cwd", cwd, "--json"]).exit);
   success(await prompt(source.id, "one grant"), "Faux: one grant\n");
-  failed(await prompt(created.id, "does not inherit the source grant"), /not trusted for tool execution/);
-  await deny(created.checkout.cwd);
+  success(await prompt(created.id, "inherits the source grant"), "Faux: inherits the source grant\n");
   assert.deepEqual(await trust("grant", created.checkout.cwd, "work"), {
     kind: "directory", path: await realpath(created.checkout.cwd), trusted: true, dismissed: false,
   });
@@ -997,7 +1004,7 @@ test("native print sends the bundled Hush prompt and refreshes only applicable s
       assert.equal(prompt.split(text).length, 2, `duplicated: ${text}`);
     }
     const declared = new Map(tools.map(({ function: tool }) => [tool.name, tool]));
-    assert.deepEqual([...declared.keys()].sort(), ["bash", "edit", "read", "subagent", "thread_start", "write"]);
+    assert.deepEqual([...declared.keys()].sort(), ["bash", "edit", "plan_read", "plan_save", "read", "subagent", "thread_start", "write"]);
     assert.doesNotMatch(prompt, /^- (bash|edit|read|subagent|thread_start|write): /m);
     const edit = declared.get("edit");
     assert.equal(edit.description, "Replace exact text in one file. Keep replacements small.");

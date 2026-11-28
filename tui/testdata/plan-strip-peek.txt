@@ -3,7 +3,6 @@
 
 
 
-
 │ What changed in @app/main.go:12?
 
   Answer
@@ -14,11 +13,12 @@
     func main() { println(42) }
   ────────────────────────────────────────
   Plan run · r3 · Tooling and delegation · 3 steps
-  │ ● Prove the Durable spawn and join contract · Waiting for model
-  │ ● Pin the read-only review target · Running in worker thread
-  │ 11 pending  ↵ open plan  esc back
-  ▸ plan r3  ✓●●○○○○○○○○○○○  1/14                                                                          focused
-  ◌ Waiting for model · 8s ─────────────────────────────────────────────────────────────────── ± 4 files  +82 −18*
+  │ ✓ Enforce tool profiles
+  │ ● Prove the delegate contract · Waiting for model
+  │ ⏸ Pin the read-only review target · The review target moved
+  │ ↵ open plan  esc back
+  ▸ plan r3  ✓●⏸  1/3  Run in progress                                 focused
+  ◌ Waiting for model · 8s ───────────────────────────────────────────────────
   steer ›
-  Workspace src
-  › ◐ src
+  Workspace workspace
+  › ◐ workspace

@@ -28,7 +28,7 @@ type frameMemo struct {
 	planPeekable, planPeek, planOpen            bool
 	dialogToken                                 uint64
 	dialogPlanRev                               string
-	dialogPlanSelectionRev                      uint64
+	dialogPlanRun                               string // the run the plan panel's consequence line offered
 	dialogX, dialogY, dialogWidth, dialogHeight int
 	dialogChoices                               []int
 	dialogListWidth, dialogBodyHeight           int
@@ -129,7 +129,7 @@ func (m *Model) View() tea.View {
 	const fixedRows = 1 // live rule
 	var notice displayRow
 	free := m.height - fixedRows - len(editorRows) - len(below) - len(completions)
-	var planRun *planView
+	var planRun *sdk.PlanActivityRun
 	if d == nil && free > 1 {
 		planRun = m.currentPlanRun(t)
 		if planRun != nil {
@@ -377,8 +377,8 @@ func (m *Model) View() tea.View {
 		f.dialogWidth, f.dialogHeight, f.dialogChoices = w, len(panel.rows), panel.targets
 		f.dialogListWidth, f.dialogBodyHeight, f.dialogBodyStart = panel.listWidth, panel.bodyHeight, panel.bodyStart
 		if d.plan != nil {
-			f.dialogPlanRev = m.planViewFor(d).snapshot.Revision
-			f.dialogPlanSelectionRev = d.plan.selectionRev
+			f.dialogPlanRev = d.plan.snapshot.Revision
+			f.dialogPlanRun = m.planRunKey(d)
 		}
 		if panel.cursor != nil && m.focused {
 			panel.cursor.Position.X += pane.edge
@@ -489,10 +489,6 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 	if subagents.text != "" {
 		room -= stringWidth(subagents.text) + 2
 	}
-	workers := m.workerBadgeRow(room)
-	if workers.text != "" {
-		room -= stringWidth(workers.text) + 2
-	}
 	badge := m.gitDiffBadgeRow(t, room)
 	if badge.text != "" {
 		room -= stringWidth(badge.text) + 2
@@ -502,7 +498,6 @@ func (m *Model) promptRule(t *threadState, w int, paused string, hints []string)
 		metadata.text = m.quiet(model)
 	}
 	mergeRow(&metadata, subagents, "  ")
-	mergeRow(&metadata, workers, "  ")
 	mergeRow(&metadata, badge, "  ")
 	var right displayRow
 	if paused != "" {
@@ -621,9 +616,6 @@ func (m *Model) ruleHints(t *threadState, slashes, files bool, fileChoices int) 
 			hints = append(hints, m.keyHint("enter", "steer"), m.keyHint("alt+enter", "follow-up"))
 		}
 		return hints
-	}
-	if canStopPlan(t) {
-		return []string{m.keyHint("esc", "stop")}
 	}
 	if len(t.attachments) != 0 {
 		return []string{m.keyHint("enter", "send"), m.keyHint("ctrl+c", "clear")}
@@ -789,9 +781,6 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 						}
 						return nil
 					}
-					if d.worker != nil {
-						return m.workerClick(d, target, p.X, p.Y)
-					}
 					if target >= 0 {
 						if f.dialogListWidth > 0 && p.X >= f.dialogX+f.dialogListWidth {
 							return nil // the same row in the detail pane is not a list hit
@@ -801,10 +790,9 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 							return m.planWorkspaceKey(d, "enter")
 						}
 						if d.plan != nil {
-							v := m.planViewFor(d)
-							if v.snapshot.Plan != nil && f.dialogPlanRev == v.snapshot.Revision && target < len(v.snapshot.Plan.Steps) {
+							if d.plan.ready && f.dialogPlanRev == d.plan.snapshot.Revision && target < len(d.plan.snapshot.Plan.Steps) {
 								d.plan.focus, d.plan.details, d.plan.scroll = target, false, 0
-								m.togglePlanStep(v, d.plan)
+								m.togglePlanStep(d)
 							}
 							return nil
 						}
@@ -825,13 +813,8 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 						d.selected = target
 						return m.acceptChoice(d)
 					}
-					if d.plan != nil {
-						switch target {
-						case planRunTarget:
-							return m.planKey(d, "enter")
-						case planWorktreeDismissTarget:
-							return m.planKey(d, "x")
-						}
+					if d.plan != nil && target == planRunTarget {
+						return m.planKey(d, "enter")
 					}
 					if target == themeFillsTarget && d.themePicker != nil {
 						m.moveFills(d, 1)
@@ -877,18 +860,14 @@ func (m *Model) mouse(msg tea.Msg) tea.Cmd {
 				} else if p.Button == tea.MouseWheelDown {
 					m.outputMove(d, 3, 0)
 				}
-			} else if inside && (d.subagent != nil || d.worker != nil || d.planWorkspace != nil || d.planHistory != nil || d.planReview != nil || d.plan != nil) {
+			} else if inside && (d.subagent != nil || d.planWorkspace != nil || d.planHistory != nil || d.plan != nil) {
 				move := m.planKey
 				if d.subagent != nil {
 					move = m.subagentKey
-				} else if d.worker != nil {
-					move = m.workerKey
 				} else if d.planWorkspace != nil {
 					move = m.planWorkspaceKey
 				} else if d.planHistory != nil {
 					move = m.planHistoryKey
-				} else if d.planReview != nil {
-					move = m.planReviewKey
 				}
 				if p.Button == tea.MouseWheelUp {
 					return move(d, "up")

@@ -14,11 +14,10 @@ test("pane intent matches the shared Go and TypeScript grammar fixtures", () => 
 
 test("tool schemas and wire dispatch use the shared capability matrix", async () => {
   const directory = { dir: "/fixture", directory: { device: "1", inode: "2", birth: "3" } };
-  const launches = [argv, { mode: "shell", text: "printf value" }, { mode: "terminal" }, { mode: "hush" },
-    { mode: "review", handle: "a".repeat(32) }];
+  const launches = [argv, { mode: "shell", text: "printf value" }, { mode: "terminal" }, { mode: "hush" }];
   const handle = "hp_ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   for (const row of fixtures.capabilityCases) {
-    const schemas = paneToolParameters(row.caps, true);
+    const schemas = paneToolParameters(row.caps);
     const checks = Object.fromEntries(Object.entries(schemas).map(([name, schema]) => [name, compile(schema).check]));
     const dispatch = async (request, expected) => {
       const routes = new PaneRoutes(), frames = [];
@@ -32,7 +31,7 @@ test("tool schemas and wire dispatch use the shared capability matrix", async ()
       for (const launch of launches) {
         const expected = row.placements.includes(placement) && row.launches.includes(launch.mode);
         assert.equal(!!checks.pane_open?.({ placement, launch }), expected);
-        await dispatch({ op: "open", placement, launch: launch.mode === "review" ? { ...launch, threadId: "7" } : launch, ...directory }, expected);
+        await dispatch({ op: "open", placement, launch, ...directory }, expected);
       }
     }
     for (const where of ["tab", "split"]) {
@@ -67,15 +66,13 @@ test("pane_open advertises and accepts only the adapter's placements", () => {
 });
 
 test("open offers typed views only when the client and backend support them", () => {
-  const terminal = { mode: "terminal" }, hush = { mode: "hush" }, review = { mode: "review", handle: "a".repeat(32) };
-  for (const [views, reviews] of [[false, false], [false, true], [true, false], [true, true]]) {
-    const { check } = compile(paneToolParameters({ views }, reviews).pane_open);
+  const terminal = { mode: "terminal" }, hush = { mode: "hush" };
+  for (const views of [false, true]) {
+    const { check } = compile(paneToolParameters({ views }).pane_open);
     const open = launch => check({ placement: "right", launch });
     assert.equal(open(terminal), views);
     assert.equal(open(hush), views);
-    assert.equal(open(review), views && reviews);
-    assert.equal(open({ ...review, threadId: "7" }), false);
-    assert.equal(open({ ...review, handle: "latest" }), false);
+    assert.equal(open({ mode: "review", handle: "a".repeat(32) }), false, "the review mode was removed");
     assert.equal(open({ ...terminal, program: "/bin/echo" }), false);
     assert.equal(open({ ...hush, args: ["--socket", "/tmp/not-the-origin"] }), false);
   }

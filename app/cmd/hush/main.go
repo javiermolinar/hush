@@ -27,12 +27,9 @@ func main() {
 		}
 		os.Exit(keyring.Run(os.Stdin, os.Stdout))
 	}
-	if len(os.Args) == 2 && (os.Args[1] == filelist.HelperArg || os.Args[1] == filelist.PlanFileArg) {
+	if len(os.Args) == 2 && os.Args[1] == filelist.HelperArg {
 		if !privatePipe(os.Stdin) || !privatePipe(os.Stdout) {
 			os.Exit(2)
-		}
-		if os.Args[1] == filelist.PlanFileArg {
-			os.Exit(filelist.RunPlanFile(os.Stdin, os.Stdout))
 		}
 		os.Exit(filelist.Run(os.Stdin, os.Stdout))
 	}

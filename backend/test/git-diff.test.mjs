@@ -95,8 +95,8 @@ test("read-only Git review is negotiated, checkout-scoped, and can compare a fil
     const isolated = await call("ext.threadDirectory.new", { cwd: sub, worktree: true });
     assert.notEqual(isolated.checkout.cwd, cwd);
     const isolatedRequest = { threadId: isolated.id, range: "head" };
-    assert.deepEqual((await peer.send("ext.gitDiff.summary", isolatedRequest)).error, needsTrust);
-    await trust("grant", isolated.checkout.cwd);
+    // The new checkout keeps the source's subdirectory and inherits its grant there.
+    assert.equal(isolated.checkout.cwd.endsWith("/src"), true, isolated.checkout.cwd);
     const isolatedSummary = await call("ext.gitDiff.summary", isolatedRequest);
     assert.deepEqual(isolatedSummary.files, []);
     assert.equal(isolatedSummary.branch, isolated.checkout.branch);
@@ -283,4 +283,52 @@ test("a native tool write in checkout A wakes the Git watch in checkout B", { ti
   assert.notEqual(updated.revision, clean.revision);
   assert.equal(updated.summary.commit, head);
   assert.deepEqual(updated.summary.files, [{ path: "tracked.txt", status: "M", staged: false, text: true, added: 1, removed: 1 }]);
+});
+
+test("Git review version 2 reads a trusted launch directory before any thread exists", { timeout: 20_000 }, async () => {
+  const home = await realpath(await mkdtemp("/tmp/hush-diff-launch-"));
+  let app, peer, legacy;
+  try {
+    const cwd = join(home, "project"), agentDir = join(home, ".hush"), dataDir = join(agentDir, "runtime");
+    const socket = join(dataDir, "hush.sock");
+    await mkdir(cwd, { recursive: true });
+    const env = { HOME: home, PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+    const git = async (...args) => (await run("git", args, { cwd, env })).stdout.trim();
+    await git("init", "-q", "-b", "main");
+    await writeFile(join(cwd, "tracked"), "base\n");
+    await git("add", ".");
+    await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "seed");
+    app = await startBackend({ cwd, agentDir, dataDir, socket, idleMs: 30_000, ephemeral: false, faux: true });
+    peer = await dial(socket);
+    legacy = await dial(socket);
+    assert.deepEqual(ok(await peer.send("hello", { versions: [1], capabilities: { gitDiff: [2, 1], gitDiffWatch: [1] } })).capabilities,
+      { gitDiff: 2, gitDiffWatch: 1 });
+    assert.equal(ok(await legacy.send("hello", { versions: [1], capabilities: { gitDiff: [1] } })).capabilities.gitDiff, 1);
+    const threads = async () => ok(await peer.send("thread.list", { limit: 32 })).threads.map(t => t.id);
+    const before = await threads();
+    assert.equal((await legacy.send("ext.gitDiff.summary", { cwd, range: "head" })).error.code, "invalid_request", "version 1 needs a thread");
+    assert.equal((await peer.send("ext.gitDiff.summary", { cwd: "project", range: "head" })).error.code, "invalid_request");
+    assert.deepEqual((await peer.send("ext.gitDiff.summary", { cwd, range: "head" })).error, needsTrust);
+    await run(process.execPath, [bundle, "trust", "grant", "--cwd", cwd], { cwd, env });
+    await writeFile(join(cwd, "tracked"), "changed\n");
+    const summary = ok(await peer.send("ext.gitDiff.summary", { cwd, range: "head" }));
+    assert.equal(summary.branch, "main");
+    assert.equal(summary.checkpoint, false);
+    assert.deepEqual(summary.files.map(f => [f.path, f.status]), [["tracked", "M"]]);
+    const patch = ok(await peer.send("ext.gitDiff.file", { cwd, revision: summary.revision, file: 0 }));
+    assert.ok(patch.lines.some(line => line.kind === "add" && line.text === "changed"));
+    assert.match((await peer.send("ext.gitDiff.summary", { cwd, range: "checkpoint" })).error.message, /needs a thread/);
+    const watched = ok(await peer.send("ext.gitDiffWatch.wait", { cwd }));
+    assert.deepEqual(watched.summary.files.map(f => f.path), ["tracked"]);
+    const { id: threadId } = ok(await peer.send("thread.new", { cwd }));
+    assert.equal((await peer.send("ext.gitDiff.file", { threadId, revision: summary.revision, file: 0 })).error.code, "invalid_cursor",
+      "a launch-directory locator does not address a thread");
+    assert.equal((await peer.send("ext.gitDiff.summary", { threadId, cwd, range: "head" })).error.code, "invalid_request");
+    assert.deepEqual((await threads()).filter(id => !before.includes(id)), [threadId], "reading a launch directory creates no thread");
+  } finally {
+    peer?.close();
+    legacy?.close();
+    await app?.close();
+    await rm(home, { recursive: true, force: true });
+  }
 });

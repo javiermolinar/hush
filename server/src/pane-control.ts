@@ -7,9 +7,12 @@ export const paneMaxReadLines = 200;
 export type PaneCapabilities = { left: boolean; above: boolean; tabs: boolean; read: boolean; views?: boolean;
   threadTabs?: boolean; noPanes?: boolean };
 export type ThreadWhere = "tab" | "split";
+// Opening and switching to a thread is host-initiated (a conversation move),
+// never a model-facing thread_open placement.
+export type ThreadOpenWhere = ThreadWhere | "focus";
 export type PanePlacement = "right" | "below" | "left" | "above" | "tab";
 export type PaneLaunch = { mode: "argv"; program: string; args: string[] } | { mode: "shell"; text: string } |
-  { mode: "terminal" } | { mode: "hush" } | { mode: "review"; threadId: string; handle: string };
+  { mode: "terminal" } | { mode: "hush" };
 export type PaneFileIdentity = { device: string; inode: string; birth: string };
 export type PaneDirectory = { dir: string; directory: PaneFileIdentity };
 export function paneFileIdentity(info: { dev: bigint; ino: bigint; birthtimeNs: bigint }): PaneFileIdentity {
@@ -18,11 +21,11 @@ export function paneFileIdentity(info: { dev: bigint; ino: bigint; birthtimeNs: 
 export type PaneRequest =
   ({ op: "open"; placement: PanePlacement; launch: PaneLaunch } & PaneDirectory) |
   { op: "list" } | { op: "focus"; pane: string } | { op: "read"; pane: string; lines: number } |
-  { op: "thread_open"; threadId: string; where: "tab" } |
+  { op: "thread_open"; threadId: string; where: "tab" | "focus" } |
   ({ op: "thread_open"; threadId: string; where: "split" } & PaneDirectory);
 export type PaneReply = { outcome: "rejected" | "unknown" } |
   ({ outcome: "confirmed" } & ({ pane: string } | { panes: string[] } | { text: string; truncated: boolean } |
-    { threadId: string; where: ThreadWhere }));
+    { threadId: string; where: ThreadOpenWhere }));
 
 export const threadStartNoticeKind = "hush.thread-start-notice";
 export type PaneAdmission = { key: string; until: number; launch?: true };
@@ -66,7 +69,7 @@ export function panePlacements(caps: Partial<PaneCapabilities>): PanePlacement[]
 }
 export function paneLaunchModes(caps: Partial<PaneCapabilities>): PaneLaunch["mode"][] {
   if (caps.noPanes) return [];
-  return caps.views ? ["argv", "shell", "terminal", "hush", "review"] : ["argv", "shell"];
+  return caps.views ? ["argv", "shell", "terminal", "hush"] : ["argv", "shell"];
 }
 export function threadViewPlacements(caps: Partial<PaneCapabilities>): ThreadWhere[] {
   return !caps.threadTabs ? [] : caps.views && !caps.noPanes ? ["tab", "split"] : ["tab"];
@@ -75,7 +78,8 @@ export const paneCanRead = (caps: Partial<PaneCapabilities>) => !caps.noPanes &&
 const opensView = (request: PaneRequest) => request.op === "open" || request.op === "thread_open";
 
 function allowed(caps: PaneCapabilities, request: PaneRequest) {
-  if (request.op === "thread_open") return durableID(request.threadId) && threadViewPlacements(caps).includes(request.where);
+  if (request.op === "thread_open") return durableID(request.threadId) &&
+    (request.where === "focus" ? caps.threadTabs === true : threadViewPlacements(caps).includes(request.where));
   if (caps.noPanes) return false;
   switch (request.op) {
     case "list": return true;

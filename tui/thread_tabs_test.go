@@ -55,3 +55,25 @@ func TestThreadOpenRejectsCanceledOrFullTabBar(t *testing.T) {
 		t.Fatal(r, m.tabs)
 	}
 }
+
+func TestThreadFocusOpensAndSwitchesKeepingTheDraft(t *testing.T) {
+	tabs := NewThreadTabs()
+	m, _ := demo(t, Options{ThreadTabs: tabs, Fills: FillOff, ReducedMotion: true})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.editor.set("Keep the draft")
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- tabs.Focus(ctx, "12") }()
+	msg, ok := tabs.wait(ctx)().(tabOpenMsg)
+	if !ok || !msg.focus {
+		t.Fatal("focus request was lost")
+	}
+	m.Update(msg)
+	if r := <-result; r != nil {
+		t.Fatal(r)
+	}
+	if m.active != "12" || !slices.Equal(m.tabs, []sdk.ID{"1", "12"}) || m.threads["1"].draft.text != "Keep the draft" {
+		t.Fatalf("focus did not switch or lost the draft: %v %s %q", m.tabs, m.active, m.threads["1"].draft.text)
+	}
+}

@@ -6,19 +6,19 @@
 
 
 
+  Run history · Workspace profiles ──────────────────────────────────── 2 runs
+  › ✓ Save a profile, Resto…  Finished   │ Run of 2 steps
+    ✗ Save a profile          Stopped    │ Thread #8
+                                         │ Revision 7
+                                         │ Save a profile: done · Wrote
+                                         │ profile.json
+                                         │ Restore saved profiles: not
+                                         │ reported
 
-
-
-│ What changed in @app/main.go:12?
-
-  Answer
-
-  Run history · Workspace profiles ──────────────────────────────────── 0 runs
-  No recorded runs
-
-  ↑↓ scroll  ← latest  → older  r refresh  f full  esc back
+  ↵ Open  thread #8
+  ↵ open thread  ↑↓ move  r refresh  f full  esc back
 
   ────────────────────────────────────────────────────────────────────────────
   you ›
-  Workspace workspace
-  › ○ workspace
+  Workspace profiles
+  › ○ profiles

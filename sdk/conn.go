@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -257,60 +258,11 @@ func (s *session) receive(f map[string]any) error {
 		if version != ImagesVersion || imagesWire()["successEnvelope"].Validate(f) != nil {
 			return fmt.Errorf("%w: images schema or negotiation", ErrProtocol)
 		}
-	} else if ok && (method == planRun || method == planAttach || method == planWait) {
+	} else if ok && slices.Contains(planMethods, method) {
 		s.mu.Lock()
 		version := s.hello.Capabilities[planCapability]
 		s.mu.Unlock()
 		if err := optionalEnvelope(f, version, PlanVersion); err != nil {
-			return err
-		}
-	} else if ok && method == planCatalogWait {
-		s.mu.Lock()
-		version := s.hello.Capabilities[planCatalog]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, PlanCatalogVersion); err != nil {
-			return err
-		}
-	} else if ok && (method == planWorkspaceWait || method == planWorkspaceInspect || method == planWorkspaceHistory || method == planWorkspaceClose || method == planWorkspaceUse) {
-		s.mu.Lock()
-		version := s.hello.Capabilities[planWorkspace]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, PlanWorkspaceVersion); err != nil {
-			return err
-		}
-	} else if ok && (method == planWorktreePrepare || method == planWorktreeStart) {
-		s.mu.Lock()
-		version := s.hello.Capabilities[planWorktreeCap]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, PlanWorktreeVersion); err != nil {
-			return err
-		}
-	} else if ok && (method == planChatRun || method == planChatPlans || method == planChatInspect) {
-		s.mu.Lock()
-		version := s.hello.Capabilities[planChat]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, PlanChatVersion); err != nil {
-			return err
-		}
-	} else if ok && method == planChatActivityWait {
-		s.mu.Lock()
-		version := s.hello.Capabilities[planChatActivity]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, PlanChatActivityVersion); err != nil {
-			return err
-		}
-	} else if ok && method == planDraftSave {
-		s.mu.Lock()
-		version := s.hello.Capabilities[planDraftCapability]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, PlanDraftVersion); err != nil {
-			return err
-		}
-	} else if ok && (method == planReviewWait || method == planReviewStart || method == planReviewCancel) {
-		s.mu.Lock()
-		version := s.hello.Capabilities[planReviewCapability]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, PlanReviewVersion); err != nil {
 			return err
 		}
 	} else if ok && method == subagentOverview {
@@ -318,24 +270,6 @@ func (s *session) receive(f map[string]any) error {
 		version := s.hello.Capabilities[subagentsCapability]
 		s.mu.Unlock()
 		if err := optionalEnvelope(f, version, SubagentOverviewVersion); err != nil {
-			return err
-		}
-	} else if ok && (method == workerActivityWait || method == workerActivityInspect) {
-		s.mu.Lock()
-		version := s.hello.Capabilities[workerActivityCapability]
-		base := s.hello.Capabilities[delegationCapability]
-		s.mu.Unlock()
-		if base != DelegationVersion {
-			return ErrProtocol
-		}
-		if err := optionalEnvelope(f, version, WorkerActivityVersion); err != nil {
-			return err
-		}
-	} else if ok && (method == reviewStart || method == reviewGet || method == reviewStop) {
-		s.mu.Lock()
-		version := s.hello.Capabilities[delegationCapability]
-		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, DelegationVersion); err != nil {
 			return err
 		}
 	} else if ok && method == loadedContextGet {
@@ -424,7 +358,10 @@ func (s *session) receive(f map[string]any) error {
 		s.mu.Lock()
 		version := s.hello.Capabilities[gitDiffCapability]
 		s.mu.Unlock()
-		if err := optionalEnvelope(f, version, GitDiffVersion); err != nil {
+		if version != GitDiffVersion && version != GitDiffLaunchVersion {
+			return ErrProtocol
+		}
+		if err := optionalEnvelope(f, version, version); err != nil {
 			return err
 		}
 	} else if ok && strings.HasPrefix(method, checkpointPrefix) {

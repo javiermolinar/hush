@@ -1,13 +1,18 @@
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { AgentDoc, AssistantEntry, configure, defineDocFamily, defineExtension, defineTask, defineTool, GenerationTask, hook, LiveDoc,
   SubmissionSettled, ToolTask, UsageDoc, UserEntry, type Agent, type ConversationId, type Cursor, type EntryRecord, type Extension, type Harness,
   type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { environmentInputKind } from "../../server/src/client-environment.js";
-import { projectUsage } from "../../server/src/durable.js";
+import { projectUsage, type NativeHost } from "../../server/src/durable.js";
+import { planChatKind, planThinkingLevels, type PlanThinking } from "../../server/src/plan.js";
 import { subagentToolName, type SubagentEvent, type SubagentOverviewQuery, type SubagentQuery, type SubagentRow, type SubagentStatus, type SubagentsHost } from "../../server/src/subagents.js";
 import { WireError } from "../../server/src/wire.js";
-import { bindExecutionWorkspace, requireExecutionWorkspace, sameExecutionWorkspace, type ExecutionWorkspace } from "./execution-workspace.js";
+import { delegateGitName } from "./delegate-git.js";
+import { planStepDelegate } from "./plan.js";
+import { bindExecutionWorkspace, delegateDirectory, requireExecutionWorkspace, requireSubdirectory, sameExecutionWorkspace,
+  type ExecutionWorkspace } from "./execution-workspace.js";
 import { admitToolProfile, type ToolPolicy } from "./tool-policy.js";
 import { ChangePulse, WorkspaceRevisions } from "./workspace-changes.js";
 import type { WorkspaceTrust } from "./workspace-trust.js";
@@ -19,13 +24,19 @@ const childKey = (task: TaskId) => `subagent:${task}`;
 const settledKey = "settled";
 const modelHint = "Use subagent without waiting for the user to ask when delegating a focused task or getting an independent second opinion would improve the answer. " +
   "For example, a review might benefit from separate passes on security and design, or from a second look at one risky change. Choose the scope and number of workers based on the task. " +
-  "Give it a self-contained prompt. Set read_only for inspection and false for work that needs edits or shell tools. " +
+  "Give it a self-contained prompt. Workers are read-only by default, with file reads and, when the repository root is trusted, read-only Git (status, diff, show, log); " +
+  "set read_only: false for work that needs edits or shell tools. Set pwd to start in a subdirectory of the checkout, and thinking to change the reasoning effort. " +
   "For independent read-only tasks, issue the calls together in one response so they can run in parallel. Writable workers run one at a time. " +
-  "The parent resumes after the results are ready. You can start at most five per user turn; handle quick checks yourself.";
+  "The parent resumes after the results are ready. You can start at most five per user turn; handle quick checks yourself. " +
+  "In a plan run, delegate a step that has a delegate specification by passing only its step ID.";
 
-type Input = { prompt: string; read_only: boolean; worktree?: string };
-type Intent = Input & { turn: SubmissionId; source: ExecutionWorkspace; workspace: ExecutionWorkspace;
-  model: NonNullable<Agent["model"]>; thinking: Agent["thinkingLevel"] };
+type Input = { prompt: string; read_only?: boolean; worktree?: string; pwd?: string; thinking?: PlanThinking };
+type Args = Partial<Input> & { step?: string };
+// `pwd` is relative to the workspace's cwd; omitted for the checkout itself.
+type Intent = { prompt: string; read_only: boolean; worktree?: string; pwd?: string; turn: SubmissionId; source: ExecutionWorkspace;
+  workspace: ExecutionWorkspace; model: NonNullable<Agent["model"]>; thinking: Agent["thinkingLevel"] };
+type Validate = NonNullable<NativeHost["validateSelection"]>;
+const delegateCwd = ({ workspace, pwd }: Intent) => pwd ? join(workspace.root, pwd) : workspace.root;
 type Phase = { phase: "open" } | { phase: "submit"; child: ConversationId }
   | { phase: "settle"; child: ConversationId; submission: SubmissionId };
 type Finish = { status: SubagentStatus; detail?: string };
@@ -46,8 +57,8 @@ const complete = (status: SubagentStatus, detail?: string) => ({ status: "termin
 const unresolved = () => complete("failed", "Subagent records could not be matched.");
 const output = (text: string, isError = false) => ({ output: [{ type: "text" as const, text }], ...(isError && { isError }) });
 
-// Match a direct tool in an ordinary placed user turn. A steer, tool round,
-// inputless Continue, or nested call can't make a new budget for this input.
+// Match a direct tool in an ordinary placed user turn or a plan run. A steer,
+// tool round, inputless Continue, or nested call can't make a new budget.
 async function parentTurn(tx: Tx, owner: ConversationId, caller: { tool: TaskId } | { generation: TaskId }) {
   const parent = await tx.conversation(owner);
   if (!parent || parent.owner) return;
@@ -61,13 +72,15 @@ async function parentTurn(tx: Tx, owner: ConversationId, caller: { tool: TaskId 
   const input = await tx.submission(run.inputs[0]!);
   if (input?.type !== "input" || input.status !== "placed" || input.conversationId !== owner) return;
   const first = await tx.entry(input.entry);
-  if (first?.conversationId !== owner || !UserEntry.is(first) && first.kind !== environmentInputKind) return;
+  if (first?.conversationId !== owner || !UserEntry.is(first) && first.kind !== environmentInputKind && first.kind !== planChatKind) return;
   return { id: input.id, cwd: (await tx.doc(AgentDoc, owner)).cwd };
 }
 
-function validInput({ prompt, worktree }: Input) {
+function validInput({ prompt, worktree, pwd, thinking }: Input) {
   return !!prompt.trim() && prompt.isWellFormed() && !prompt.includes("\0") && Buffer.byteLength(prompt) <= maxPrompt &&
-    (worktree === undefined || worktree.isWellFormed() && Buffer.byteLength(worktree) <= 255 && !/[\s\p{Cc}]/u.test(worktree));
+    (worktree === undefined || worktree.isWellFormed() && Buffer.byteLength(worktree) <= 255 && !/[\s\p{Cc}]/u.test(worktree)) &&
+    (pwd === undefined || pwd.isWellFormed() && Buffer.byteLength(pwd) <= 1024) &&
+    (thinking === undefined || planThinkingLevels.includes(thinking));
 }
 
 function publicText(message: { content: readonly { type: string; text?: string }[] } | undefined) {
@@ -121,25 +134,48 @@ export class Subagents implements SubagentsHost {
 
   constructor(private readonly harness: () => Harness, private readonly trust: WorkspaceTrust,
       private readonly policy: ToolPolicy, private readonly promptExtension: Extension,
-      private readonly coding: Extension) {
+      private readonly coding: Extension, private readonly git?: Extension, private readonly validate?: Validate) {
     this.#worker = this.#definition();
     this.extension = this.#extension();
   }
 
   #extension() {
     const service = this;
-    const tool = defineTool({ name: subagentToolName, description: "Run one task in a fresh backend subagent and wait for its public log. The optional worktree is the branch of an existing checkout in the same repo.",
+    const tool = defineTool({ name: subagentToolName, description: "Run one task in a fresh backend subagent and wait for its public log. " +
+      "read_only defaults to true. worktree is the branch of an existing trusted checkout in the same repo; pwd is a directory inside the checkout; " +
+      "thinking overrides this thread's thinking level. In a plan run, pass only step to run a selected step's delegate specification.",
       callers: ["model"], replay: "unsafe", executionMode: "parallel", outputLimits: { maxBytes: logBytes + 512, maxLines: logBytes },
       parameters: { type: "object", properties: { prompt: { type: "string", minLength: 1, maxLength: maxPrompt },
-        read_only: { type: "boolean" }, worktree: { type: "string", minLength: 1, maxLength: 255 } },
-        required: ["prompt", "read_only"], additionalProperties: false } as const,
-      async execute(args: Input, api, ctx) {
-        if (!validInput(args)) return output("Invalid subagent prompt or worktree branch.", true);
+        read_only: { type: "boolean" }, worktree: { type: "string", minLength: 1, maxLength: 255 },
+        pwd: { type: "string", minLength: 1, maxLength: 1024 }, thinking: { type: "string", enum: planThinkingLevels },
+        step: { type: "string", pattern: "^[A-Za-z0-9_-]+$", maxLength: 64 } },
+        additionalProperties: false } as const,
+      async execute(given: Args, api, ctx) {
         const owner = api.conversationId, caller = { tool: api.taskId };
+        let args: Input;
+        if (given.step !== undefined) {
+          // The step's specification comes from the run's pinned revision.
+          if (Object.keys(given).length !== 1) return output("Pass only step to delegate a plan step.", true);
+          const step = given.step, spec = await api.commit(tx => planStepDelegate(tx, owner, step), ctx);
+          if ("error" in spec) return output(spec.error, true);
+          args = spec;
+        } else if (given.prompt === undefined) return output("Pass a prompt, or a step in a plan run.", true);
+        else args = { ...given, prompt: given.prompt };
+        if (!validInput(args)) return output("Invalid subagent prompt, worktree branch, pwd or thinking level.", true);
+        const readOnly = args.read_only ?? true;
         const first = await api.commit(tx => parentTurn(tx, owner, caller), ctx);
         if (!first) return output("Subagent requires an ordinary placed user turn.", true);
         const agent = await api.agent(ctx);
         if (!agent.model) return output("The parent has no available model selection.", true);
+        if (args.thinking !== undefined && args.thinking !== agent.thinkingLevel) {
+          try {
+            if (!service.validate) throw new Error("unavailable");
+            await service.validate(agent.model, args.thinking);
+          } catch {
+            ctx.abortSignal?.throwIfAborted();
+            return output(`Thinking level ${args.thinking} is not available for this thread's model.`, true);
+          }
+        }
         const source = await service.policy.subagentWorkspace(api, ctx);
         if (!source) return output("The parent workspace is not authorized for subagents.", true);
         let workspace: ExecutionWorkspace;
@@ -151,7 +187,16 @@ export class Subagents implements SubagentsHost {
           ctx.abortSignal?.throwIfAborted();
           return output("Subagent requires a trusted workspace and an existing trusted worktree in the same repository.", true);
         }
-        const intent: Intent = { ...args, turn: first.id, source, workspace, model: { ...agent.model }, thinking: agent.thinkingLevel };
+        const pwd = args.pwd === undefined ? "" : delegateDirectory(workspace, args.pwd);
+        try {
+          if (pwd === undefined) throw new Error("outside");
+          await requireSubdirectory(workspace, pwd);
+        } catch {
+          ctx.abortSignal?.throwIfAborted();
+          return output("pwd must be an existing directory inside the subagent's checkout.", true);
+        }
+        const intent: Intent = { prompt: args.prompt, read_only: readOnly, ...(args.worktree && { worktree: args.worktree }),
+          ...(pwd && { pwd }), turn: first.id, source, workspace, model: { ...agent.model }, thinking: args.thinking ?? agent.thinkingLevel };
         const task = await api.commit(async tx => {
           const current = await parentTurn(tx, owner, caller);
           if (current?.id !== first.id || current.cwd !== first.cwd || !await service.policy.matchesSubagentWorkspace(tx, api, source)) return;
@@ -191,13 +236,21 @@ export class Subagents implements SubagentsHost {
     ] });
   }
 
-  async #workspaceFailure({ source, workspace, worktree }: Intent, signal: AbortSignal) {
+  // Git reads history and objects for the whole repository, so only a grant
+  // for the repository root gets the git tool.
+  async #rootGrant(w: ExecutionWorkspace, signal: AbortSignal) {
+    try { return await this.trust.withGit(w.root, signal, identity => identity.root.path === identity.cwd.path); }
+    catch { signal.throwIfAborted(); return false; }
+  }
+
+  async #workspaceFailure({ source, workspace, worktree, pwd }: Intent, signal: AbortSignal) {
     try {
       if (worktree && await existingWorktree(this.trust, source.root, worktree, signal) !== workspace.root)
         return complete("failed", "The selected worktree changed.");
       // The Git probe checks current trust, not the original grant or directory pins.
       await requireExecutionWorkspace(this.trust, source, signal);
       if (!sameExecutionWorkspace(source, workspace)) await requireExecutionWorkspace(this.trust, workspace, signal);
+      await requireSubdirectory(workspace, pwd);
     } catch {
       signal.throwIfAborted();
       return complete("failed", "The workspace or worktree is no longer trusted or available.");
@@ -231,14 +284,17 @@ export class Subagents implements SubagentsHost {
         await Promise.all(blockers.map(id => runtime.waitForTask(id, ctx)));
         const failure = await this.#workspaceFailure(input, runtime.signal);
         if (failure) return runtime.commit(() => failure, ctx);
+        const offerGit = input.read_only && !!this.git && await this.#rootGrant(input.workspace, runtime.signal);
         return runtime.commit(async tx => {
           const row = await rowFor(tx, owner, task.id, task.owner, input.turn);
           if (!row || row.child !== undefined || row.submission !== undefined) return unresolved();
           const child = await tx.createConversation({ ownership: { kind: "task", taskId: task.id } });
-          await admitToolProfile(tx, child, { kind: input.read_only ? "read-only" : "subagent-write", workspace: input.workspace });
-          const tools = this.coding.tools?.filter(t => !input.read_only || t.name === "read") ?? [];
-          await configure(tx, child.id, { extensions: [this.promptExtension, this.coding], tools, modelTools: tools,
-            cwd: input.workspace.cwd, model: input.model, thinkingLevel: input.thinking, maxTurns: null, compaction: { enabled: false },
+          await admitToolProfile(tx, child, { kind: input.read_only ? "read-only" : "subagent-write", workspace: input.workspace,
+            ...(input.pwd && { pwd: input.pwd }) });
+          const git = offerGit ? [this.git!] : [];
+          const tools = [...this.coding.tools?.filter(t => !input.read_only || t.name === "read") ?? [], ...git.flatMap(ext => ext.tools ?? [])];
+          await configure(tx, child.id, { extensions: [this.promptExtension, this.coding, ...git], tools, modelTools: tools,
+            cwd: input.pwd ? join(input.workspace.cwd, input.pwd) : input.workspace.cwd, model: input.model, thinkingLevel: input.thinking, maxTurns: null, compaction: { enabled: false },
             instructions: "You are a subagent. Do just the requested task in the displayed working directory. Keep progress and conclusions public and concise. Do not delegate. Report actions and limitations. Do not merge the worktree." });
           row.child = child.id;
           return { status: "running", checkpoint: { phase: "submit", child: child.id } };
@@ -347,11 +403,11 @@ export class Subagents implements SubagentsHost {
             const result = terminal ? (task.state.outcome.result as Finish | undefined) ?? { status: "failed" as const, detail: "The subagent did not settle normally." } : undefined;
             const tools = live?.tools?.filter(t => t.status !== "done") ?? [];
             const status = result?.status ?? (task.abortRequested ? "stopping" : !input ? "starting" : live?.generation?.retry ? "retrying"
-              : tools.some(t => t.name === "read") ? "reading" : tools.length ? "working"
+              : tools.some(t => t.name === "read" || t.name === delegateGitName) ? "reading" : tools.length ? "working"
               : publicText(live?.generation?.message) ? "responding" : "waiting");
             const title = pin.prompt.split("\n", 1)[0]!.replace(/\s+/g, " ").trim().slice(0, 128).toWellFormed() || "Subagent";
             const log = await readLog(tx, owner, row, !terminal);
-            workers.push({ id: String(task.id), title, cwd: pin.workspace.root, readOnly: pin.read_only, status,
+            workers.push({ id: String(task.id), title, cwd: delegateCwd(pin), readOnly: pin.read_only, status,
               ...log, ...(result?.detail && { detail: result.detail }) });
           }
           return { workers, owned, retired, through, allTerminal, turn };
@@ -411,7 +467,7 @@ export class Subagents implements SubagentsHost {
             const pin = task.input as Intent;
             if (pin.turn !== turn) continue;
             const workerId = String(row.task);
-            events.push({ type: "started", workerId, cwd: pin.workspace.root, read_only: pin.read_only });
+            events.push({ type: "started", workerId, cwd: delegateCwd(pin), read_only: pin.read_only });
             const terminal = task.state.status === "terminal";
             const { text, truncated } = await readLog(tx, owner, row, !terminal);
             if (text) events.push({ type: "text", workerId, text, ...(truncated && { truncated: true }) });

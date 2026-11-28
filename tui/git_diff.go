@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,7 +31,39 @@ type gitDiffWatchBackend interface {
 	WatchGitDiff(context.Context, sdk.ID) <-chan sdk.GitDiffUpdate
 }
 
+// gitDiff:2 reviews the local launch directory before the first thread exists.
+type gitDiffLaunchBackend interface {
+	GitDiffSummaryAt(context.Context, string) (sdk.GitDiffSummary, error)
+	GitDiffFileAt(context.Context, string, string, int) (sdk.GitDiffPatch, error)
+	WatchGitDiffAt(context.Context, string) <-chan sdk.GitDiffUpdate
+}
+
 var _ gitDiffWatchBackend = (*sdk.Client)(nil)
+var _ gitDiffLaunchBackend = (*sdk.Client)(nil)
+
+// gitDiffLaunch selects the launch directory for the threadless startup
+// view, as the file picker does. A thread always uses its stored checkout.
+func (m *Model) gitDiffLaunch(owner sdk.ID) (gitDiffLaunchBackend, string, bool) {
+	backend, ok := m.backend.(gitDiffLaunchBackend)
+	cwd := m.options.NewThread.CWD
+	return backend, cwd, ok && owner == "" && m.gitDiffLaunchReady && m.options.WorkspaceLocal && filepath.IsAbs(cwd)
+}
+
+func (m *Model) hasGitDiffTarget(owner sdk.ID) bool {
+	_, _, launch := m.gitDiffLaunch(owner)
+	return owner.Valid() || launch
+}
+
+// gitDiffSummary returns a read for the owner's checkout. Resolve the target
+// before starting the command so the command does not read model state.
+func (m *Model) gitDiffSummary(backend gitDiffBackend, owner sdk.ID, rangeName string) func(context.Context) (sdk.GitDiffSummary, error) {
+	if launch, cwd, ok := m.gitDiffLaunch(owner); ok {
+		return func(ctx context.Context) (sdk.GitDiffSummary, error) { return launch.GitDiffSummaryAt(ctx, cwd) }
+	}
+	return func(ctx context.Context) (sdk.GitDiffSummary, error) {
+		return backend.GitDiffSummary(ctx, owner, rangeName)
+	}
+}
 
 type gitDiffState struct {
 	summary sdk.GitDiffSummary
@@ -75,7 +108,8 @@ func gitDiffBadge(summary sdk.GitDiffSummary) string {
 }
 
 func (m *Model) gitDiffBadgeRow(t *threadState, room int) displayRow {
-	if room < 3 || !m.active.Valid() || !m.menuFeaturesFromBackend.Has(x.GitDiff) || m.connection != x.Connected {
+	// The threadless startup view has no feed; its Git reads prove reachability.
+	if room < 3 || !m.hasGitDiffTarget(m.active) || !m.menuFeaturesFromBackend.Has(x.GitDiff) || m.active != "" && m.connection != x.Connected {
 		return displayRow{}
 	}
 	label := t.gitDiff.badge
@@ -130,13 +164,13 @@ func (m *Model) stopGitDiff() {
 
 func (m *Model) syncGitDiff() tea.Cmd {
 	f := m.gitDiffFeed
-	if !m.menuFeaturesFromBackend.Has(x.GitDiff) || !m.active.Valid() {
+	if !m.menuFeaturesFromBackend.Has(x.GitDiff) || !m.hasGitDiffTarget(m.active) {
 		m.stopGitDiff()
 		return nil
 	}
 	watcher, hasWatch := m.backend.(gitDiffWatchBackend)
 	pushed := m.gitDiffPush && hasWatch
-	if f.owner == m.active && f.pushed == pushed {
+	if f.token != 0 && f.owner == m.active && f.pushed == pushed {
 		return nil
 	}
 	m.stopGitDiff()
@@ -146,9 +180,13 @@ func (m *Model) syncGitDiff() tea.Cmd {
 	if !pushed {
 		return m.scanGitDiff()
 	}
+	launch, cwd, atLaunch := m.gitDiffLaunch(lease.owner)
 	return func() tea.Msg {
 		if ctx.Err() != nil {
 			return nil
+		}
+		if atLaunch {
+			return awaitGitDiffWatch(lease, launch.WatchGitDiffAt(ctx, cwd))()
 		}
 		return awaitGitDiffWatch(lease, watcher.WatchGitDiff(ctx, lease.owner))()
 	}
@@ -188,13 +226,14 @@ func (m *Model) scanGitDiff() tea.Cmd {
 		return nil
 	}
 	m.gitDiffFeed.pending, m.gitDiffFeed.tick, m.gitDiffFeed.last = true, 0, time.Now()
+	read := m.gitDiffSummary(backend, f.owner, sdk.GitDiffHead)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(f.ctx, gitDiffTimeout)
 		defer cancel()
 		if ctx.Err() != nil {
 			return nil
 		}
-		s, err := backend.GitDiffSummary(ctx, f.owner, sdk.GitDiffHead)
+		s, err := read(ctx)
 		return gitDiffSummaryMsg{lease: f.token, value: s, err: err}
 	}
 }
@@ -289,7 +328,7 @@ func (g *gitReview) apply(summary sdk.GitDiffSummary, err error) {
 }
 
 func (m *Model) openGitDiff(r ownerRoute) tea.Cmd {
-	if !m.foreground(r) || !r.owner.Valid() {
+	if !m.foreground(r) || !m.hasGitDiffTarget(r.owner) {
 		return nil
 	}
 	state := m.threads[r.owner].gitDiff
@@ -324,10 +363,10 @@ func (m *Model) fetchGitSummary(d *dialog) tea.Cmd {
 	}
 	d.git.err = nil
 	ctx, cancel, req := m.gitReviewRequest(d, gitDiffTimeout)
-	token, owner, rangeName := d.token, d.route.owner, d.git.rangeName
+	token, read := d.token, m.gitDiffSummary(backend, d.route.owner, d.git.rangeName)
 	return func() tea.Msg {
 		defer cancel()
-		v, err := backend.GitDiffSummary(ctx, owner, rangeName)
+		v, err := read(ctx)
 		return gitDiffSummaryMsg{dialog: token, request: req, value: v, err: err}
 	}
 }
@@ -343,8 +382,13 @@ func (m *Model) fetchGitPatch(d *dialog) tea.Cmd {
 	token := d.token
 	g.patch, g.view = true, nil
 	revision, selected := g.list.Revision, g.selected
+	launch, cwd, atLaunch := m.gitDiffLaunch(owner)
 	return func() tea.Msg {
 		defer cancel()
+		if atLaunch {
+			v, err := launch.GitDiffFileAt(ctx, cwd, revision, selected)
+			return gitDiffPatchMsg{dialog: token, request: req, value: v, err: err}
+		}
 		v, err := backend.GitDiffFile(ctx, owner, revision, selected)
 		return gitDiffPatchMsg{dialog: token, request: req, value: v, err: err}
 	}
@@ -479,6 +523,9 @@ func (m *Model) gitPatchPageSize(d *dialog) int {
 }
 
 func (m *Model) gitReviewCWD(d *dialog) string {
+	if _, cwd, ok := m.gitDiffLaunch(d.route.owner); ok {
+		return cwd
+	}
 	if t := m.threads[d.route.owner]; t != nil {
 		return t.info.Workspace
 	}

@@ -15,7 +15,8 @@ func NewHandler(adapter Adapter, hushExecutable string) sdk.PaneHandler {
 	return NewThreadHandler(adapter, hushExecutable, nil)
 }
 
-func NewThreadHandler(adapter Adapter, hushExecutable string, openTab func(context.Context, sdk.ID) Outcome) sdk.PaneHandler {
+// openTab registers a TUI tab for the thread and, with focus, switches to it.
+func NewThreadHandler(adapter Adapter, hushExecutable string, openTab func(ctx context.Context, id sdk.ID, focus bool) Outcome) sdk.PaneHandler {
 	return &handler{adapter: adapter, exe: hushExecutable, openTab: openTab,
 		refs: map[string]Ref{}, handles: map[Ref]string{}, commandPanes: map[Ref]bool{}}
 }
@@ -23,7 +24,7 @@ func NewThreadHandler(adapter Adapter, hushExecutable string, openTab func(conte
 type handler struct {
 	adapter      Adapter
 	exe          string
-	openTab      func(context.Context, sdk.ID) Outcome
+	openTab      func(context.Context, sdk.ID, bool) Outcome
 	refs         map[string]Ref
 	handles      map[Ref]string
 	commandPanes map[Ref]bool
@@ -87,8 +88,8 @@ func (h *handler) Handle(ctx context.Context, request sdk.PaneRequest) sdk.PaneR
 		if h.openTab == nil || !request.ThreadID.Valid() {
 			return reject
 		}
-		if request.Where == "tab" {
-			return threadViewReply(request, h.openTab(ctx, request.ThreadID))
+		if request.Where == "tab" || request.Where == "focus" {
+			return threadViewReply(request, h.openTab(ctx, request.ThreadID, request.Where == "focus"))
 		}
 		if request.Where != "split" || h.adapter == nil {
 			return reject

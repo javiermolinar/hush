@@ -52,17 +52,17 @@ type modelCatalogDraftBackend interface {
 }
 
 type menuCapabilities struct {
-	token            uint64
-	features         x.Features
-	directory        bool
-	gitWatch         bool
-	files            bool
-	fileSearch       bool
-	scopeWatch       bool
-	skills           bool
-	skillDraft       bool
-	context          bool
-	chatPlanActivity bool
+	token      uint64
+	features   x.Features
+	directory  bool
+	gitWatch   bool
+	gitLaunch  bool
+	files      bool
+	fileSearch bool
+	scopeWatch bool
+	skills     bool
+	skillDraft bool
+	context    bool
 }
 
 // A cold backend can miss the startup probe, and a fresh session has no feed
@@ -140,15 +140,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, skills := m.backend.(workspaceSkillsBackend)
 	_, skillDraft := m.backend.(workspaceSkillDraftBackend)
 	_, plans := m.backend.(planBackend)
-	_, planWorkspace := m.backend.(planWorkspaceBackend)
-	_, planCatalog := m.backend.(planCatalogBackend)
-	_, planReview := m.backend.(planReviewBackend)
-	_, workers := m.backend.(workerActivityBackend)
 	_, subagents := m.backend.(subagentBackend)
-	_, planDraft := m.backend.(planDraftBackend)
-	_, planChat := m.backend.(planChatBackend)
-	_, chatPlanActivity := m.backend.(chatPlanActivityBackend)
-	_, planWorktree := m.backend.(planWorktreeBackend)
 	_, loadedContext := m.backend.(loadedContextBackend)
 	_, native := m.backend.(modelCatalogBackend)
 	_, search := m.backend.(modelCatalogSearchBackend)
@@ -156,7 +148,7 @@ func (m *Model) menuProbe() tea.Cmd {
 	_, settings := m.backend.(settingsBackend)
 	native = native && m.options.Services.Models == nil
 	if !ok || !native && !titles && !directory && !worktrees && !archive &&
-		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings && !plans && !workers && !subagents {
+		!schedules && !checkpoints && !gitDiff && !files && !skills && !loadedContext && !settings && !plans && !subagents {
 		return nil
 	}
 	token := m.token()
@@ -185,27 +177,6 @@ func (m *Model) menuProbe() tea.Cmd {
 		}
 		if plans && hello.Capabilities["plan"] == sdk.PlanVersion {
 			f |= x.Plans
-			if planDraft && hello.Capabilities["planDraft"] == sdk.PlanDraftVersion {
-				f |= x.PlanDraft
-			}
-			if planWorkspace && hello.Capabilities["planWorkspace"] == sdk.PlanWorkspaceVersion {
-				f |= x.PlanWorkspace
-				if planChat && hello.Capabilities["planChat"] == sdk.PlanChatVersion {
-					f |= x.PlanChat
-					if planWorktree && hello.Capabilities["planWorktree"] == sdk.PlanWorktreeVersion {
-						f |= x.PlanWorktree
-					}
-				}
-				if planCatalog && hello.Capabilities["planCatalog"] == sdk.PlanCatalogVersion {
-					f |= x.PlanCatalog
-				}
-				if planReview && hello.Capabilities["planReview"] == sdk.PlanReviewVersion {
-					f |= x.PlanReview
-				}
-			}
-		}
-		if workers && hello.Capabilities["delegation"] == sdk.DelegationVersion && hello.Capabilities["workerActivity"] == sdk.WorkerActivityVersion {
-			f |= x.WorkerActivity
 		}
 		if subagents && hello.Capabilities["subagents"] == sdk.SubagentOverviewVersion {
 			f |= x.Subagents
@@ -229,21 +200,22 @@ func (m *Model) menuProbe() tea.Cmd {
 		if checkpoints && hello.Capabilities["checkpoints"] == sdk.CheckpointsVersion {
 			f |= x.Checkpoints
 		}
-		if gitDiff && hello.Capabilities["gitDiff"] == sdk.GitDiffVersion {
+		gitVersion := hello.Capabilities["gitDiff"]
+		if gitDiff && (gitVersion == sdk.GitDiffVersion || gitVersion == sdk.GitDiffLaunchVersion) {
 			f |= x.GitDiff
 		}
 		fileVersion, skillVersion := hello.Capabilities["workspaceFiles"], hello.Capabilities["workspaceSkills"]
 		contextVersion := hello.Capabilities["loadedContext"]
 		searchable := fileVersion == sdk.WorkspaceFileSearchVersion || fileVersion == sdk.WorkspaceFileProjectPathsVersion
 		return menuCapabilities{token: token, features: f, directory: managed && directory,
-			chatPlanActivity: f.Has(x.PlanChat) && chatPlanActivity && hello.Capabilities["planChatActivity"] == sdk.PlanChatActivityVersion,
-			gitWatch:         f.Has(x.GitDiff) && gitWatch && hello.Capabilities["gitDiffWatch"] == sdk.GitDiffWatchVersion,
-			scopeWatch:       scopeWatch && hello.Capabilities["workspaceScopeWatch"] == sdk.WorkspaceScopeWatchVersion,
-			files:            files && (fileVersion == sdk.WorkspaceFilesVersion || searchable),
-			fileSearch:       files && fileSearch && searchable,
-			skills:           skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),
-			skillDraft:       skillDraft && skillVersion == sdk.WorkspaceSkillDraftVersion,
-			context:          loadedContext && (contextVersion == sdk.LoadedContextAgentsVersion || contextVersion == sdk.LoadedContextVersion)}
+			gitWatch:   f.Has(x.GitDiff) && gitWatch && hello.Capabilities["gitDiffWatch"] == sdk.GitDiffWatchVersion,
+			gitLaunch:  f.Has(x.GitDiff) && gitVersion == sdk.GitDiffLaunchVersion,
+			scopeWatch: scopeWatch && hello.Capabilities["workspaceScopeWatch"] == sdk.WorkspaceScopeWatchVersion,
+			files:      files && (fileVersion == sdk.WorkspaceFilesVersion || searchable),
+			fileSearch: files && fileSearch && searchable,
+			skills:     skills && (skillVersion == sdk.WorkspaceSkillsVersion || skillVersion == sdk.WorkspaceSkillDraftVersion),
+			skillDraft: skillDraft && skillVersion == sdk.WorkspaceSkillDraftVersion,
+			context:    loadedContext && (contextVersion == sdk.LoadedContextAgentsVersion || contextVersion == sdk.LoadedContextVersion)}
 	}
 }
 
@@ -259,8 +231,11 @@ func (m *Model) menuFeatures() x.Features {
 	if _, ok := m.skillScope(m.active); ok {
 		f |= x.Skills
 	}
-	if !m.planAvailable() && !m.draftPlanAvailable() {
+	if !m.planAvailable() {
 		f &^= x.Plans
+	}
+	if !m.hasGitDiffTarget(m.active) {
+		f &^= x.GitDiff
 	}
 	if m.contextAvailable() {
 		f |= x.LoadedContext

@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/bits"
 	"slices"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -18,188 +16,86 @@ import (
 const openPlanRunID x.ActionID = menusID + ".plan-run"
 const openPlanRunOp x.LocalOp = "plan.openRun"
 const planDotLimit = 20
-const planVerifiedDuration = 3 * time.Second
-const planRunFailed uint32 = 1 << 31 // the first 24 bits represent plan steps
 
-type planStripEvents struct {
-	verified string
-	flash    uint64
-	seen     uint32
+// planActivity is the thread's oldest active run, or else its last one.
+type planActivity struct {
+	run   *sdk.PlanActivityRun
+	ready bool
 }
 
-type planVerifiedExpired struct {
-	owner sdk.ID
-	flash uint64
+type planActivityMsg struct {
+	token  uint64
+	source <-chan sdk.PlanActivityUpdate
+	update sdk.PlanActivityUpdate
+	ok     bool
 }
 
-type chatPlanActivityBackend interface {
-	WatchChatPlanActivity(context.Context, sdk.ID) <-chan sdk.PlanUpdate
+func (m *Model) stopPlanWatch() {
+	if m.planFeed.cancel != nil {
+		m.planFeed.cancel()
+	}
+	m.planFeed = feedLease{}
 }
 
-func (m *Model) syncChatPlanWatch() tea.Cmd {
-	b, ok := m.backend.(chatPlanActivityBackend)
-	if !ok || !m.nativeChatPlanActivity || !m.active.Valid() {
-		m.stopChatPlanWatch()
+func (m *Model) syncPlanWatch() tea.Cmd {
+	b, ok := m.backend.(planBackend)
+	if !ok || !m.menuFeaturesFromBackend.Has(x.Plans) || !m.active.Valid() {
+		m.stopPlanWatch()
 		return nil
 	}
-	if m.chatPlanFeed.token != 0 && m.chatPlanFeed.owner == m.active {
+	if m.planFeed.token != 0 && m.planFeed.owner == m.active {
 		return nil
 	}
-	m.stopChatPlanWatch()
+	m.stopPlanWatch()
 	ctx, cancel := context.WithCancel(m.ctx)
 	f := feedLease{token: m.token(), owner: m.active, ctx: ctx, cancel: cancel}
-	m.chatPlanFeed = f
-	m.threads[f.owner].chatPlan.ready = false
-	return func() tea.Msg { return awaitPlanWatch(f, b.WatchChatPlanActivity(ctx, f.owner))() }
+	m.planFeed = f
+	m.threads[f.owner].planRun.ready = false
+	return func() tea.Msg { return awaitPlanActivity(f, b.WatchPlanActivity(ctx, f.owner))() }
 }
 
-func (m *Model) stopChatPlanWatch() {
-	if m.chatPlanFeed.cancel != nil {
-		m.chatPlanFeed.cancel()
+func awaitPlanActivity(f feedLease, source <-chan sdk.PlanActivityUpdate) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case <-f.ctx.Done():
+			return nil
+		case v, ok := <-source:
+			return planActivityMsg{f.token, source, v, ok}
+		}
 	}
-	m.chatPlanFeed = feedLease{}
 }
 
-func (m *Model) receiveChatPlanWatch(msg planWatchMsg) tea.Cmd {
-	f := m.chatPlanFeed
-	v := &m.threads[f.owner].chatPlan
-	v.err, v.ready = msg.update.Err, msg.ok && msg.update.Err == nil
+func (m *Model) receivePlanActivity(msg planActivityMsg) tea.Cmd {
+	f := m.planFeed
+	if f.token == 0 || msg.token != f.token || f.owner != m.active {
+		return nil
+	}
+	v := &m.threads[f.owner].planRun
 	if !msg.ok {
-		m.stopChatPlanWatch()
+		m.stopPlanWatch()
+		v.ready = false
 		return nil
 	}
+	v.ready = msg.update.Err == nil
 	if v.ready {
-		next := msg.update.Snapshot
-		if v.snapshot.Run == nil || next.Run == nil || v.snapshot.Run.ID != next.Run.ID {
-			v.strip = planStripEvents{}
-		}
-		v.snapshot = next
+		v.run = msg.update.Run
 	}
-	return awaitPlanWatch(f, msg.source)
+	return awaitPlanActivity(f, msg.source)
 }
 
-// Watch snapshots can coalesce. Flash the last newly verified step, never an
-// already-verified step from the initial snapshot or a duplicate update.
-func (m *Model) recordPlanEvents(owner sdk.ID, v *planView, next sdk.PlanSnapshot) tea.Cmd {
-	old, run := v.snapshot, next.Run
-	if run == nil || old.Run == nil || old.Run.ID != run.ID {
-		v.strip = planStripEvents{}
-	}
-	v.strip.seen &= planFailureMask(next)
-	if run == nil || run.Chat || old.Plan == nil || next.Plan == nil || old.Plan.ID != next.Plan.ID || old.Plan.Revision != next.Plan.Revision {
+func (m *Model) currentPlanRun(t *threadState) *sdk.PlanActivityRun {
+	if t == nil || !t.planRun.ready || !m.menuFeaturesFromBackend.Has(x.Plans) {
 		return nil
 	}
-	for i := len(next.Progress) - 1; i >= 0; i-- {
-		p := next.Progress[i]
-		if p.State == "verified" && slices.Contains(run.StepIDs, p.StepID) && v.progress(p.StepID).State != "verified" {
-			token := m.token()
-			v.strip.verified, v.strip.flash = p.StepID, token
-			return tea.Tick(planVerifiedDuration, func(time.Time) tea.Msg { return planVerifiedExpired{owner, token} })
-		}
-	}
-	return nil
-}
-
-func planFailureMask(s sdk.PlanSnapshot) uint32 {
-	if s.Plan == nil || s.Run == nil {
-		return 0
-	}
-	var mask uint32
-	if s.Run.State == "failed" {
-		mask = planRunFailed
-	}
-	if !s.Run.Chat {
-		for _, p := range s.Progress {
-			if p.State != "failed" || !slices.Contains(s.Run.StepIDs, p.StepID) {
-				continue
-			}
-			if i := slices.IndexFunc(s.Plan.Steps, func(step sdk.PlanStep) bool { return step.ID == p.StepID }); i >= 0 {
-				mask |= 1 << i
-			}
-		}
-	}
-	return mask
-}
-
-func (v *planView) stripFailure() (index int, reason string) {
-	unseen := planFailureMask(v.snapshot) &^ v.strip.seen
-	if unseen == 0 {
-		return -1, ""
-	}
-	if unseen&^planRunFailed != 0 {
-		return bits.TrailingZeros32(unseen), v.planFailureReason("Verification failed")
-	}
-	return -1, v.planFailureReason("Run failed")
-}
-
-func (v *planView) planFailureReason(fallback string) string {
-	if run := v.snapshot.Run; run != nil && run.Failure != "" {
-		return oneLine(run.Failure)
-	}
-	return fallback
-}
-
-func (m *Model) currentPlanRun(t *threadState) *planView {
-	if !m.planAvailable() || t == nil {
-		return nil
-	}
-	bound, chat := &t.plan, &t.chatPlan
-	hasBound := bound.ready && bound.snapshot.Plan != nil && bound.snapshot.Run != nil
-	hasChat := m.nativeChatPlanActivity && chat.ready && chat.snapshot.Plan != nil && chat.snapshot.Run != nil
-	if !hasBound {
-		if hasChat {
-			return chat
-		}
-		return nil
-	}
-	if !hasChat {
-		return bound
-	}
-	b, c := bound.snapshot.Run, chat.snapshot.Run
-	switch {
-	case b.ID == c.ID, canStopPlan(t):
-		return bound
-	case c.State == "running":
-		return chat
-	case b.State == "running", lessID(c.ID, b.ID):
-		return bound
-	default:
-		return chat
-	}
+	return t.planRun.run
 }
 
 func (m *Model) openCurrentPlanRun(r ownerRoute, expected sdk.ID) tea.Cmd {
-	if !m.foreground(r) || len(m.overlays) >= maxDialogs {
+	run := m.currentPlanRun(m.threads[r.owner])
+	if run == nil || expected != "" && expected != run.ID {
 		return nil
 	}
-	t := m.threads[r.owner]
-	v := m.currentPlanRun(t)
-	if v == nil || expected != "" && expected != v.snapshot.Run.ID {
-		return nil
-	}
-	if v == &t.plan {
-		return m.openPlanSteps(r, v.snapshot.Plan.ID)
-	}
-	p := &planPicker{activityRun: v.snapshot.Run.ID}
-	m.focusPlanFailure(t, v, p)
-	return m.pushDialog(&dialog{route: r, token: m.token(), plan: p})
-}
-
-func (m *Model) focusPlanFailure(t *threadState, v *planView, p *planPicker) {
-	i, reason := v.stripFailure()
-	if reason == "" {
-		return
-	}
-	if i < 0 {
-		i = slices.IndexFunc(v.snapshot.Plan.Steps, func(step sdk.PlanStep) bool { return step.ID == v.snapshot.Run.StepIDs[0] })
-	}
-	p.focus, p.details = max(0, i), true
-	seen := planFailureMask(v.snapshot)
-	for _, peer := range []*planView{&t.plan, &t.chatPlan} {
-		if peer.snapshot.Run != nil && peer.snapshot.Run.ID == v.snapshot.Run.ID {
-			peer.strip.seen |= seen
-		}
-	}
+	return m.openPlanSteps(r, m.planCWD(r.owner), run.PlanID)
 }
 
 func (m *Model) planStripKeys(t *threadState) bool {
@@ -217,8 +113,8 @@ func (m *Model) planStripKey(t *threadState, chord string) (bool, tea.Cmd) {
 	if !m.currentFrame() || m.frame.planStrip == "" || !m.planStripKeys(t) {
 		return false, nil
 	}
-	v := m.currentPlanRun(t)
-	if v == nil || v.snapshot.Run.ID != m.frame.planStrip {
+	run := m.currentPlanRun(t)
+	if run == nil || run.ID != m.frame.planStrip {
 		return false, nil
 	}
 	if chord == "up" && m.frame.planPeekable {
@@ -231,36 +127,38 @@ func (m *Model) planStripKey(t *threadState, chord string) (bool, tea.Cmd) {
 	return false, nil
 }
 
-type stripProgress struct {
-	status []planStepState
-	counts [planStepStates]int
-	first  int // first running step in authored order
-}
-
-func chatRunLive(t *threadState, r *sdk.PlanRun) bool {
-	return r.Chat && r.OwnerThreadID == t.info.ID && slices.Contains(t.runInputs, r.SubmissionID)
-}
-
-func planStripProgress(t *threadState, v *planView) stripProgress {
-	chatLive := chatRunLive(t, v.snapshot.Run)
-	steps := v.snapshot.Plan.Steps
-	p := stripProgress{status: make([]planStepState, len(steps)), first: -1}
-	for i, step := range steps {
-		s := v.stepState(step.ID, chatLive)
-		p.status[i] = s
-		p.counts[s]++
-		if s == planStepRunning && p.first < 0 {
-			p.first = i
-		}
+func planStripGlyph(run *sdk.PlanActivityRun, s sdk.PlanActivityStep) (string, x.Tone) {
+	switch {
+	case s.Status == "done":
+		return "✓", x.Good
+	case s.Status == "blocked":
+		return "⏸", x.Warning
+	case run.State == "running":
+		return "●", x.Warning
+	default:
+		return "○", x.Muted
 	}
-	return p
 }
 
-func (m *Model) planStripRows(t *threadState, v *planView, f *frameMemo, w, budget int, keys bool) []displayRow {
-	plan, run := v.snapshot.Plan, v.snapshot.Run
-	p := planStripProgress(t, v)
-	failedStep, reason := v.stripFailure()
-	attention := reason != ""
+func planRunSummary(t *threadState, run *sdk.PlanActivityRun) string {
+	switch run.State {
+	case "running":
+		if slices.Contains(t.runInputs, run.SubmissionID) {
+			return "Run in progress"
+		}
+		if slices.ContainsFunc(t.queue, func(q sdk.QueueItem) bool { return q.SubmissionID == run.SubmissionID }) {
+			return "Run queued"
+		}
+		return "Waiting for the turn"
+	case "failed":
+		return "Run stopped"
+	default:
+		return "Run finished"
+	}
+}
+
+func (m *Model) planStripRows(t *threadState, run *sdk.PlanActivityRun, f *frameMemo, w, budget int, keys bool) []displayRow {
+	attention := run.State == "failed"
 	keys = keys && m.planStripKeys(t)
 	f.planStrip = run.ID
 	f.planPeekable = keys && budget >= 3 && (run.State == "running" || attention || m.planPeek == run.ID)
@@ -269,31 +167,31 @@ func (m *Model) planStripRows(t *threadState, v *planView, f *frameMemo, w, budg
 
 	var rows []displayRow
 	if f.planPeek {
-		rows = m.planPeekRows(t, v, p, w, budget-1)
+		rows = m.planPeekRows(t, run, w, budget-1)
 	}
-	lead, suffix, hint, tone := "", "", "", x.Muted
-	arrow := x.Muted
-	if run.State == "running" {
-		arrow = x.Warning
+	done, blocked := 0, 0
+	for _, s := range run.Steps {
+		switch s.Status {
+		case "done":
+			done++
+		case "blocked":
+			blocked++
+		}
 	}
+	lead, tone, arrow := planRunSummary(t, run), x.Muted, x.Muted
 	switch {
 	case attention:
-		arrow, tone = x.Danger, x.Danger
-		lead = "✗ " + reason
-		if failedStep >= 0 {
-			lead = oneLine(plan.Steps[failedStep].Title) + ": " + reason
+		lead, tone, arrow = "✗ "+planRunSummary(t, run), x.Danger, x.Danger
+		if run.Failure != "" {
+			lead = "✗ " + oneLine(run.Failure)
 		}
-	case v.strip.verified != "":
-		lead, suffix, tone = "✓ "+v.title(v.strip.verified), " verified", x.Good
-	case f.planPeek:
-	case p.first >= 0:
-		lead = oneLine(plan.Steps[p.first].Title)
-		if n := p.counts[planStepRunning] - 1; n > 0 {
-			suffix = fmt.Sprintf(" +%d", n)
-		}
-	default:
-		lead = planRunSummary(t, run)
+	case run.State == "running":
+		arrow = x.Warning
+	case blocked > 0:
+		lead += fmt.Sprintf(" · %d blocked", blocked)
+		tone = x.Warning
 	}
+	hint := ""
 	switch {
 	case f.planOpen && attention:
 		hint = "↵ see why"
@@ -302,9 +200,7 @@ func (m *Model) planStripRows(t *threadState, v *planView, f *frameMemo, w, budg
 	case f.planPeekable:
 		hint = "↑ peek"
 	}
-
-	label := fmt.Sprintf("plan r%d", plan.Revision)
-	prefix := m.paint(arrow, "▸ ") + strongText(label)
+	prefix := m.paint(arrow, "▸ ") + strongText(fmt.Sprintf("plan r%d", run.Revision))
 	main := w
 	right := stringWidth(hint)
 	if right > 0 && w >= stringWidth(prefix)+right+16 {
@@ -312,27 +208,19 @@ func (m *Model) planStripRows(t *threadState, v *planView, f *frameMemo, w, budg
 	} else {
 		hint = ""
 	}
-	line := prefix + "  " + m.planStripCounts(p, main-stringWidth(prefix)-2)
-	room := main - stringWidth(line) - 2
-	if attention && room < 14 {
-		line = prefix // keep room for the failure reason on a narrow pane
-		room = main - stringWidth(line) - 2
+	tally := fmt.Sprintf("%d/%d", done, len(run.StepIDs))
+	counts := m.quiet(tally)
+	if len(run.Steps) <= planDotLimit && len(run.Steps)+2+len(tally) <= main-stringWidth(prefix)-2 {
+		var dots strings.Builder
+		for _, s := range run.Steps {
+			glyph, tone := planStripGlyph(run, s)
+			dots.WriteString(m.paint(tone, glyph))
+		}
+		counts = dots.String() + "  " + counts
 	}
-	if room > 0 && lead != "" {
-		if failedStep >= 0 && stringWidth(lead) > room {
-			titleWidth := room - min(stringWidth(reason), room*2/3) - 2
-			if titleWidth > 3 {
-				lead = ansi.Truncate(oneLine(plan.Steps[failedStep].Title), titleWidth, "…") + ": " + reason
-			} else {
-				lead = "✗ " + reason
-			}
-		}
-		if n := stringWidth(suffix); room > n+3 {
-			lead = ansi.Truncate(lead, room-n, "…") + suffix
-		} else {
-			lead = ansi.Truncate(lead, room, "…")
-		}
-		line += "  " + m.paint(tone, lead)
+	line := prefix + "  " + counts
+	if room := main - stringWidth(line) - 2; room > 0 {
+		line += "  " + m.paint(tone, ansi.Truncate(lead, room, "…"))
 	}
 	if hint != "" {
 		line = fit(line, w-right) + m.quiet(hint)
@@ -342,125 +230,37 @@ func (m *Model) planStripRows(t *threadState, v *planView, f *frameMemo, w, budg
 	return append(rows, displayRow{text: line, hits: []spanHit{{0, stringWidth(line), action, "Open current plan run"}}})
 }
 
-func (m *Model) planStripCounts(p stripProgress, w int) string {
-	tally := fmt.Sprintf("%d/%d", p.counts[planStepVerified], len(p.status))
-	if len(p.status) <= planDotLimit && len(p.status)+2+len(tally) <= w {
-		var dots strings.Builder
-		for _, status := range p.status {
-			s := planStepStyles[status]
-			dots.WriteString(m.paint(s.tone, s.mark))
-		}
-		return dots.String() + "  " + m.quiet(tally)
-	}
-	var counts []string
-	for _, status := range [...]planStepState{planStepRunning, planStepVerified, planStepFailed, planStepPending, planStepReported, planStepBlocked} {
-		if n := p.counts[status]; n != 0 {
-			s := planStepStyles[status]
-			counts = append(counts, m.paint(s.tone, fmt.Sprintf("%d %s", n, s.label)))
-		}
-	}
-	text := strings.Join(counts, m.quiet(" · "))
-	if stringWidth(text) > w && w < 24 {
-		return m.quiet(ansi.Truncate(tally, w, "…"))
-	}
-	return ansi.Truncate(text, w, "…")
-}
-
-func planRunSummary(t *threadState, run *sdk.PlanRun) string {
-	switch run.State {
-	case "running":
-		if run.Chat {
-			if run.OwnerThreadID != t.info.ID {
-				return "Running in another thread"
-			}
-			if chatRunLive(t, run) {
-				return "Run here in progress"
-			}
-			if slices.ContainsFunc(t.queue, func(q sdk.QueueItem) bool { return q.SubmissionID == run.SubmissionID }) {
-				return "Run queued"
-			}
-			return "Waiting for turn"
-		}
-		return "Starting next step"
-	case "done":
-		return "Run here finished"
-	case "verified":
-		return "Run verified"
-	case "failed":
-		return "Run failed"
-	case "closed":
-		return "Run closed"
-	}
-	return ""
-}
-
-func (m *Model) planPeekRows(t *threadState, v *planView, p stripProgress, w, budget int) []displayRow {
-	plan, run := v.snapshot.Plan, v.snapshot.Run
+func (m *Model) planPeekRows(t *threadState, run *sdk.PlanActivityRun, w, budget int) []displayRow {
 	gutter := m.quiet("│ ")
-	rows := make([]displayRow, 0, min(budget, p.counts[planStepRunning]+2))
+	rows := make([]displayRow, 0, min(budget, len(run.Steps)+1))
 	add := func(text string) {
 		rows = append(rows, displayRow{text: gutter + ansi.Truncate(text, w-2, "…")})
 	}
-	body := budget - 1 // keep a row for keys
-	var shown int
-	if p.first < 0 {
-		add(m.quiet(planRunSummary(t, run)))
-	} else {
-		shared := run.Chat && p.counts[planStepRunning] > 1
-		if shared && body > 1 {
-			add(m.quiet("Shared turn · " + t.planLiveLabel(nil)))
+	live := run.State == "running" && slices.Contains(t.runInputs, run.SubmissionID)
+	for _, s := range run.Steps {
+		if len(rows) == budget-1 {
+			break
 		}
-		for i, step := range plan.Steps {
-			if len(rows) == body {
-				break
-			}
-			if p.status[i] != planStepRunning {
-				continue
-			}
-			label := ""
-			switch {
-			case run.Chat && (!shared || body == 1):
-				label = t.planLiveLabel(nil)
-				if shared {
-					label = "Shared turn · " + label
-				}
-			case !run.Chat:
-				progress := v.progress(step.ID)
-				if progress.WorkerThreadID != t.info.ID {
-					label = "Running in worker thread"
-				} else if progress.EntryID != "" && t.entries[progress.EntryID] == nil {
-					label = "Starting step"
-				} else {
-					label = t.planLiveLabel(&step)
-				}
-			}
-			titleWidth := w - 4 // gutter and glyph
-			status := ""
-			if label != "" && w >= 25 {
-				status = m.quiet(" · " + ansi.Truncate(label, w*2/5, "…"))
-				titleWidth -= stringWidth(status)
-			}
-			add(m.paint(x.Warning, "● ") + ansi.Truncate(oneLine(step.Title), titleWidth, "…") + status)
-			shown++
+		glyph, tone := planStripGlyph(run, s)
+		note := ""
+		switch {
+		case s.Status == "blocked" && s.Reason != "":
+			note = oneLine(s.Reason)
+		case s.Status == "pending" && live:
+			note = t.planLiveLabel()
 		}
+		text := m.paint(tone, glyph+" ") + oneLine(s.Title)
+		if note != "" && w >= 25 {
+			text += m.quiet(" · " + ansi.Truncate(note, w*2/5, "…"))
+		}
+		add(text)
 	}
-	keys := m.menuKeys(w-2, "↵ open plan")
-	var note string
-	if hidden := p.counts[planStepRunning] - shown; hidden > 0 {
-		note = fmt.Sprintf("+%d running", hidden)
-	} else if pending := p.counts[planStepPending]; pending > 0 {
-		note = fmt.Sprintf("%d pending", pending)
-	}
-	if note != "" && stringWidth(keys)+2+len(note) <= w-2 {
-		keys = m.quiet(note) + "  " + keys
-	}
-	add(keys)
+	add(m.menuKeys(w-2, "↵ open plan"))
 	return rows
 }
 
-// Only use live activity belonging to this run. A normal Run here has one
-// submission for all selected steps, so the tool/phase is turn-wide.
-func (t *threadState) planLiveLabel(step *sdk.PlanStep) string {
+// A run is one turn for all selected steps, so live activity is turn-wide.
+func (t *threadState) planLiveLabel() string {
 	phase, tool, _ := t.liveStatus()
 	switch phase {
 	case liveCompacting:
@@ -484,32 +284,16 @@ func (t *threadState) planLiveLabel(step *sdk.PlanStep) string {
 		if len(tool.ArgumentsJSON) <= 4<<10 {
 			_ = json.Unmarshal([]byte(tool.ArgumentsJSON), &args)
 		}
-		if args.Path == "" && step != nil && step.Edit != nil {
-			args.Path = step.Edit.Path
-		}
-		path := oneLine(args.Path)
-		if path != "" {
+		if path := oneLine(args.Path); path != "" {
 			switch tool.Name {
-			case "read", "hush_plan_read_file":
+			case "read":
 				return "Reading " + path
 			case "edit", "write":
 				return "Editing " + path
-			case "hush_plan_replace_text", "hush_plan_stage_file":
-				return "Proposing edit to " + path
 			}
 		}
-		switch tool.Name {
-		case "hush_plan_read_file":
-			return "Reading assigned file"
-		case "hush_plan_replace_text", "hush_plan_stage_file":
-			return "Proposing edit"
-		default:
-			return "Running " + oneLine(tool.Name)
-		}
+		return "Running " + oneLine(tool.Name)
 	case liveIdle, liveFailed:
-		if step != nil {
-			return "Settling step"
-		}
 		return "Settling run"
 	case liveSending, liveStarting:
 		return "Starting"

@@ -97,12 +97,6 @@ test("standalone pane tools serve plain prompts from the trusted effective workt
         assert.ok(paneTools(turn).includes("pane_open"));
         assert.ok(!turn.tools.includes("bash"), "an explicit pane request must not give the provider a backend fallback");
         return [call("pane_open", { placement: "tab", launch }), call("bash", { command: "touch backend-fallback-ran" })];
-      case "Preview a plan to export preferences":
-        assert.deepEqual(paneTools(turn), []);
-        return [call("pane_list")];
-      case "Open review transcript with an unknown handle":
-        assert.match(turn.prompt, /exact existing review handle in this thread/);
-        return [call("pane_open", { placement: "right", launch: { mode: "review", handle: "a".repeat(32) } })];
       case "Open a pane after the grant is revoked":
         assert.ok(paneTools(turn).includes("pane_open"));
         revoke.arrived.resolve();
@@ -141,11 +135,7 @@ test("standalone pane tools serve plain prompts from the trusted effective workt
   assert.doesNotMatch(JSON.stringify(toolRound.messages), new RegExp(bound.route + "|" + request.id + "|paneAdmission"));
 
   await settle(peer, threadId, await submit("/pane try a tab"));
-  await settle(peer, threadId, await submit("Preview a plan to export preferences"));
-  await settle(peer, threadId, await submit("Open review transcript with an unknown handle"));
-  assert.equal(listFrames(peer).length, 2, "unsupported placement, draft or unknown review reached the client");
-  const badReview = f.provider.requests.find(turn => turn.text === "Open review transcript with an unknown handle" && turn.results.length);
-  assert.match(JSON.parse(badReview.results[0].content).reason, /No readable review transcript/);
+  assert.equal(listFrames(peer).length, 2, "an unsupported placement reached the client");
   await assert.rejects(readFile(join(f.worktree, "backend-fallback-ran")), { code: "ENOENT" });
   const untrusted = ok(await f.wire.send("thread.new", { cwd: f.cwd }));
   const denied = await peer.send(cap("submit"), { route: bound.route, input: input("Open an untrusted pane", untrusted.id) });
@@ -272,45 +262,6 @@ test("a fresh queue boundary or reset does not inherit a failed pane-only turn",
   }
 });
 
-test("native dispatch rechecks trust after review preflight", { timeout: 18_000 }, async t => {
-  let reviewHandle, revoked = false;
-  const f = await fixture(t, turn => {
-    if (turn.text.startsWith("Code review assignment\n")) {
-      return turn.results.length ? "Review complete" : [call("hush_review_report", { report: "The fixture matches." })];
-    }
-    if (turn.results.length) {
-      assert.deepEqual(JSON.parse(turn.results[0].content), { outcome: "rejected" });
-      return "No pane opened after revocation.";
-    }
-    assert.ok(turn.tools.includes("pane_open"));
-    return [call("pane_open", { placement: "right", launch: { mode: "review", handle: reviewHandle } })];
-  });
-  const peer = await f.connect({ paneControl: [1], delegation: [1] });
-  const threadId = f.thread.id;
-  const review = ok(await peer.send("ext.delegation.start", { threadId, requestId: "preflight-review", scope: { tracked: ["file.txt"], untracked: [] },
-    assignments: [{ name: "fixture", brief: "Check fixture file" }] }));
-  reviewHandle = review.workers[0].handle;
-  await until("fixture review did not settle", async () => ok(await peer.send("ext.delegation.get", { threadId, requestId: "preflight-review" })),
-    v => v.workers[0].state === "succeeded");
-  const h = f.harness, snapshot = h.snapshot.bind(h);
-  h.snapshot = async (token, ...args) => {
-    const value = await snapshot(token, ...args);
-    // Hold the actual review preflight after the first tool authorization.
-    if (!revoked && token.definition.kind === "hush.delegated-reviews") {
-      revoked = true;
-      await f.trust.change(f.worktree, "revoke", t.signal);
-    }
-    return value;
-  };
-  const { route } = ok(await peer.send(cap("bind"), { capabilities: { left: false, above: false, tabs: false, read: false, views: true } }));
-  try {
-    const receipt = ok(await peer.send(cap("submit"), { route, input: { threadId, requestId: "review-open", text: "Open the review", whenBusy: "reject" } }));
-    await settle(peer, threadId, receipt);
-    assert.equal(revoked, true);
-    assert.deepEqual(listFrames(peer), []);
-  } finally { h.snapshot = snapshot; }
-});
-
 test("chat starts an independent durable thread, then opens just its view", { timeout: 18_000 }, async t => {
   const prompt = "Start a fresh thread to check the changes and open it beside me";
   const first = "/skill:literal-first-prompt";
@@ -379,6 +330,66 @@ test("chat starts an independent durable thread, then opens just its view", { ti
   peer.close();
   releaseChild.resolve();
   await settle(f.wire, childId, { submissionId: childReceipt.submissionId });
+});
+
+test("chat moves this conversation into a new worktree and switches the TUI to it", { timeout: 20_000 }, async t => {
+  const remember = "Remember the word mango.", move = "Move this conversation to a new worktree and continue there";
+  const first = "Continue the task in the new worktree", checkRead = "Read file.txt in this checkout.";
+  let receipt;
+  const childDone = Promise.withResolvers();
+  const f = await fixture(t, async turn => {
+    if (turn.text === remember) return "Noted.";
+    if (turn.text === first) {
+      assert.ok(turn.messages.some(m => m.content === remember), "the moved conversation keeps its history");
+      assert.ok(!turn.messages.some(m => m.content === move), "the move request itself stays in the source thread");
+      assert.ok(!turn.tools.includes("thread_start"), "the generated first prompt cannot start another thread");
+      if (!turn.results.length) return [call("read", { path: "file.txt" })];
+      assert.match(turn.results[0].content, /one/, "the new checkout has committed HEAD, not uncommitted files");
+      // Managed checkouts sit in the data directory; a read-only subagent can still read them.
+      if (turn.results.length === 1) return [call("subagent", { prompt: checkRead })];
+      assert.equal(turn.results[1].content, "The checkout file says one.");
+      childDone.resolve();
+      return "Continuing in the worktree.";
+    }
+    if (turn.text === checkRead) {
+      if (!turn.results.length) return [call("read", { path: "file.txt" })];
+      assert.equal(turn.results[0].content, "one\n");
+      return "The checkout file says one.";
+    }
+    assert.equal(turn.text, move);
+    if (!turn.results.length) {
+      assert.match(turn.prompt, /do not cd in shell commands/);
+      return [call("thread_start", { prompt: first, worktree: "new", history: true })];
+    }
+    receipt = JSON.parse(turn.results[0].content);
+    return "Moved.";
+  });
+  const caps = { left: false, above: false, tabs: false, read: false, views: false, threadTabs: true, noPanes: true };
+  const peer = await f.connect({ paneControl: [2] });
+  const { route } = ok(await peer.send(cap("bind"), { capabilities: caps }));
+  const threadId = f.thread.id;
+  await settle(f.wire, threadId, ok(await f.wire.send("submit", { threadId, requestId: "remember", text: remember, whenBusy: "reject" })));
+  const parentReceipt = ok(await peer.send(cap("submit"), { route, input: { threadId, requestId: "move", text: move, whenBusy: "reject" } }));
+  const frame = await peer.wait(v => v.type === "pane_call");
+  assert.equal(frame.request.op, "thread_open");
+  assert.equal(frame.request.where, "focus", "a move opens and switches to the new thread");
+  const childId = frame.request.threadId;
+  ok(await peer.send(cap("result"), { callId: frame.id, result: { outcome: "confirmed", threadId: childId, where: "focus" } }));
+  await settle(peer, threadId, parentReceipt);
+  assert.equal(receipt.threadId, childId);
+  assert.equal(receipt.history, true);
+  assert.equal(receipt.opened, true);
+  assert.equal(receipt.uncommittedNotCopied, 1, "the source's modified file.txt was not copied");
+  assert.match(receipt.worktree.branch, /^hush\/continue-the-task-in-the-new-[0-9a-f-]{36}$/);
+  assert.equal((await f.trust.review(receipt.worktree.cwd)).trusted, true, "the new checkout inherited the source's grant");
+  const childState = ok(await f.wire.send("subscribe", { threadId: childId })).state;
+  assert.equal(childState.agent.cwd, receipt.worktree.cwd);
+  assert.equal(childState.thread.parent?.threadId, threadId, "the move is a history fork of the source thread");
+  await childDone.promise;
+  await settle(f.wire, childId, ok(await f.wire.send("submission.get", { threadId: childId, requestId: "hush.thread-start" })));
+  const { entries } = ok(await f.wire.send("history", { threadId, limit: 32, range: { kind: "before", beforeEntryId: null } }));
+  assert.ok(entries.some(e => e.kind === "hush.thread-start-notice" && /with this conversation's history/.test(e.messages[0].blocks[0].text)));
+  assert.equal(await readFile(join(f.worktree, "file.txt"), "utf8"), "two\n", "the source checkout is unchanged");
 });
 
 test("thread start leaves read-only receipts if the parent stops before or after admission", { timeout: 18_000 }, async t => {
@@ -505,16 +516,10 @@ test("headless prompt reopens by ID in a plain TUI tab and an attach-only child"
   assert.equal(f.provider.requests.filter(turn => turn.text === first).length, 1, "opening either view must not start a run");
 });
 
-test("closing and reopening an active tab preserves its run and reviewer", { timeout: 20_000 }, async t => {
-  const live = "Always keep this target active", worker = Promise.withResolvers(), active = Promise.withResolvers(), release = Promise.withResolvers();
+test("closing and reopening an active tab preserves its run", { timeout: 20_000 }, async t => {
+  const live = "Always keep this target active", active = Promise.withResolvers(), release = Promise.withResolvers();
   let target;
   const f = await fixture(t, async turn => {
-    if (turn.text.startsWith("Code review assignment\n")) {
-      if (turn.results.length) return "Review ended";
-      worker.resolve();
-      await release.promise;
-      return [call("hush_review_report", { report: "LATE-WORKER-REPORT" })];
-    }
     if (turn.text === live) {
       active.resolve();
       await release.promise;
@@ -530,11 +535,6 @@ test("closing and reopening an active tab preserves its run and reviewer", { tim
   const origin = f.thread.id;
   await settle(f.wire, origin, ok(await f.wire.send("submit", { threadId: origin, requestId: "origin", text: "Seed the originating tab", whenBusy: "reject" })));
   target = ok(await f.wire.send("thread.new", { cwd: f.worktree })).id;
-  const review = await f.connect({ delegation: [1] });
-  const status = async () => ok(await review.send("ext.delegation.get", { threadId: target, requestId: "active-review" })).workers[0];
-  const reservation = ok(await review.send("ext.delegation.start", { threadId: target, requestId: "active-review", scope: { tracked: ["file.txt"], untracked: [] },
-    assignments: [{ name: "Live reviewer", brief: "Check the fixture file" }] }));
-  await worker.promise;
   const receipt = ok(await f.wire.send("submit", { threadId: target, requestId: "target-work", text: live, whenBusy: "reject" }));
   await active.promise;
   const flag = join(f.root, "tab-reopened");
@@ -544,12 +544,9 @@ test("closing and reopening an active tab preserves its run and reviewer", { tim
   try {
     await Promise.race([pty, until("target was not reopened", () => access(flag).then(() => true, () => false))]);
     assert.equal(ok(await f.wire.send("submission.get", { threadId: target, submissionId: receipt.submissionId })).status, "placed");
-    assert.equal((await status()).state, "running");
     release.resolve();
     await pty;
     await settle(f.wire, target, receipt);
-    const done = await until("review did not settle", status, row => row.state === "succeeded");
-    assert.equal(done.handle, reservation.workers[0].handle);
     assert.equal(f.provider.requests.filter(turn => turn.text === live).length, 1, "view navigation must not restart the target");
   } finally { release.resolve(); }
 });
@@ -566,16 +563,12 @@ async function until(label, read, done = Boolean) {
 }
 
 const rex = process.env.HUSH_TEST_REX;
-test("live Rex: plain chat opens a terminal, command, fresh Hush and exact review pane", { skip: !rex, timeout: 40_000 }, async t => {
+test("live Rex: plain chat opens a terminal, command and fresh Hush pane", { skip: !rex, timeout: 40_000 }, async t => {
   const blank = "Open a new side pane", fresh = "Open a fresh Hush thread in a side pane";
   const command = "Run the live fixture in a pane below", inspect = "Inspect the live command pane";
-  let opened, reviewPrompt, reviewHandle;
+  let opened;
   const f = await fixture(t, (turn, root) => {
-    if (turn.text.startsWith("Code review assignment\n")) {
-      return turn.results.length ? "Rex fixture reviewed." : [call("hush_review_report", { report: "REX_PANE_REVIEW_MARKER" })];
-    }
-    const view = turn.text === blank ? { mode: "terminal" } : turn.text === fresh ? { mode: "hush" } :
-      turn.text === reviewPrompt ? { mode: "review", handle: reviewHandle } : undefined;
+    const view = turn.text === blank ? { mode: "terminal" } : turn.text === fresh ? { mode: "hush" } : undefined;
     if (view) {
       if (!turn.results.length) {
         assert.ok(paneTools(turn).includes("pane_open"));
@@ -650,23 +643,6 @@ test("live Rex: plain chat opens a terminal, command, fresh Hush and exact revie
     assert.equal((await inspectSession()).windows[0].focused_block_id, commandBlock);
     await closeBlock(commandBlock);
     t.diagnostic("Rex command used the worktree and preserved argv; list, exact unfocused read, and exact focus passed.");
-
-    const review = JSON.parse((await f.cli("review", "start", "--thread", f.thread.id, "--json", "--request-id", "pane-review-fixture",
-      "--tracked", "file.txt", "--brief", "Inspect fixture text")).stdout);
-    const reviewStatus = async () => JSON.parse((await f.cli("review", "status", "--thread", f.thread.id, "--json", "--request-id", "pane-review-fixture")).stdout);
-    const settled = await until("review did not settle", reviewStatus, view => view.workers[0].state === "succeeded");
-    const count = f.provider.requests.length;
-    reviewHandle = review.workers[0].handle;
-    reviewPrompt = `Open review ${reviewHandle} in a side pane`;
-    await enter(reviewPrompt);
-    const transcriptBlock = await added([block], "review did not open a split");
-    await until("read-only review output missing", () => capture(transcriptBlock), text => /REX_PANE_REVIEW_MARKER\s*/.test(text.replaceAll("\n", "")));
-    assert.equal((await reviewStatus()).workers[0].handle, review.workers[0].handle);
-    assert.deepEqual(await reviewStatus(), settled);
-    await until("review placement did not settle", () => capture(), text => text.includes("Opened review pane."));
-    assert.deepEqual(f.provider.requests.slice(count).map(turn => turn.text), [reviewPrompt, reviewPrompt], "placement started or retried a reviewer");
-    await closeBlock(transcriptBlock);
-    t.diagnostic("Rex review opened the existing read-only transcript, with no review state change or rerun.");
 
     const threadList = async () => ok(await f.wire.send("thread.list", { limit: 100 })).threads;
     const existing = new Set((await threadList()).map(th => th.id));

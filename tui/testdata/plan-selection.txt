@@ -7,18 +7,18 @@
 
 
 
-  Workspace profiles · Plan · r7 ──────────────────────────────────────────────────────────────────── 0/3 verified
-    ■ ○ Save a profile                       Ready         │ Restore saved profiles
-  › ■ ○ Restore saved profiles               After 1       │ Read the saved profile and restore its settings.
-    □ ⏸ Document discovery                   Blocked       │ Needs     Save a profile
-                                                           │ Check     Saved settings round-trip
-                                                           │ Thinking  inherit
-                                                           │
+  Workspace profiles · r7 ─────────────────────────────────────────── 0/4 done
+    ■ ○ Save a profile     Pending       │ Restore saved profiles
+  › ■ ○ Restore saved pr…  Pending       │ Read the saved profile and restore
+    □ ⏸ Document discove…  Blocked       │ its settings.
+    □ ○ Review the profi…  Pending       │ Needs: Save a profile
+                                         │
+                                         │
 
-  ↵ Run 2 @ r7  Save a profile → Restore saved profiles · 1 unselected
-  space select  tab details  ↵ run  ↑↓ move  f full  esc back
+  ↵ Run 2 here @ r7  Save a profile → Restore saved profiles
+  space select  ↵ run here  w new worktree  tab details  ↑↓ move  esc back
 
-  ○ idle ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ○ idle ─────────────────────────────────────────────────────────────────────
   you ›
   Workspace workspace
   › ○ workspace

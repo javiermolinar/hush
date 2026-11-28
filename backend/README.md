@@ -49,10 +49,6 @@ for concepts and APIs, and the [changelog](https://github.com/earendil-works/pi/
 for version changes. `node_modules/@earendil-works/pi-durable/` includes the matching README and changelog
 after dependency setup. Update the links when bumping the pin.
 
-The [delegation contract](../docs/delegation-contract.md) describes the parked join,
-backend tool profiles, exact code review snapshots and recovery. See [the native capability](../protocol/v1/delegation.md)
-for explicit launch, status and Stop.
-
 ## Standalone store compatibility and restore
 
 A new standalone runtime initializes a format-2 `store-profile`. Its logical

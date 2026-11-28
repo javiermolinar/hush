@@ -85,16 +85,18 @@ and no later than any active input's lease. The request has one of these shapes:
 | `list` | None |
 | `focus` | `pane` (Hush handle) |
 | `read` | `pane` and `lines` (1–200) |
-| `thread_open` (v2) | `threadId`, `where` (`tab` or `split`), and, for `split` only, `dir` and `directory` from the target thread's verified workspace |
+| `thread_open` (v2) | `threadId`, `where` (`tab`, `split` or `focus`), and, for `split` only, `dir` and `directory` from the target thread's verified workspace |
 
-The wire formats for a view launch are `{mode: "terminal"}`, `{mode: "hush"}`,
-and `{mode: "review", threadId, handle}`. The backend derives `threadId` from
-the active turn and verifies the review belongs to it. The client resolves the
+The wire formats for a view launch are `{mode: "terminal"}` and `{mode: "hush"}`.
+The client resolves the
 executable and backend socket/epoch from the already-verified connection; those
 do not come from the tool or `pane_call`. View launches do not grant readback.
 A `thread_open` split attaches to the requested existing thread by socket and
-backend epoch. Neither that launch nor a tab registers a submission. A
-confirmed `thread_open` echoes `threadId` and `where`.
+backend epoch. Neither that launch nor a tab registers a submission. `focus`
+opens a tab like `tab` and switches the TUI to it, keeping the previous thread's
+draft. Only a conversation move sends it (`thread_start` with `history: true`);
+the model-facing `thread_open` tool never offers it. A route with `threadTabs`
+accepts it. A confirmed `thread_open` echoes `threadId` and `where`.
 
 Dispatch occurs off the protocol reader and TUI loop. The client replies via
 `ext.paneControl.result` with `{callId, result}` on the **same connection**.

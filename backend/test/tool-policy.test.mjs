@@ -55,14 +55,14 @@ test("tool execution intersects the stored profile with direct and nested calls 
       return output(JSON.stringify({ value: direct.structuredOutput, error: !!direct.isError, denied: !!denied.isError }));
     },
   });
-  const ext = defineExtension({ name: "fixture-policy-tools", tools: [driver, ...["read", "inspect_file", "bash", "write", "external", "hush_plan_propose"].map(sentinel)] });
+  const ext = defineExtension({ name: "fixture-policy-tools", tools: [driver, ...["read", "inspect_file", "bash", "write", "external", "plan_save"].map(sentinel)] });
   const refFor = name => fauxToolCall(name, { path: name === "codemode" ? "allowed.txt" : "other.txt" }, { id: name });
   const route = ({ messages }) => {
     const last = messages.findLast(m => m.role !== "system");
     if (last.role === "toolResult") return fauxAssistantMessage("done");
     const text = typeof last.content === "string" ? last.content : last.content[0].text;
     return fauxAssistantMessage(text === "park" ? fauxToolCall("codemode", { path: "park" }, { id: "park" })
-      : [refFor("read"), refFor("codemode"), refFor("bash"), refFor("write"), refFor("external"), refFor("hush_plan_propose"),
+      : [refFor("read"), refFor("codemode"), refFor("bash"), refFor("write"), refFor("external"), refFor("plan_save"),
         fauxToolCall("read", { path: "link.txt" }, { id: "link" })], { stopReason: "toolUse" });
   };
   let h;
@@ -71,7 +71,7 @@ test("tool execution intersects the stored profile with direct and nested calls 
     const faux = fauxProvider(), models = createModels(), registry = createRegistry();
     faux.setResponses(Array(20).fill(route));
     models.setProvider(faux.provider);
-    const policy = new ToolPolicy(() => h, trust, value => value ?? cwd, [agentDir], false);
+    const policy = new ToolPolicy(() => h, trust, value => value ?? cwd, [agentDir]);
     registry.install(policy.protect(ext));
     h = await Harness.open(await openNodeSqliteStorage(database), { models, registry, settings: { compaction: { enabled: false } } }, ctx);
     return h.root(ctx, { agent: { cwd, model: ref, extensions: [ext] } });
@@ -91,7 +91,7 @@ test("tool execution intersects the stored profile with direct and nested calls 
     assert.equal((await (await actor.submit({ type: "input", content: "read", requestId: "initial" }, ctx)).wait(ctx)).status, "done");
     const results = new Map((await history(actor)).map(r => [r.toolCallId, r]));
     assert.equal(!!results.get("read").isError, outsideClaim);
-    for (const name of ["link", "bash", "write", "external", "hush_plan_propose"]) assert.equal(results.get(name).isError, true, name);
+    for (const name of ["link", "bash", "write", "external", "plan_save"]) assert.equal(results.get(name).isError, true, name);
     assert.deepEqual(JSON.parse(results.get("codemode").content[0].text), { value: "allowed fixture text\n", error: false, denied: true });
   }
   assert.deepEqual(bad, []);
@@ -116,87 +116,6 @@ test("tool execution intersects the stored profile with direct and nested calls 
   assert.doesNotMatch(JSON.stringify(parkedResult), /different checkout/);
   assert.equal(invocations, 3, "the woken implementation never ran");
   assert.deepEqual(bad, []);
-});
-
-test("a placed steer may narrow planning, but restart, fork and two clients cannot widen it", { timeout: 14_000 }, async t => {
-  const { cwd, other, agentDir, dataDir, trust } = await workspace(t);
-  const first = "Begin without a plan", steer = "Create a plan from the running conversation";
-  const started = Promise.withResolvers(), release = Promise.withResolvers(), narrowed = Promise.withResolvers(), finish = Promise.withResolvers();
-  t.after(() => { release.resolve(); finish.resolve(); });
-  let initial = true;
-  const provider = await planProvider(t, agentDir, async ({ text, tools, results }) => {
-    if (text === first) {
-      assert.deepEqual(tools.toSorted(), ["bash", "edit", "read", "subagent", "thread_start", "write"]);
-      if (!results.length) { started.resolve(); await release.promise; return [call("read", { path: "allowed.txt" })]; }
-    }
-    if (text === steer && initial) {
-      assert.deepEqual(tools.toSorted(), ["hush_plan_current", "hush_plan_propose", "read"]);
-      narrowed.resolve();
-      await finish.promise;
-      return "aborted by fixture";
-    }
-    if (text === steer) {
-      if (!results.length) return [call("write", { path: "must-not-exist.txt", content: "fixture" }),
-        call("read", { path: "allowed.txt" }), call("read", { path: "../other/allowed.txt" }), call("read", { path: "link.txt" }),
-        call("hush_plan_propose", draftArgs())];
-      return "finished within current grant";
-    }
-    assert.ok(text === first || text === createRequest);
-    if (text === createRequest && !results.length) return [call("read", { path: "allowed.txt" }), call("read", { path: "link.txt" }),
-      call("read", { path: join(other, "allowed.txt") }), call("hush_plan_propose", draftArgs())];
-    return "finished";
-  });
-  const config = { cwd, dataDir, agentDir, socket: join(dataDir, "hush.sock"), model: provider.model, faux: false, ephemeral: false, idleMs: 60_000 };
-  let backend, a, b;
-  const stop = async () => { a?.close(); b?.close(); await backend?.close(); };
-  const open = async () => {
-    backend = await startBackend(config);
-    a = await dial(config.socket); b = await dial(config.socket);
-    for (const peer of [a, b]) ok(await peer.send("hello", { versions: [1], capabilities: { plan: [1] } }));
-  };
-  t.after(stop);
-  await open();
-  const threadId = ok(await a.send("thread.new", {})).id;
-  const submit = async (peer, text, requestId, whenBusy = "reject", id = threadId) => ok(await peer.send("submit",
-    { threadId: id, text, requestId, whenBusy })).submissionId;
-  const wait = async (peer, id, submissionId) => ok(await peer.send("submission.wait", { threadId: id, submissionId }));
-  const get = async (peer, id) => ok(await peer.send("history", { threadId: id, limit: 64, range: { kind: "before", beforeEntryId: null } })).entries;
-  await submit(a, first, "initial");
-  await started.promise;
-  await submit(b, steer, "steer", "steer");
-  release.resolve();
-  await narrowed.promise;
-  const at = (await get(b, threadId)).filter(e => e.kind === "pi.user").at(-1).id;
-  const fork = ok(await b.send("thread.fork", { threadId, atEntryId: at })).id;
-  // Abort commits a failed run with the same first entry, so Continue
-  // after a process reopen must keep the placed steer's planner profile.
-  ok(await a.send("thread.abort", { threadId }));
-  initial = false;
-  finish.resolve();
-  await stop();
-  await trust.change(cwd, "revoke", AbortSignal.timeout(4_000));
-  await trust.change(cwd, "grant", AbortSignal.timeout(4_000));
-  await open();
-  const resultMessages = (entries, start) => entries.slice(start).flatMap(e => e.messages).filter(m => m.role === "toolResult");
-  const prior = (await get(b, threadId)).length;
-  assert.equal((await wait(b, threadId, ok(await b.send("continue", { threadId })).submissionId)).status, "done");
-  const retry = resultMessages(await get(b, threadId), prior);
-  assert.equal(retry.length, 5);
-  assert.ok(retry.every(m => m.isError));
-  assert.ok(retry.some(m => JSON.stringify(m).includes("Workspace trust or directory changed")));
-  const forkPrior = (await get(a, fork)).length;
-  assert.equal((await wait(a, fork, ok(await a.send("continue", { threadId: fork })).submissionId)).status, "done");
-  const forkResults = resultMessages(await get(a, fork), forkPrior);
-  assert.equal(forkResults.length, 5);
-  assert.ok(forkResults.every(m => m.isError), "a forked Continue does not get authority from its history: " + JSON.stringify(forkResults));
-  assert.equal(ok(await b.send("ext.plan.wait", { threadId })).plan, null);
-  assert.equal(ok(await b.send("ext.plan.wait", { threadId: fork })).plan, null);
-  const fresh = await submit(b, createRequest, "explicit-new", "reject", fork);
-  assert.equal((await wait(b, fork, fresh)).status, "done");
-  assert.equal(ok(await a.send("ext.plan.wait", { threadId: fork })).plan.title, "Interface preferences");
-  const read = resultMessages(await get(a, fork), forkPrior).filter(m => m.name === "read" && !m.isError);
-  assert.equal(read.length, 1);
-  assert.match(JSON.stringify(read[0]), /allowed fixture text/);
 });
 
 test("a real Codemode script can inspect only its worker's admitted files", { timeout: 12_000 }, async t => {

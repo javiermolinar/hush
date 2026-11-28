@@ -61,7 +61,6 @@ type Options struct {
 	ThreadTabs *ThreadTabs
 	// Optional local terminal actions. The callbacks verify the backend and origin.
 	OpenThreadPane func(context.Context, sdk.ID) error
-	OpenReviewPane func(context.Context, sdk.ID, string) error
 }
 
 // Model is the one loop-owned shell. Use Run for automatic cleanup, or call
@@ -81,15 +80,15 @@ type Model struct {
 	reportFeed                feedLease
 	directoryFeed             feedLease
 	gitDiffFeed               gitDiffPoll
-	planFeed, chatPlanFeed    feedLease
+	planFeed                  feedLease
 	planPeek                  sdk.ID
-	nativeChatPlanActivity    bool
 	workspaceTrust            workspaceTrustProbe
 	directoryIDs              []sdk.ID
 	directoryEnabled          bool
 	tabs                      []sdk.ID
 	tabFeeds                  map[sdk.ID]feedLease
 	focused, disambiguated    bool
+	rexActivity               *rexActivity
 	taken                     interceptedKeys
 	connection                extension.Connection
 	pending                   map[uint64]pendingWork
@@ -121,10 +120,10 @@ type Model struct {
 	nativeFileSearch          bool
 	fileScopePush             bool
 	gitDiffPush               bool
+	gitDiffLaunchReady        bool // gitDiff:2 accepts the launch directory
 	nativeSkills              bool
 	nativeSkillDraft          bool
 	nativeContext             bool
-	workers                   workerFeed
 	subagents                 subagentFeed
 	skills                    skillsLease
 	images                    imageState
@@ -185,6 +184,9 @@ func New(ctx context.Context, backend Backend, options Options) (*Model, error) 
 		focused: true, tabFeeds: make(map[sdk.ID]feedLease),
 		editor: newPrompt(), width: 80, height: 24, frame: &frameMemo{},
 		images: imageState{mode: options.Images}, localTime: local.Location(),
+	}
+	if strings.EqualFold(os.Getenv("TERM_PROGRAM"), "rex") {
+		m.rexActivity = &rexActivity{}
 	}
 	m.palette.resolveRoles(false, false)
 	m.palette.noColor = os.Getenv("NO_COLOR") != ""
@@ -274,7 +276,7 @@ func (m *Model) Init() tea.Cmd {
 		commands = append(commands, m.notify(owner, strings.Join(problems, "; "), extension.Warning))
 	}
 	m.themeProblem, m.fillsProblem = "", ""
-	return tea.Batch(append(commands, m.syncClock(), m.syncWorkspaceTrust(), m.loadSettings())...)
+	return tea.Batch(append(commands, m.syncClock(), m.syncWorkspaceTrust(), m.loadSettings(), m.syncRexActivity())...)
 }
 
 // Close cancels local work and tears down initialized extensions. It does not
@@ -296,8 +298,6 @@ func (m *Model) Close() {
 	m.stopBackendReport()
 	m.stopGitDiff()
 	m.stopPlanWatch()
-	m.stopChatPlanWatch()
-	m.stopWorkerActivity()
 	m.stopSubagents()
 	m.stopFileScope()
 	m.stopSkills()
@@ -324,11 +324,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if v, ok := msg.(tea.RawMsg); ok && m.rexActivity != nil {
+		if _, activity := v.Msg.(rexActivityOutput); activity {
+			m.rexActivity.pending = false
+			return m, m.syncRexActivity()
+		}
+	}
 	var cmd tea.Cmd
 	var scanImages bool
 	switch v := msg.(type) {
 	case tabOpenMsg:
-		return m, m.openThreadTab(v)
+		return m, tea.Batch(m.openThreadTab(v), m.syncRexActivity())
 	case imageCapability:
 		m.images.capable = bool(v)
 		m.images.revision++
@@ -390,16 +396,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menuFeaturesFromBackend = v.features
 		m.directoryEnabled, m.nativeContext = v.directory, v.context
 		m.nativeFiles, m.nativeFileSearch = v.files, v.fileSearch
-		m.fileScopePush, m.gitDiffPush = v.scopeWatch, v.gitWatch
+		m.fileScopePush, m.gitDiffPush, m.gitDiffLaunchReady = v.scopeWatch, v.gitWatch, v.gitLaunch
 		m.nativeSkills, m.nativeSkillDraft = v.skills, v.skillDraft
-		m.nativeChatPlanActivity = v.chatPlanActivity
-		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity(), m.syncSubagents())
+		cmd = tea.Batch(m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncSubagents())
 	case subagentMsg:
 		cmd = m.receiveSubagents(v)
-	case workerFeedMsg:
-		cmd = m.receiveWorkers(v)
-	case workerInspectionMsg:
-		m.receiveWorkerInspection(v)
 	case menuProbeFailed:
 		cmd = m.receiveMenuProbeFailure(uint64(v))
 	case menuProbeRetry:
@@ -435,17 +436,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.receiveGitSummary(v)
 	case planWorkspaceMsg:
 		cmd = m.receivePlanWorkspace(v)
-	case planReviewMsg:
-		cmd = m.receivePlanReview(v)
-	case namedPlanMsg:
-		cmd = m.receiveNamedPlan(v)
-	case planWatchMsg:
-		cmd = m.receivePlanWatch(v)
+	case planMsg:
+		cmd = m.receivePlan(v)
+	case planActivityMsg:
+		cmd = m.receivePlanActivity(v)
 		scanImages = true
-	case planVerifiedExpired:
-		if t := m.threads[v.owner]; t != nil && t.plan.strip.flash == v.flash {
-			t.plan.strip.verified, t.plan.strip.flash = "", 0
-		}
 	case gitDiffWatchMsg:
 		cmd = m.receiveGitDiffWatch(v)
 	case gitDiffPatchMsg:
@@ -486,6 +481,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		scanImages = true
 	case threadPickerResult:
 		cmd = m.receiveThreadPicker(v)
+		scanImages = true
+	case threadTurnResult:
+		m.receiveThreadTurn(v)
 		scanImages = true
 	case openFinished:
 		if v.err != nil {
@@ -546,10 +544,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.updatePrompt(msg)
 		}
 	}
+	if m.quitting && m.started && m.rexActivity != nil {
+		return m, m.syncRexActivity() // retire working/blocked records before quitting
+	}
 	if scanImages {
 		cmd = tea.Batch(cmd, m.scheduleImageScan())
 	}
-	return m, tea.Batch(cmd, m.syncClock(), m.syncIntroClock(), m.syncWorkspaceTrust(), m.syncFileScope(), m.syncSkills())
+	return m, tea.Batch(cmd, m.syncThreadTurn(), m.syncClock(), m.syncIntroClock(), m.syncWorkspaceTrust(), m.syncFileScope(), m.syncSkills(), m.syncRexActivity())
 }
 
 func (m *Model) ensureThread(id sdk.ID) *threadState {
@@ -584,6 +585,11 @@ func (m *Model) prepareDraftThread(id sdk.ID, model sdk.Model, thinking string) 
 		dst.intro, t.intro = t.intro, nil
 		t.following, t.anchor = true, rowAnchor{}
 	}
+	// Keep the launch directory's Git badge until the thread's own feed
+	// reports. Not its file list: those locators belong to the launch target.
+	if dst.gitDiff.badge == "" && dst.gitDiff.err == nil {
+		dst.gitDiff = gitDiffState{badge: t.gitDiff.badge}
+	}
 	return dst
 }
 
@@ -611,7 +617,7 @@ func (m *Model) switchThread(id sdk.ID) tea.Cmd {
 	m.overlays, m.sheet = nil, nil
 	m.reprojectBackgroundTab(previous)
 	m.emit(id, extension.Event{Kind: extension.ThreadSwitched, PreviousThreadID: previous})
-	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncChatPlanWatch(), m.syncWorkerActivity(), m.syncSubagents()}
+	cmds := []tea.Cmd{m.beginFeed(), m.beginBackendReport(), m.editor.area.Focus(), m.syncDirectory(), m.syncGitDiff(), m.syncPlanWatch(), m.syncSubagents()}
 	budget := maxEffects
 	for _, d := range old {
 		cmds = append(cmds, m.replyDialog(d, nil, false, &budget))
@@ -630,6 +636,7 @@ func (m *Model) contextFor(id sdk.ID) extension.Context {
 	}
 	if t := m.threads[id]; t != nil {
 		c.Thread, c.Revision = t.info, t.revision
+		m.withSubagentUsage(&c.Thread)
 	}
 	return c
 }
@@ -807,23 +814,6 @@ func (m *Model) eligibleFor(a registeredAction, owner sdk.ID, target string) boo
 	}
 	if a.action.ID == openPlanRunID {
 		return owner == m.active && m.currentPlanRun(m.threads[owner]) != nil
-	}
-	if a.action.ID == inspectPlanPreviewID || a.action.ID == savePlanPreviewID {
-		t := m.threads[owner]
-		if t == nil {
-			return false
-		}
-		if a.action.ID == inspectPlanPreviewID {
-			if target == "" {
-				target = string(t.planDraft.latest)
-			}
-			rec := t.entries[sdk.ID(target)]
-			return rec != nil && rec.entry.Record.Kind == planPreviewEntry
-		}
-		if target == "" {
-			target = string(t.planDraft.pending())
-		}
-		return m.canSavePlanPreview(t, sdk.ID(target))
 	}
 	if a.action.ID == retryFailureID || a.action.ID == dismissFailureID {
 		recovery := m.recoveryFor(owner, target)
@@ -1003,26 +993,12 @@ func (m *Model) localEffect(r ownerRoute, e extension.Local, budget *int) tea.Cm
 		return m.openPlan(r)
 	case openPlanRunOp:
 		return m.openCurrentPlanRun(r, sdk.ID(e.Text))
-	case inspectPlanPreviewOp:
-		id := sdk.ID(e.Text)
-		if id == "" {
-			id = t.planDraft.latest
-		}
-		return m.inspectPlanPreview(r, id)
-	case savePlanPreviewOp:
-		id := sdk.ID(e.Text)
-		if id == "" {
-			id = t.planDraft.pending()
-		}
-		return m.savePlanPreview(r, id)
 	case openLoadedContextOp:
 		return m.openLoadedContext(r, budget)
 	case openGitDiffOp:
 		return m.openGitDiff(r)
 	case openSubagentsOp:
 		return m.openSubagents(r)
-	case openWorkersOp:
-		return m.openWorkers(r)
 	case openWorkspaceTrustOp:
 		return m.openWorkspaceTrust(r)
 	case openUsageOp:

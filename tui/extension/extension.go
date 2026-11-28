@@ -112,8 +112,8 @@ type Thread struct {
 	Thinking         string
 	Status           ThreadStatus
 	Queued           int
-	Usage            sdk.Usage
-	SubagentUsage    sdk.Usage // portion of Usage spent by subagents, when available
+	Usage            sdk.Usage // the thread's own reported usage, as in core state; excludes subagents
+	SubagentUsage    sdk.Usage // the thread's subagents' usage, in addition to Usage; zero when not followed
 	ContextUse       ContextUse
 	ContextThreshold uint64
 	Forked           bool

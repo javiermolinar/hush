@@ -11,9 +11,9 @@ import { Cursors, SealedCursors } from "./cursor.js";
 import { environmentEntry, environmentInputKind, type ClientEnvironment } from "./client-environment.js";
 import { threadStartNoticeKind, type PaneDirectory, type SelectPaneAdmission } from "./pane-control.js";
 import { projectImageBytes, type ImageRef, type ImagesHost, type ImageSubmission } from "./images.js";
-import { planReviewKind } from "./plan-review.js";
-import { reviewParentKind, workerNoticeKind } from "./delegation.js";
-import { planChatKind, planRunKind, planTaskKind, planResultKind, planPreviewKind, planPreviewSavedKind } from "./plan.js";
+// Display-only entries written by the removed review delegation.
+const workerNoticeKind = "hush.worker.notice", reviewParentKind = "hush.review.request";
+import { planChatKind, planRunKind, planTaskKind, planResultKind, planReviewKind, planPreviewKind, planPreviewSavedKind } from "./plan.js";
 import { scheduleReportKind } from "./scheduling.js";
 import { checkpointKind, effectKind } from "./checkpoints.js";
 import type { CatalogCreation } from "./model-catalog.js";
@@ -185,30 +185,20 @@ function projectSubmission(row: SubmissionRecord | undefined, thread: Conversati
   }
 }
 
-export function visibleEntry(entry: EntryRecord, owner: ConversationId, delegation: boolean) {
-  return entry.kind !== workerNoticeKind || delegation && entry.conversationId === owner;
-}
-
-async function visible(conv: Conversation, at: string, ctx: Context, delegation = false) {
+async function visible(conv: Conversation, at: string, ctx: Context) {
   const bound = entryID(at);
   const exact = await conv.entries({ minEntryId: bound, maxEntryId: bound }, 1, undefined, ctx);
-  const entry = exact.items[0];
-  return entry?.id === bound && visibleEntry(entry, conv.id, delegation);
+  return exact.items[0]?.id === bound;
 }
 
-async function visibleEntries(conv: Conversation, query: Parameters<Conversation["entries"]>[0], limit: number,
-    delegation: boolean, ctx: Context) {
+// A page can stop short of its limit, for example at a fork boundary.
+async function entriesUpTo(conv: Conversation, query: Parameters<Conversation["entries"]>[0], limit: number, ctx: Context) {
   const found: EntryRecord[] = [];
   let cursor: Cursor | undefined;
-  // A series of display-only outcomes cannot make an old peer page over an
-  // invisible anchor. Bound pathological histories (e.g. very deep forks).
-  let scanned = 0;
   do {
     const page = await conv.entries(query, limit - found.length, cursor, ctx);
-    for (const entry of page.items) if (visibleEntry(entry, conv.id, delegation)) found.push(entry);
+    found.push(...page.items);
     cursor = page.next;
-    scanned += page.items.length;
-    if (scanned > 2_048) throw new WireError("limit");
   } while (cursor !== undefined && found.length < limit);
   return found;
 }
@@ -314,13 +304,6 @@ export class DurableAdapter {
     return this.harness.observeConversation(conv.id, observer, ctx, window);
   }
 
-  get filtersWorkerNotices() { return this.host?.privateConversation !== undefined; }
-
-  async windowPredecessors(owner: ConversationId, at: EntryId, limit: number, delegation: boolean, ctx: Context) {
-    const conv = await this.#get(String(owner), ctx);
-    return visibleEntries(conv, { maxEntryId: at, order: "descending" }, limit, delegation, ctx);
-  }
-
   get supportsCatalogCreation() { return typeof this.host?.validateSelection === "function"; }
 
   async requireVisibleThread(threadId: string, ctx: Context) { await this.#get(threadId, ctx); }
@@ -337,7 +320,7 @@ export class DurableAdapter {
     return { id: id(conv.id) };
   }
 
-  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment, skillToken?: string, delegation = false,
+  async admit(request: Call, ctx: Context, catalog = false, environment?: ClientEnvironment, skillToken?: string,
       pane?: SelectPaneAdmission): Promise<Admission> {
     switch (request.method) {
       case "thread.new": return { result: await this.#createThread(request.params, ctx) };
@@ -377,7 +360,7 @@ export class DurableAdapter {
     const conv = await this.#get(request.params.threadId, ctx);
     if (request.method !== "history" && request.method !== "thread.wait") await this.host?.checkMutation?.(conv, ctx);
     switch (request.method) {
-      case "history": return { result: await this.#history(conv, request.params, ctx, delegation) };
+      case "history": return { result: await this.#history(conv, request.params, ctx) };
       case "thread.fork": {
         const { threadId, atEntryId } = request.params;
         if (!(await visible(conv, atEntryId, ctx))) throw notFound();
@@ -560,8 +543,8 @@ export class DurableAdapter {
     return conv;
   }
 
-  async #history(conv: Conversation, { threadId, range: input, limit }: Params["history"], ctx: Context, delegation: boolean) {
-    const namespace = "history:" + threadId + (delegation ? ":delegation" : "");
+  async #history(conv: Conversation, { threadId, range: input, limit }: Params["history"], ctx: Context) {
+    const namespace = "history:" + threadId;
     const range = input.kind === "cursor" ? this.#cursors.decode<ExplicitRange>(namespace, input.cursor) : input;
     const ascending = range.kind === "after";
     const lower = range.kind === "after" ? range.afterEntryId : null;
@@ -569,13 +552,13 @@ export class DurableAdapter {
     if (ascending && lower === null && upper === null) return { threadId, entries: [], nextCursor: null };
     if ((ascending && upper === null) || (lower !== null && Number(lower) > Number(upper))) throw new WireError("invalid_cursor");
     for (const bound of new Set([lower, upper])) {
-      if (bound !== null && (!durableID(bound) || !(await visible(conv, bound, ctx, delegation)))) throw new WireError("invalid_cursor");
+      if (bound !== null && (!durableID(bound) || !(await visible(conv, bound, ctx)))) throw new WireError("invalid_cursor");
     }
-    const entries = await visibleEntries(conv, {
+    const entries = await entriesUpTo(conv, {
       order: ascending ? "ascending" : "descending",
       minEntryId: lower === null ? undefined : entryID(lower),
       maxEntryId: upper === null ? undefined : entryID(upper),
-    }, limit + 2, delegation, ctx);
+    }, limit + 2, ctx);
     const eligible = entries.filter(entry => id(entry.id) !== (ascending ? lower : upper));
     const selected = eligible.slice(0, limit);
     const last = selected.at(-1);

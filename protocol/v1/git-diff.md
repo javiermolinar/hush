@@ -61,6 +61,18 @@ summaries are bounded; callers must handle failures and cancel slow reads or
 reads for a thread they no longer display. File mutation, snapshot capture,
 last-turn attribution, and line comments are not part of version 1.
 
+## Launch directory (`gitDiff:2`)
+
+Offer `gitDiff: [2, 1]` to review a backend directory before any thread exists.
+With version 2, `ext.gitDiff.summary`, `ext.gitDiff.file` and
+`ext.gitDiffWatch.wait` accept `cwd`, an absolute backend directory, in place of
+`threadId`. Send exactly one of the two. The same workspace grant applies to the
+exact directory, and no thread is created or recorded. A launch directory has no
+file checkpoint: `checkpoint` is `false`, and the `checkpoint` range is unavailable.
+A summary `revision` addresses only the target that produced it, so a launch
+directory's locator cannot read a thread's files or the reverse. Never send a
+client-local path to a host that does not share that filesystem.
+
 ## Push updates (`gitDiffWatch:1`)
 
 Offer `gitDiffWatch:[1]` alongside `gitDiff:[1]`. When both are selected,

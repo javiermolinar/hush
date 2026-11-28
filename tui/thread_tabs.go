@@ -9,8 +9,9 @@ import (
 	"github.com/javiermolinar/hush/tui/extension"
 )
 
-// ThreadTabs routes external thread opens to one TUI's update loop. It never
-// activates the new tab or interrupts the user's current prompt.
+// ThreadTabs routes external thread opens to one TUI's update loop. Open never
+// activates the new tab or interrupts the user's current prompt. Focus also
+// switches to it; only a conversation move the user asked for requests that.
 type ThreadTabs struct{ requests chan tabOpenMsg }
 
 func NewThreadTabs() *ThreadTabs { return &ThreadTabs{requests: make(chan tabOpenMsg)} }
@@ -18,16 +19,23 @@ func NewThreadTabs() *ThreadTabs { return &ThreadTabs{requests: make(chan tabOpe
 type tabOpenMsg struct {
 	ctx    context.Context
 	id     sdk.ID
+	focus  bool
 	result chan error
 }
 
 // Open reports registration only. A cancellation after delivery may leave
 // the tab registered even when the caller didn't receive confirmation.
-func (t *ThreadTabs) Open(ctx context.Context, id sdk.ID) error {
+func (t *ThreadTabs) Open(ctx context.Context, id sdk.ID) error { return t.open(ctx, id, false) }
+
+// Focus registers the tab like Open and then switches to it. The previous
+// thread keeps its draft.
+func (t *ThreadTabs) Focus(ctx context.Context, id sdk.ID) error { return t.open(ctx, id, true) }
+
+func (t *ThreadTabs) open(ctx context.Context, id sdk.ID, focus bool) error {
 	if !id.Valid() || ctx.Err() != nil {
 		return extension.ErrUnavailable
 	}
-	v := tabOpenMsg{ctx: ctx, id: id, result: make(chan error, 1)}
+	v := tabOpenMsg{ctx: ctx, id: id, focus: focus, result: make(chan error, 1)}
 	select {
 	case <-ctx.Done():
 		return extension.ErrUnavailable
@@ -68,6 +76,10 @@ func (m *Model) openThreadTab(v tabOpenMsg) tea.Cmd {
 			result = nil
 		}
 	}
+	var focus tea.Cmd
+	if result == nil && v.focus {
+		focus = m.switchThread(v.id)
+	}
 	v.result <- result
-	return tea.Batch(m.options.ThreadTabs.wait(m.ctx), watch)
+	return tea.Batch(m.options.ThreadTabs.wait(m.ctx), watch, focus)
 }

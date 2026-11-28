@@ -14,6 +14,12 @@ const activityID = "hush/activity"
 const expandRowID x.ActionID = activityID + ".expand"
 const forkPickerID x.ActionID = "hush/menus.fork"
 
+// Display-only entries written by the removed plan review, plan previews and
+// review delegation.
+const planReviewEntry = "hush.plan.review"
+const planPreviewEntry = "hush.plan.preview"
+const workerNoticeEntry = "hush.worker.notice"
+
 func activityRegistration() x.Registration {
 	return x.Registration{ID: activityID, APIVersion: x.APIVersion, Actions: []x.Action{{
 		ID: expandRowID, Title: "Expand activity row", Binding: x.Binding{Leader: "a"},
@@ -23,16 +29,6 @@ func activityRegistration() x.Registration {
 				return x.Outcome{x.Local{Op: x.ToggleDetails}}
 			}
 			return x.Outcome{x.Local{Op: x.ToggleActivity, Text: v.Target}}
-		},
-	}, {
-		ID: inspectPlanPreviewID, Title: "Inspect plan preview", Binding: x.Binding{Leader: "i v"},
-		Run: func(_ x.Context, v x.Invocation) x.Outcome {
-			return x.Outcome{x.Local{Op: inspectPlanPreviewOp, Text: v.Target}}
-		},
-	}, {
-		ID: savePlanPreviewID, Title: "Save to /plan", Binding: x.Binding{Leader: "i w"}, Requires: x.PlanDraft,
-		Run: func(_ x.Context, v x.Invocation) x.Outcome {
-			return x.Outcome{x.Local{Op: savePlanPreviewOp, Text: v.Target}}
 		},
 	}}}
 }
@@ -48,9 +44,6 @@ func (m *Model) activityEntry(ctx x.RenderContext, t *threadState, r *record) (x
 	e := r.entry
 	if (e.Record.Kind == "hush.plan.chat" || e.Record.Kind == "hush.plan.run") && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
 		return x.Content{planRunTranscript(e.Record.Messages[0].Blocks[0].Text, ctx.Width)}, nil
-	}
-	if e.Record.Kind == planPreviewEntry && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
-		return m.planPreviewContent(ctx, t, e.Record.ID, e.Record.Messages[0].Blocks[0].Text), nil
 	}
 	if e.Record.Kind == planReviewEntry && len(e.Record.Messages) == 1 && len(e.Record.Messages[0].Blocks) == 1 {
 		heading, body, _ := strings.Cut(e.Record.Messages[0].Blocks[0].Text, "\n")

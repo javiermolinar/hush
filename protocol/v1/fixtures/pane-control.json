@@ -21,7 +21,7 @@
     },
     {
       "caps": {"left": true, "above": true, "tabs": true, "read": true, "views": true, "threadTabs": true},
-      "placements": ["right", "below", "left", "above", "tab"], "launches": ["argv", "shell", "terminal", "hush", "review"], "threadViews": ["tab", "split"], "native": true, "read": true
+      "placements": ["right", "below", "left", "above", "tab"], "launches": ["argv", "shell", "terminal", "hush"], "threadViews": ["tab", "split"], "native": true, "read": true
     },
     {
       "caps": {"left": false, "above": true, "tabs": false, "read": true, "threadTabs": true},

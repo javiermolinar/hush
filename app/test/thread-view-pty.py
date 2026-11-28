@@ -84,10 +84,10 @@ with Hush(origin) as ui:
         ui.see(b"Always keep this target active")
         with open(live[0], "w", encoding="utf-8"):
             pass
-        ui.see(b"LATE-TARGET-ANSWER", b"LATE-WORKER-REPORT")
+        ui.see(b"LATE-TARGET-ANSWER")
         ui.send(b"\t")
         ui.see(b"TAB-REREGISTERED-HERE")
-        assert b"LATE-TARGET-ANSWER" not in ui.last and b"LATE-WORKER-REPORT" not in ui.last
+        assert b"LATE-TARGET-ANSWER" not in ui.last
     else:
         ui.see(b"EXACT-TARGET-TRANSCRIPT")
 

@@ -9,6 +9,7 @@ import (
 
 const (
 	GitDiffVersion         = 1
+	GitDiffLaunchVersion   = 2 // also accepts a backend launch directory instead of a thread
 	GitDiffWatchVersion    = 1
 	GitDiffHead            = "head"
 	GitDiffCheckpoint      = "checkpoint"
@@ -99,16 +100,40 @@ func (l GitDiffLine) valid() bool {
 	return false
 }
 
+// gitDiffTarget returns the wire fields for a thread or, with gitDiff:2, a
+// backend launch directory, and the versions that accept them.
+func gitDiffTarget(thread ID, cwd string) (map[string]any, []uint64, bool) {
+	if cwd == "" {
+		return map[string]any{"threadId": thread}, []uint64{GitDiffVersion, GitDiffLaunchVersion}, thread.Valid()
+	}
+	target := WorkspaceFileTarget{CWD: cwd}
+	return map[string]any{"cwd": cwd}, []uint64{GitDiffLaunchVersion}, thread == "" && target.valid()
+}
+
 // GitDiffSummary compares committed HEAD or the latest file checkpoint with
 // the thread's current worktree. Offer gitDiff:1 in ClientOptions to use it.
 func (c *Client) GitDiffSummary(ctx context.Context, thread ID, baseline string) (GitDiffSummary, error) {
-	if !thread.Valid() || baseline != GitDiffHead && baseline != GitDiffCheckpoint {
+	return c.gitDiffSummary(ctx, thread, "", baseline)
+}
+
+// GitDiffSummaryAt compares committed HEAD with a trusted backend launch
+// directory before any thread exists. It requires gitDiff:2.
+func (c *Client) GitDiffSummaryAt(ctx context.Context, cwd string) (GitDiffSummary, error) {
+	if cwd == "" {
 		return GitDiffSummary{}, ErrProtocol
 	}
+	return c.gitDiffSummary(ctx, "", cwd, GitDiffHead)
+}
+
+func (c *Client) gitDiffSummary(ctx context.Context, thread ID, cwd, baseline string) (GitDiffSummary, error) {
+	params, versions, ok := gitDiffTarget(thread, cwd)
+	if !ok || baseline != GitDiffHead && baseline != GitDiffCheckpoint {
+		return GitDiffSummary{}, ErrProtocol
+	}
+	params["range"] = baseline
 	// The lease is exclusive and cancellation closes it, leaving the
 	// command connection and other metadata requests alone.
-	out, err := metadataRead[GitDiffSummary](ctx, c, gitDiffPrefix+"summary",
-		map[string]any{"threadId": thread, "range": baseline}, gitDiffCapability, GitDiffVersion)
+	out, err := metadataRead[GitDiffSummary](ctx, c, gitDiffPrefix+"summary", params, gitDiffCapability, versions...)
 	if err != nil {
 		return GitDiffSummary{}, err
 	}
@@ -146,10 +171,21 @@ type GitDiffUpdate struct {
 // WatchGitDiff observes the thread's HEAD summary on a dedicated connection.
 // Offer gitDiff:1 and gitDiffWatch:1. Cancel ctx when leaving the thread.
 func (c *Client) WatchGitDiff(ctx context.Context, thread ID) <-chan GitDiffUpdate {
+	return c.watchGitDiff(ctx, thread, "")
+}
+
+// WatchGitDiffAt observes a trusted backend launch directory before any
+// thread exists. It requires gitDiff:2 and gitDiffWatch:1.
+func (c *Client) WatchGitDiffAt(ctx context.Context, cwd string) <-chan GitDiffUpdate {
+	return c.watchGitDiff(ctx, "", cwd)
+}
+
+func (c *Client) watchGitDiff(ctx context.Context, thread ID, cwd string) <-chan GitDiffUpdate {
+	params, versions, ok := gitDiffTarget(thread, cwd)
 	w := workspaceWatch{method: gitDiffWaitMethod, capability: gitDiffWatchCapability, version: GitDiffWatchVersion,
-		base: gitDiffCapability, baseVersions: []uint64{GitDiffVersion}}
-	if thread.Valid() {
-		w.params = map[string]any{"threadId": thread}
+		base: gitDiffCapability, baseVersions: versions}
+	if ok {
+		w.params = params
 	}
 	return watchWorkspace(ctx, c, w, decodeGitDiffUpdate, func(err error) GitDiffUpdate { return GitDiffUpdate{Err: err} })
 }
@@ -182,11 +218,24 @@ func decodeGitDiffUpdate(raw any) (GitDiffUpdate, string, error) {
 
 // GitDiffFile fetches one zero-based file from a summary in the same thread.
 func (c *Client) GitDiffFile(ctx context.Context, thread ID, revision string, file int) (GitDiffPatch, error) {
-	if !thread.Valid() || !scheduleID.MatchString(revision) || file < 0 || file >= gitDiffFileLimit {
+	return c.gitDiffFile(ctx, thread, "", revision, file)
+}
+
+// GitDiffFileAt fetches one file from a summary of the same launch directory.
+func (c *Client) GitDiffFileAt(ctx context.Context, cwd, revision string, file int) (GitDiffPatch, error) {
+	if cwd == "" {
 		return GitDiffPatch{}, ErrProtocol
 	}
-	out, err := metadataRead[GitDiffPatch](ctx, c, gitDiffPrefix+"file",
-		map[string]any{"threadId": thread, "revision": revision, "file": file}, gitDiffCapability, GitDiffVersion)
+	return c.gitDiffFile(ctx, "", cwd, revision, file)
+}
+
+func (c *Client) gitDiffFile(ctx context.Context, thread ID, cwd, revision string, file int) (GitDiffPatch, error) {
+	params, versions, ok := gitDiffTarget(thread, cwd)
+	if !ok || !scheduleID.MatchString(revision) || file < 0 || file >= gitDiffFileLimit {
+		return GitDiffPatch{}, ErrProtocol
+	}
+	params["revision"], params["file"] = revision, file
+	out, err := metadataRead[GitDiffPatch](ctx, c, gitDiffPrefix+"file", params, gitDiffCapability, versions...)
 	if err != nil {
 		return GitDiffPatch{}, err
 	}
