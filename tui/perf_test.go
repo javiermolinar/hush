@@ -263,7 +263,7 @@ func TestFrameBudget(t *testing.T) {
 				}
 				m.receiveSkills(skillsMsg{m.skills.generation, listed})
 				if which == "skill-slash" {
-					m.editor.set("/skill:")
+					m.editor.set("/rvw")
 				} else {
 					budget := maxEffects
 					m.admit(m.route(m.active, menusID), stageSkillChoice(listed), &budget)

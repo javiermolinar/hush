@@ -166,7 +166,7 @@ func TestStandaloneSkillSuggestionsStageAndSendExactSource(t *testing.T) {
 	if frame := ansi.Strip(assertFrame(t, m)); !strings.Contains(frame, "/skill:review") {
 		t.Fatal(frame)
 	}
-	m.editor.set("/skill:rev")
+	m.editor.set("/rvw")
 	press(m, tea.KeyEnter, 0)
 	if len(got) != 0 || m.editor.value() != "/skill:review " || s.stagedSkill.token != token {
 		t.Fatal("picker submitted or lost the source pin")
@@ -183,7 +183,7 @@ func TestStandaloneSkillSuggestionsStageAndSendExactSource(t *testing.T) {
 	if len(got) != 2 || got[1].SkillToken != "" {
 		t.Fatal("typed command inherited a stale source pin")
 	}
-	m.editor.set("/skill:rev")
+	m.editor.set("/skill:rvw")
 	m.View()
 	var drawn x.ActionRef
 	for _, row := range m.frame.hits {

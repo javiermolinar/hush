@@ -459,7 +459,7 @@ func (m *Model) promptKey(k tea.KeyPressMsg) tea.Cmd {
 		if paneSlashWithSeparator(text) || text == "/pane" && !m.options.paneCommandsAvailable() {
 			return m.sendPrompt(sdk.Steer)
 		}
-		if strings.HasPrefix(text, "/skill:") && (m.menuFeatures().Has(extension.Skills) || t.stagedSkill.token != "") {
+		if strings.HasPrefix(text, "/"+skillSlashPrefix) && (m.menuFeatures().Has(extension.Skills) || t.stagedSkill.token != "") {
 			if m.nativeSkills && t.stagedSkill.token == "" {
 				if list := m.slashMatches(); len(list) > 0 {
 					return m.runSlash(list[min(m.slashIndex, len(list)-1)])
@@ -602,19 +602,46 @@ func (m *Model) slashMatches() []registeredAction {
 	if len(m.editor.pastes) != 0 || m.slashHidden || !strings.HasPrefix(text, "/") || strings.ContainsAny(text[1:], " \t\n/") {
 		return nil
 	}
-	var out []registeredAction
+	query := strings.ToLower(text[1:])
+	if name, qualified := strings.CutPrefix(query, skillSlashPrefix); qualified {
+		prefixes, others := m.skillSlashMatches(name, true)
+		return append(prefixes, others...)
+	}
+
+	var out, fuzzy []registeredAction
+	if i, ok := m.host.slash[query]; ok {
+		a := m.host.actions[i]
+		if !m.eligible(a, m.active) {
+			// An unavailable exact command must not select another action.
+			return nil
+		}
+		out = append(out, a)
+	}
 	for _, i := range m.host.slashOrder {
 		a := m.host.actions[i]
-		if strings.HasPrefix(a.action.Slash.Name, text[1:]) && m.eligible(a, m.active) {
+		name := a.action.Slash.Name
+		prefix := strings.HasPrefix(name, query)
+		if name == query || (!prefix && !fuzzyMatch(name, query)) || !m.eligible(a, m.active) {
+			continue
+		}
+		if prefix {
 			out = append(out, a)
+		} else {
+			fuzzy = append(fuzzy, a)
 		}
 	}
-	out = m.skillSlashMatches(text[1:], out)
-	if text == "/" && m.editor.atEnd() && m.pathRootsAvailable() {
-		// Make browsing visible without changing the default command.
-		out = slices.Insert(out, min(1, len(out)), browsePathsAction)
+	skillPrefixes, skillOthers := m.skillSlashMatches(query, false)
+	if query == "" {
+		out = slices.Insert(out, min(3, len(out)), skillPrefixes...)
+		if m.editor.atEnd() && m.pathRootsAvailable() {
+			// Make browsing visible without changing the default command.
+			out = slices.Insert(out, min(1, len(out)), browsePathsAction)
+		}
+		return out
 	}
-	return out
+	out = append(out, skillPrefixes...)
+	out = append(out, fuzzy...)
+	return append(out, skillOthers...)
 }
 
 func (m *Model) runSlash(a registeredAction) tea.Cmd {

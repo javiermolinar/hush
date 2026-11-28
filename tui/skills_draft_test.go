@@ -68,6 +68,12 @@ func TestGoldenWorkspaceSkillsOnFreshLocalPrompt(t *testing.T) {
 		t.Fatal("preview did not feed the intro count")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.editor.set("/rvw")
+	golden(t, "fuzzy-skill-slash", m)
+	press(m, tea.KeyTab, 0)
+	if m.editor.value() != "/skill:review " || m.threads[""].stagedSkill.token != pin || created != 0 || submitted != 0 {
+		t.Fatal("completing a fuzzy match did not just stage the draft skill")
+	}
 	m.editor.set("/skills")
 	workflowWork(t, m, press(m, tea.KeyEnter, 0))
 	golden(t, "menu-skills", m)

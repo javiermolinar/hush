@@ -1,0 +1,24 @@
+  ██      ██  ██      ██    ████████  ██      ██  ▄
+  ██      ██  ██      ██  ██          ██      ██  █  ▂
+  ██████████  ██      ██    ██████    ██████████  █▄▂█
+  ██      ██  ██      ██          ██  ██      ██  █████▂▆▇▁▇▁  ▆      ▁
+  ██      ██    ██████    ████████    ██      ██  ████████████▇█▇▆█▇█▅█▅▆▂▃▅▄▅
+
+  ⎇ main  /workspace with spaces                                         ·····
+
+  sessions    ·····
+  skills      1 loaded
+
+
+
+
+  Slash commands ─────────────────────────────────────────────────── 1 command
+  › /skill:review                        │ /skill:review
+                                         │ Read the draft
+
+  ↵ Insert  /skill:review
+  ↑↓ move  ↵ insert  tab complete  esc back
+
+  ────────────────────────────────────────────────────────────────────────────
+  main › /rvw
+  Workspace workspace with spaces

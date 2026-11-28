@@ -65,16 +65,16 @@ func (m *Model) slashSheet(matches []registeredAction, w, budget int) []displayR
 		}
 		items = append(items, completionItem{title: name, detail: detail, action: ref})
 	}
-	verb, effect := "Run", items[selected].title
+	verb, effect, enterHint := "Run", items[selected].title, "↵ run"
 	switch items[selected].action.ID {
 	case browsePathsID:
 		verb, effect = "Browse granted locations", ""
 	case stageSkillID:
-		verb = "Insert"
+		verb, enterHint = "Insert", "↵ insert"
 	}
 	c := menuChrome{title: "Slash commands", count: menuCount(len(items), "command", "commands"),
 		consequence: chromeLine(m.menuAction(verb, effect)),
-		keys:        chromeLine(m.menuKeys(w, "↑↓ move", "↵ run", "tab complete"))}
+		keys:        chromeLine(m.menuKeys(w, "↑↓ move", enterHint, "tab complete"))}
 	return m.completionRows(w, budget, c, items, selected, 5, "No commands match")
 }
 

@@ -14,6 +14,7 @@ import (
 const skillsPickerID x.ActionID = menusID + ".skills"
 const stageSkillID x.ActionID = menusID + ".stage-skill"
 const stageSkillOp x.LocalOp = "workspaceSkills.stage"
+const skillSlashPrefix = "skill:"
 
 type workspaceSkillsBackend interface {
 	ListWorkspaceSkills(context.Context, sdk.ID) ([]sdk.WorkspaceSkill, error)
@@ -69,7 +70,7 @@ type skillsMsg struct {
 type stagedSkill struct{ name, token string }
 
 func skillOf(text string) string {
-	tail, ok := strings.CutPrefix(text, "/skill:")
+	tail, ok := strings.CutPrefix(text, "/"+skillSlashPrefix)
 	if !ok {
 		return ""
 	}
@@ -135,7 +136,7 @@ func (m *Model) receiveSkills(v skillsMsg) {
 		s.actions = make([]registeredAction, 0, len(v.listed))
 		for _, skill := range v.listed {
 			s.actions = append(s.actions, registeredAction{owner: menusID, action: x.Action{
-				ID: stageSkillID, Title: "Stage " + skill.Name, Description: skill.Description, Slash: &x.Slash{Name: "skill:" + skill.Name},
+				ID: stageSkillID, Title: "Stage " + skill.Name, Description: skill.Description, Slash: &x.Slash{Name: skillSlashPrefix + skill.Name},
 			}, skill: stagedSkill{skill.Name, skill.Token}})
 		}
 		m.slashIndex = 0
@@ -149,27 +150,35 @@ func (m *Model) currentSkills() []sdk.WorkspaceSkill {
 	return nil
 }
 
-func (m *Model) skillSlashMatches(prefix string, out []registeredAction) []registeredAction {
+func (m *Model) skillSlashMatches(query string, qualified bool) (prefixes, others []registeredAction) {
 	if len(m.currentSkills()) == 0 {
-		return out
+		return nil, nil
 	}
-	var choices []registeredAction
+	// Keep listing skills for a partial namespace like /sk, but rank
+	// matches on the skill name itself ahead of these fallback results.
+	listAll := !qualified && strings.HasPrefix(skillSlashPrefix, query)
+	var fallback []registeredAction
 	for _, a := range m.skills.actions {
-		if strings.HasPrefix(a.action.Slash.Name, prefix) {
-			choices = append(choices, a)
+		name := a.skill.name
+		switch {
+		case name == query:
+			prefixes = slices.Insert(prefixes, 0, a)
+		case strings.HasPrefix(name, query):
+			prefixes = append(prefixes, a)
+		case fuzzyMatch(name, query):
+			others = append(others, a)
+		case listAll:
+			fallback = append(fallback, a)
 		}
 	}
-	if len(choices) == 0 {
-		return out
-	}
-	return slices.Insert(out, min(3, len(out)), choices...)
+	return prefixes, append(others, fallback...)
 }
 
 func (m *Model) stageSkill(value stagedSkill) {
 	if _, ok := m.skillScope(m.active); !ok || value.name == "" || value.token == "" {
 		return
 	}
-	m.editor.set("/skill:" + value.name + " ")
+	m.editor.set("/" + skillSlashPrefix + value.name + " ")
 	m.editor.resetHistory()
 	m.slashIndex, m.slashHidden = 0, false
 	m.threads[m.active].stagedSkill = value
